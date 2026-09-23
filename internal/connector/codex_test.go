@@ -261,13 +261,13 @@ func TestCodexCancellationWithoutCompletionIsUncertain(t *testing.T) {
 	}
 }
 
-func TestCodexTaskThroughSaaS(t *testing.T) {
+func TestCodexTaskThroughRemoteService(t *testing.T) {
 	t.Setenv("CODEX_HOME", "normal")
 	const deviceToken = "device-token-0123456789-0123456789-abc"
-	const saasToken = "saas-token-0123456789-0123456789-abcd"
+	const remoteToken = "remote-token-0123456789-0123456789-abcd"
 	const key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 	dir := t.TempDir()
-	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), SAASToken: saasToken, DeviceID: "dev_1", DeviceToken: deviceToken})
+	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), RemoteToken: remoteToken, DeviceID: "dev_1", DeviceToken: deviceToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestCodexTaskThroughSaaS(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest("GET", cloud.URL+"/v1/connectors", nil)
-		req.Header.Set("Authorization", "Bearer "+saasToken)
+		req.Header.Set("Authorization", "Bearer "+remoteToken)
 		resp, err := cloud.Client().Do(req)
 		if err == nil {
 			var v struct {
@@ -303,7 +303,7 @@ func TestCodexTaskThroughSaaS(t *testing.T) {
 	create := fakeCommand().Request
 	body, _ := json.Marshal(create)
 	req, _ := http.NewRequest("POST", cloud.URL+"/v1/llm-tasks", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+saasToken)
+	req.Header.Set("Authorization", "Bearer "+remoteToken)
 	req.Header.Set("Idempotency-Key", "codex-task-001")
 	resp, err := cloud.Client().Do(req)
 	if err != nil {
@@ -320,7 +320,7 @@ func TestCodexTaskThroughSaaS(t *testing.T) {
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest("GET", cloud.URL+"/v1/llm-tasks/"+task.ID, nil)
-		req.Header.Set("Authorization", "Bearer "+saasToken)
+		req.Header.Set("Authorization", "Bearer "+remoteToken)
 		resp, err := cloud.Client().Do(req)
 		if err == nil {
 			_ = json.NewDecoder(resp.Body).Decode(&task)

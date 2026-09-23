@@ -15,7 +15,7 @@ import (
 
 func TestWebSocketEpochAndDurableEventACK(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
-	cfg := Config{DataFile: path, SAASToken: "saas-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"}
+	cfg := Config{DataFile: path, RemoteToken: "remote-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestWebSocketEpochAndDurableEventACK(t *testing.T) {
 }
 
 func TestWebSocketHandshakeAuthentication(t *testing.T) {
-	s, err := New(Config{DataFile: filepath.Join(t.TempDir(), "server.json"), SAASToken: "saas-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"})
+	s, err := New(Config{DataFile: filepath.Join(t.TempDir(), "server.json"), RemoteToken: "remote-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"})
 	if err != nil {
 		t.Fatal(err)
 	}

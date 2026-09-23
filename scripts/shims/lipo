@@ -1,0 +1,32 @@
+#!/bin/bash
+# Xcode 27 的 lipo 不再接受一次校验多个架构：`lipo <bin> -verify_arch arm64 x86_64`
+# 会误报 "-verify_arch requires exactly one input file"。Flutter 工具
+# （flutter_tools/lib/src/build_system/targets/darwin.dart 的 thinFramework）
+# 仍按旧用法一次传入全部架构，导致 macOS 构建失败。
+# 本 shim 将多架构 -verify_arch 拆成逐架构多次校验，其余调用原样转发给真实 lipo。
+# 仅由 scripts/ 下的构建脚本临时加入 PATH；Flutter 修复该问题后可删除本文件。
+set -e
+real_lipo=$(xcrun -f lipo)
+has_verify=0
+for a in "$@"; do
+  if [ "$a" = "-verify_arch" ]; then has_verify=1; break; fi
+done
+if [ "$has_verify" -eq 0 ]; then
+  exec "$real_lipo" "$@"
+fi
+prefix=()
+archs=()
+seen=0
+for a in "$@"; do
+  if [ "$seen" -eq 0 ]; then
+    if [ "$a" = "-verify_arch" ]; then seen=1; else prefix+=("$a"); fi
+  else
+    archs+=("$a")
+  fi
+done
+if [ "${#archs[@]}" -le 1 ]; then
+  exec "$real_lipo" "$@"
+fi
+for arch in "${archs[@]}"; do
+  "$real_lipo" "${prefix[@]}" -verify_arch "$arch"
+done

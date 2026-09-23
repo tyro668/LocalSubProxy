@@ -19,7 +19,7 @@ import (
 )
 
 // Codex is intentionally a separate, opt-in adapter. The CLI owns ChatGPT login;
-// neither its credentials nor account identifiers are sent to the SaaS server.
+// neither its credentials nor account identifiers are sent to the remote service.
 func resolveCodex(name string) (string, error) {
 	path, err := exec.LookPath(name)
 	if err != nil {
@@ -342,12 +342,16 @@ func codexInput(messages []protocol.Message) string {
 }
 
 func (x *Connector) callCodex(ctx context.Context, c protocol.Command, a AdapterConfig) error {
-	return runCodex(ctx, c, a.CodexBin, func(text string) error {
+	return runCodexWithEffort(ctx, c, a.CodexBin, a.ReasoningEffort, func(text string) error {
 		return x.emit(c, "output.delta", map[string]string{"channel": "answer", "text": text})
 	})
 }
 
 func runCodex(ctx context.Context, c protocol.Command, bin string, emitText func(string) error) error {
+	return runCodexWithEffort(ctx, c, bin, "", emitText)
+}
+
+func runCodexWithEffort(ctx context.Context, c protocol.Command, bin, effort string, emitText func(string) error) error {
 	s, closeFn, err := startCodex(ctx, bin)
 	if err != nil {
 		return err
@@ -383,7 +387,14 @@ func runCodex(ctx context.Context, c protocol.Command, bin string, emitText func
 	s.stateMu.Lock()
 	s.threadID = thread.Thread.ID
 	s.stateMu.Unlock()
-	raw, err = s.request("turn/start", map[string]any{"threadId": thread.Thread.ID, "input": []map[string]string{{"type": "text", "text": codexInput(c.Request.Input.Messages)}}, "model": c.Request.Target.ModelID, "approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "readOnly", "networkAccess": false}})
+	turn := map[string]any{"threadId": thread.Thread.ID, "input": []map[string]string{{"type": "text", "text": codexInput(c.Request.Input.Messages)}}, "model": c.Request.Target.ModelID, "approvalPolicy": "never", "sandboxPolicy": map[string]any{"type": "readOnly", "networkAccess": false}}
+	if effort != "" {
+		if effort == "off" {
+			effort = "none"
+		}
+		turn["effort"] = effort
+	}
+	raw, err = s.request("turn/start", turn)
 	if err != nil {
 		return err
 	}

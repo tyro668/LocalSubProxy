@@ -14,14 +14,14 @@ import (
 )
 
 func TestTextArtifactScopedToTaskAttempt(t *testing.T) {
-	cfg := Config{DataFile: filepath.Join(t.TempDir(), "server.json"), SAASToken: "saas-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"}
+	cfg := Config{DataFile: filepath.Join(t.TempDir(), "server.json"), RemoteToken: "remote-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	upload := func(contentType string, body []byte) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/v1/task-artifacts", bytes.NewReader(body))
-		r.Header.Set("Authorization", "Bearer "+cfg.SAASToken)
+		r.Header.Set("Authorization", "Bearer "+cfg.RemoteToken)
 		r.Header.Set("Content-Type", contentType)
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
@@ -58,7 +58,7 @@ func TestTextArtifactScopedToTaskAttempt(t *testing.T) {
 	request.Input.ArtifactRefs = []string{artifact.ID}
 	b, _ := json.Marshal(request)
 	r := httptest.NewRequest(http.MethodPost, "/v1/llm-tasks", bytes.NewReader(b))
-	r.Header.Set("Authorization", "Bearer "+cfg.SAASToken)
+	r.Header.Set("Authorization", "Bearer "+cfg.RemoteToken)
 	r.Header.Set("Idempotency-Key", "artifact-test-001")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
@@ -84,7 +84,7 @@ func TestTextArtifactScopedToTaskAttempt(t *testing.T) {
 		s.Handler().ServeHTTP(w, r)
 		return w
 	}
-	if got := download(cfg.SAASToken, task.ID, "attempt_1"); got.Code != 401 {
+	if got := download(cfg.RemoteToken, task.ID, "attempt_1"); got.Code != 401 {
 		t.Fatalf("service token download: %d", got.Code)
 	}
 	if got := download(cfg.DeviceToken, task.ID, "attempt_wrong"); got.Code != 404 {

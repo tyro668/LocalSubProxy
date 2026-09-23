@@ -20,8 +20,8 @@ import (
 )
 
 type Config struct {
-	DataFile, SAASToken, DeviceID, DeviceToken string
-	RequireBinding                             bool
+	DataFile, RemoteToken, DeviceID, DeviceToken string
+	RequireBinding                               bool
 }
 
 type record struct {
@@ -41,23 +41,25 @@ type snapshot struct {
 	PairingHash     string                     `json:"pairing_hash,omitempty"`
 	PairingExpires  time.Time                  `json:"pairing_expires,omitempty"`
 	PairingAttempts int                        `json:"pairing_attempts,omitempty"`
+	PairingOwnerID  string                     `json:"pairing_owner_id,omitempty"`
 }
 
 type Server struct {
-	mu       sync.Mutex
-	cfg      Config
-	state    snapshot
-	adapter  protocol.AdapterHealth
-	adapters map[string]protocol.AdapterHealth
-	lastSeen time.Time
-	changed  chan struct{}
-	wsMu     sync.Mutex
-	active   *wsSession
+	mu                  sync.Mutex
+	cfg                 Config
+	state               snapshot
+	adapter             protocol.AdapterHealth
+	adapters            map[string]protocol.AdapterHealth
+	lastSeen            time.Time
+	lastSnapshotVersion int64
+	changed             chan struct{}
+	wsMu                sync.Mutex
+	active              *wsSession
 }
 
 func New(cfg Config) (*Server, error) {
-	if cfg.DataFile == "" || len(cfg.SAASToken) < 32 || len(cfg.DeviceToken) < 32 || cfg.DeviceID == "" {
-		return nil, errors.New("data file, device ID, and independent 32+ character SaaS/device tokens are required")
+	if cfg.DataFile == "" || len(cfg.RemoteToken) < 32 || len(cfg.DeviceToken) < 32 || cfg.DeviceID == "" {
+		return nil, errors.New("data file, device ID, and independent 32+ character remote service/device tokens are required")
 	}
 	s := &Server{cfg: cfg, state: snapshot{Tasks: map[string]*record{}, Idem: map[string]string{}, Artifacts: map[string]*artifactRecord{}}, adapters: map[string]protocol.AdapterHealth{}, changed: make(chan struct{})}
 	if err := durable.ReadJSON(cfg.DataFile, &s.state); err != nil {
@@ -94,7 +96,7 @@ func randomID(prefix string) string {
 
 func secureEqual(a, b string) bool { return hmac.Equal([]byte(a), []byte(b)) }
 func (s *Server) auth(w http.ResponseWriter, r *http.Request, device bool) bool {
-	want := s.cfg.SAASToken
+	want := s.cfg.RemoteToken
 	if device {
 		want = s.cfg.DeviceToken
 	}
@@ -162,6 +164,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/v1/task-artifacts", s.artifacts)
 	m.HandleFunc("/v1/llm-tasks", s.tasks)
 	m.HandleFunc("/v1/llm-tasks/", s.taskRoute)
+	m.HandleFunc("/v1/models", s.openAIModels)
+	m.HandleFunc("/v1/chat/completions", s.openAIChat)
 	m.HandleFunc("/v1/connector/heartbeat", s.httpDevice(s.heartbeat))
 	m.HandleFunc("/v1/connector/commands", s.commands)
 	m.HandleFunc("/v1/connector/accepted", s.httpDevice(s.accepted))
@@ -170,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/v1/connector/events", s.httpDevice(s.events))
 	m.HandleFunc("/v1/connector/connect", s.connectWS)
 	m.HandleFunc("/v1/connector/pairing", s.pairing)
+	m.HandleFunc("/v1/connector/claim", s.claimPairing)
 	m.HandleFunc("/v1/connector/artifacts/", s.deviceArtifact)
 	return m
 }
@@ -199,6 +204,10 @@ func (s *Server) connectorRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/v1/connectors/"+s.cfg.DeviceID+"/bind" {
 		s.bind(w, r)
+		return
+	}
+	if r.URL.Path == "/v1/connectors/"+s.cfg.DeviceID+"/pairing-code" {
+		s.issuePairing(w, r)
 		return
 	}
 	if r.URL.Path != "/v1/connectors/"+s.cfg.DeviceID+"/revoke" {
@@ -557,6 +566,12 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setAdapters(hb protocol.Heartbeat) {
+	if hb.SnapshotVersion > 0 && hb.SnapshotVersion < s.lastSnapshotVersion {
+		return
+	}
+	if hb.SnapshotVersion > 0 {
+		s.lastSnapshotVersion = hb.SnapshotVersion
+	}
 	s.adapters = map[string]protocol.AdapterHealth{}
 	list := hb.Adapters
 	if len(list) == 0 && hb.Adapter.AdapterID != "" {
@@ -916,6 +931,6 @@ func Serve(cfg Config, addr string) error {
 			}
 		}
 	}()
-	log.Printf("SaaS reference server listening on %s", addr)
+	log.Printf("remote gateway reference server listening on %s", addr)
 	return (&http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}).ListenAndServe()
 }

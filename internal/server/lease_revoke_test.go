@@ -24,7 +24,7 @@ func devicePost(s *Server, path string, body any) *httptest.ResponseRecorder {
 }
 
 func TestLeaseExpirationAndReconciliation(t *testing.T) {
-	s, err := New(Config{DataFile: filepath.Join(t.TempDir(), "server.json"), SAASToken: "saas-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"})
+	s, err := New(Config{DataFile: filepath.Join(t.TempDir(), "server.json"), RemoteToken: "remote-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestLeaseExpirationAndReconciliation(t *testing.T) {
 }
 
 func TestDeviceRevokePersistsAndRejectsReconnect(t *testing.T) {
-	cfg := Config{DataFile: filepath.Join(t.TempDir(), "server.json"), SAASToken: "saas-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"}
+	cfg := Config{DataFile: filepath.Join(t.TempDir(), "server.json"), RemoteToken: "remote-token-0123456789-0123456789-abcd", DeviceID: "dev_1", DeviceToken: "device-token-0123456789-0123456789-abc"}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestDeviceRevokePersistsAndRejectsReconnect(t *testing.T) {
 		t.Fatal("WSS enrollment failed")
 	}
 	r := httptest.NewRequest(http.MethodPost, "/v1/connectors/dev_1/revoke", nil)
-	r.Header.Set("Authorization", "Bearer "+cfg.SAASToken)
+	r.Header.Set("Authorization", "Bearer "+cfg.RemoteToken)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != 200 {

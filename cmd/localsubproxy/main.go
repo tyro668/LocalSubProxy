@@ -45,10 +45,10 @@ func main() {
 		device := f.String("device-id", "dev_local", "configured device ID")
 		requireBinding := f.Bool("require-binding", false, "require owner binding before device connection and task submission")
 		_ = f.Parse(os.Args[2:])
-		err = server.Serve(server.Config{DataFile: *data, SAASToken: os.Getenv("LOCALSUBPROXY_SAAS_TOKEN"), DeviceID: *device, DeviceToken: os.Getenv("LOCALSUBPROXY_DEVICE_TOKEN"), RequireBinding: *requireBinding}, *listen)
+		err = server.Serve(server.Config{DataFile: *data, RemoteToken: remoteServiceToken(), DeviceID: *device, DeviceToken: os.Getenv("LOCALSUBPROXY_DEVICE_TOKEN"), RequireBinding: *requireBinding}, *listen)
 	case "pairing":
 		f := flag.NewFlagSet("pairing", flag.ExitOnError)
-		serverURL := f.String("server-url", "http://127.0.0.1:8080", "SaaS server base URL")
+		serverURL := f.String("server-url", "http://127.0.0.1:8080", "remote gateway base URL")
 		device := f.String("device-id", "dev_local", "device ID")
 		_ = f.Parse(os.Args[2:])
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -62,7 +62,7 @@ func main() {
 		f := flag.NewFlagSet("connector", flag.ExitOnError)
 		configDir, _ := os.UserConfigDir()
 		localDir := filepath.Join(configDir, "localsubproxy")
-		serverURL := f.String("server-url", "http://127.0.0.1:8080", "SaaS server base URL")
+		serverURL := f.String("server-url", "http://127.0.0.1:8080", "remote gateway base URL")
 		device := f.String("device-id", "dev_local", "device ID")
 		adapter := f.String("adapter-id", "", "optional initial adapter ID")
 		adapterType := f.String("adapter-type", "ollama_http", "ollama_http or codex_app_server")
@@ -71,8 +71,6 @@ func main() {
 		models := f.String("models", "", "comma separated allowed model IDs")
 		journal := f.String("journal", filepath.Join(localDir, "journal.enc"), "encrypted local journal")
 		adapterFile := f.String("adapter-file", filepath.Join(localDir, "adapters.enc"), "encrypted adapter configuration")
-		controlAddr := f.String("control-listen", "127.0.0.1:8765", "local management API listen address")
-		controlTokenFile := f.String("control-token-file", filepath.Join(localDir, "control.token"), "local management bearer token file")
 		journalMaxMiB := f.Int64("journal-max-mib", 64, "maximum encrypted journal size in MiB")
 		_ = f.Parse(os.Args[2:])
 		var xs []string
@@ -82,7 +80,7 @@ func main() {
 				xs = append(xs, m)
 			}
 		}
-		c, e := connector.New(connector.Config{ServerURL: *serverURL, DeviceID: *device, DeviceToken: os.Getenv("LOCALSUBPROXY_DEVICE_TOKEN"), AdapterID: *adapter, AdapterType: *adapterType, OllamaURL: *ollama, CodexBin: *codexBin, AllowedModels: xs, JournalFile: *journal, JournalKey: os.Getenv("LOCALSUBPROXY_JOURNAL_KEY"), MaxJournalBytes: *journalMaxMiB << 20, AdapterFile: *adapterFile, ControlAddr: *controlAddr, ControlTokenFile: *controlTokenFile})
+		c, e := connector.New(connector.Config{ServerURL: *serverURL, DeviceID: *device, DeviceToken: os.Getenv("LOCALSUBPROXY_DEVICE_TOKEN"), AdapterID: *adapter, AdapterType: *adapterType, OllamaURL: *ollama, CodexBin: *codexBin, AllowedModels: xs, JournalFile: *journal, JournalKey: os.Getenv("LOCALSUBPROXY_JOURNAL_KEY"), MaxJournalBytes: *journalMaxMiB << 20, AdapterFile: *adapterFile})
 		if e != nil {
 			err = e
 			break
@@ -105,4 +103,11 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: localsubproxy server [flags] | pairing [flags] | connector [flags] | codex-models [flags]")
+}
+
+func remoteServiceToken() string {
+	if token := os.Getenv("LOCALSUBPROXY_REMOTE_TOKEN"); token != "" {
+		return token
+	}
+	return os.Getenv("LOCALSUBPROXY_SAAS_TOKEN") // Existing deployments.
 }

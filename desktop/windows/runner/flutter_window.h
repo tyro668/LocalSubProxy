@@ -15,6 +15,11 @@ class FlutterWindow : public Win32Window {
   explicit FlutterWindow(const flutter::DartProject& project);
   virtual ~FlutterWindow();
 
+  // 供托盘等原生代码访问引擎 messenger。
+  flutter::FlutterViewController* view_controller() {
+    return flutter_controller_.get();
+  }
+
  protected:
   // Win32Window:
   bool OnCreate() override;

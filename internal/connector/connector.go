@@ -32,18 +32,24 @@ type Config struct {
 	AllowedModels                                                                                          []string
 	MaxJournalBytes                                                                                        int64
 	Adapters                                                                                               []AdapterConfig
-	AdapterFile, ControlAddr, ControlTokenFile                                                             string
+	AdapterFile                                                                                            string
 }
 
 type AdapterConfig struct {
-	ID       string   `json:"id"`
-	Type     string   `json:"type"`
-	Name     string   `json:"name"`
-	BaseURL  string   `json:"base_url,omitempty"`
-	APIKey   string   `json:"api_key,omitempty"`
-	CodexBin string   `json:"codex_bin,omitempty"`
-	Models   []string `json:"models"`
-	Enabled  bool     `json:"enabled"`
+	ID              string   `json:"id"`
+	Type            string   `json:"type"`
+	Name            string   `json:"name"`
+	Provider        string   `json:"provider,omitempty"`
+	BaseURL         string   `json:"base_url,omitempty"`
+	APIKey          string   `json:"api_key,omitempty"`
+	CodexBin        string   `json:"codex_bin,omitempty"`
+	Models          []string `json:"models"`
+	ContextWindow   int      `json:"context_window,omitempty"`
+	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	IsDefault       bool     `json:"is_default,omitempty"`
+	Enabled         bool     `json:"enabled"`
+	SkipModelProbe  bool     `json:"skip_model_probe,omitempty"`
 }
 
 type localTask struct {
@@ -61,28 +67,33 @@ type journal struct {
 }
 
 type Connector struct {
-	cfg          Config
-	client       *http.Client
-	modelClient  *http.Client
-	cipher       *durable.Cipher
-	mu           sync.Mutex
-	j            journal
-	running      map[string]context.CancelFunc
-	leaseStopped map[string]bool
-	journalBytes int64
-	runWG        sync.WaitGroup
-	wsMu         sync.Mutex
-	ws           *wsClient
-	wsDialer     *websocket.Dialer
-	adapters     map[string]AdapterConfig
+	cfg               Config
+	client            *http.Client
+	modelClient       *http.Client
+	cipher            *durable.Cipher
+	mu                sync.Mutex
+	j                 journal
+	running           map[string]context.CancelFunc
+	leaseStopped      map[string]bool
+	journalBytes      int64
+	runWG             sync.WaitGroup
+	wsMu              sync.Mutex
+	ws                *wsClient
+	wsDialer          *websocket.Dialer
+	adapters          map[string]AdapterConfig
+	health            map[string]protocol.AdapterHealth
+	lastProbeVersion  int64
+	lastHealthVersion int64
 }
 
 func New(cfg Config) (*Connector, error) {
-	if cfg.DeviceID == "" || len(cfg.DeviceToken) < 32 || cfg.JournalFile == "" {
-		return nil, errors.New("device ID/token and journal are required")
+	if cfg.JournalFile == "" || (cfg.ServerURL == "" && cfg.DeviceToken != "") || (cfg.ServerURL != "" && (cfg.DeviceID == "" || len(cfg.DeviceToken) < 32)) {
+		return nil, errors.New("journal and valid connection credentials are required")
 	}
-	if err := safeURL(cfg.ServerURL); err != nil {
-		return nil, fmt.Errorf("server URL: %w", err)
+	if cfg.ServerURL != "" {
+		if err := safeURL(cfg.ServerURL); err != nil {
+			return nil, fmt.Errorf("server URL: %w", err)
+		}
 	}
 	if cfg.AdapterType == "" {
 		cfg.AdapterType = "ollama_http"
@@ -116,7 +127,7 @@ func New(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	x := &Connector{cfg: cfg, cipher: c, j: journal{Tasks: map[string]*localTask{}}, adapters: map[string]AdapterConfig{}, running: map[string]context.CancelFunc{}, leaseStopped: map[string]bool{}, client: &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, modelClient: &http.Client{Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	x := &Connector{cfg: cfg, cipher: c, j: journal{Tasks: map[string]*localTask{}}, adapters: map[string]AdapterConfig{}, health: map[string]protocol.AdapterHealth{}, running: map[string]context.CancelFunc{}, leaseStopped: map[string]bool{}, client: &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, modelClient: &http.Client{Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	for _, a := range cfg.Adapters {
 		if err := validateAdapter(&a); err != nil {
 			return nil, err
@@ -215,18 +226,30 @@ func validateAdapter(a *AdapterConfig) error {
 	if a.ID == "" || len(a.ID) > 64 || len(a.Models) == 0 || len(a.Models) > 100 {
 		return errors.New("adapter ID and 1-100 models required")
 	}
+	if len(a.Name) > 100 || len(a.Provider) > 64 || a.ContextWindow < 0 || a.ContextWindow > 2_000_000 || a.MaxOutputTokens < 0 || a.MaxOutputTokens > 1_000_000 {
+		return errors.New("invalid profile settings")
+	}
+	switch a.ReasoningEffort {
+	case "", "off", "low", "medium", "high":
+	default:
+		return errors.New("invalid reasoning effort")
+	}
 	for _, m := range a.Models {
 		if m == "" || len(m) > 200 {
 			return errors.New("invalid model ID")
 		}
 	}
 	switch a.Type {
-	case "ollama_http", "openai_compatible":
+	case "ollama_http":
 		if err := safeURL(a.BaseURL); err != nil {
 			return fmt.Errorf("adapter URL: %w", err)
 		}
-		if a.Type == "openai_compatible" && len(a.APIKey) > 4096 {
-			return errors.New("API key too long")
+	case "openai_compatible", "anthropic_compatible":
+		if err := safeProviderURL(a.BaseURL); err != nil {
+			return fmt.Errorf("adapter URL: %w", err)
+		}
+		if a.APIKey == "" || len(a.APIKey) > 4096 {
+			return errors.New("API key required (maximum 4096 characters)")
 		}
 	case "codex_app_server":
 		if a.CodexBin == "" {
@@ -241,6 +264,37 @@ func validateAdapter(a *AdapterConfig) error {
 		return fmt.Errorf("unsupported adapter type %q", a.Type)
 	}
 	return nil
+}
+
+func safeProviderURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.User != nil || u.Hostname() == "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || strings.Contains(u.Path, "..") {
+		return errors.New("invalid provider URL")
+	}
+	u.Path = ""
+	u.RawPath = ""
+	return safeURL(u.String())
+}
+
+func providerEndpoint(base, endpoint string) string {
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(base, "/v1") {
+		return base + endpoint
+	}
+	return base + "/v1" + endpoint
+}
+
+func adapterEndpoint(a AdapterConfig, endpoint string) string {
+	if a.Provider == "deepseek" {
+		base := strings.TrimRight(a.BaseURL, "/")
+		if base == "https://api.deepseek.com" || base == "https://api.deepseek.com/v1" {
+			return "https://api.deepseek.com" + endpoint
+		}
+	}
+	return providerEndpoint(a.BaseURL, endpoint)
 }
 func isTerminal(s string) bool {
 	switch s {
@@ -288,11 +342,6 @@ func (x *Connector) appendSavedLocked(t *localTask, kind string, data any) error
 }
 
 func (x *Connector) api(ctx context.Context, verb, path string, body any, out any) error {
-	if w := x.currentWS(); w != nil && verb == http.MethodPost {
-		if kind := wsKind(path); kind != "" {
-			return w.call(ctx, kind, body, out)
-		}
-	}
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -344,7 +393,7 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) protocol.
 		return x.withStorageHealth(x.probeCodexAdapter(ctx, a))
 	}
 	h := protocol.AdapterHealth{AdapterID: a.ID, AdapterType: a.Type, Models: a.Models, Operations: []string{"chat.generate"}, Health: "unavailable", AuthState: "ready", AccountScope: "personal", InferenceLocation: "local", FreeSlots: 1}
-	if a.Type == "openai_compatible" {
+	if a.Type == "openai_compatible" || a.Type == "anthropic_compatible" {
 		h.InferenceLocation = "provider_cloud"
 		h.AuthState = "configured"
 	}
@@ -353,16 +402,27 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) protocol.
 		h.FreeSlots = 0
 		return h
 	}
-	endpoint := "/api/tags"
-	if a.Type == "openai_compatible" {
-		endpoint = "/v1/models"
+	if (a.Type == "openai_compatible" || a.Type == "anthropic_compatible") && a.SkipModelProbe {
+		h.Health = "ready"
+		return x.withStorageHealth(h)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(a.BaseURL, "/")+endpoint, nil)
+	endpoint := "/api/tags"
+	if a.Type == "openai_compatible" || a.Type == "anthropic_compatible" {
+		endpoint = "/models"
+	}
+	probeURL := strings.TrimRight(a.BaseURL, "/") + endpoint
+	if a.Type == "openai_compatible" || a.Type == "anthropic_compatible" {
+		probeURL = adapterEndpoint(a, endpoint)
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
 	if err != nil {
 		return h
 	}
-	if a.Type == "openai_compatible" && a.APIKey != "" {
+	if a.Type == "openai_compatible" {
 		req.Header.Set("Authorization", "Bearer "+a.APIKey)
+	} else if a.Type == "anthropic_compatible" {
+		req.Header.Set("x-api-key", a.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 	probeClient := *x.client
 	probeClient.Timeout = 5 * time.Second
@@ -374,7 +434,7 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) protocol.
 	if resp.StatusCode != 200 {
 		return h
 	}
-	if a.Type == "openai_compatible" {
+	if a.Type == "openai_compatible" || a.Type == "anthropic_compatible" {
 		var v struct {
 			Data []struct {
 				ID string `json:"id"`
@@ -432,15 +492,33 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) protocol.
 
 func (x *Connector) probeAll(ctx context.Context) protocol.Heartbeat {
 	x.mu.Lock()
+	version := time.Now().UnixNano()
+	if version <= x.lastProbeVersion {
+		version = x.lastProbeVersion + 1
+	}
+	x.lastProbeVersion = version
 	list := make([]AdapterConfig, 0, len(x.adapters))
 	for _, a := range x.adapters {
 		list = append(list, a)
 	}
 	x.mu.Unlock()
-	hb := protocol.Heartbeat{Protocol: protocol.Version, DeviceID: x.cfg.DeviceID}
-	for _, a := range list {
-		hb.Adapters = append(hb.Adapters, x.probeAdapter(ctx, a))
+	hb := protocol.Heartbeat{Protocol: protocol.Version, DeviceID: x.cfg.DeviceID, SnapshotVersion: version}
+	hb.Adapters = make([]protocol.AdapterHealth, len(list))
+	var wg sync.WaitGroup
+	for i, a := range list {
+		wg.Add(1)
+		go func(i int, a AdapterConfig) { defer wg.Done(); hb.Adapters[i] = x.probeAdapter(ctx, a) }(i, a)
 	}
+	wg.Wait()
+	x.mu.Lock()
+	if version >= x.lastHealthVersion {
+		x.health = map[string]protocol.AdapterHealth{}
+		for _, h := range hb.Adapters {
+			x.health[h.AdapterID] = h
+		}
+		x.lastHealthVersion = version
+	}
+	x.mu.Unlock()
 	if len(hb.Adapters) > 0 {
 		hb.Adapter = hb.Adapters[0]
 	}
@@ -449,6 +527,9 @@ func (x *Connector) probeAll(ctx context.Context) protocol.Heartbeat {
 
 func (x *Connector) withStorageHealth(h protocol.AdapterHealth) protocol.AdapterHealth {
 	x.mu.Lock()
+	if len(x.running) > 0 {
+		h.FreeSlots = 0
+	}
 	if x.journalBytes > x.cfg.MaxJournalBytes-(128<<10) {
 		h.Health = "storage_full"
 		h.FreeSlots = 0
@@ -465,8 +546,8 @@ func (x *Connector) heartbeat(ctx context.Context) error {
 }
 
 func (x *Connector) Run(ctx context.Context) error {
-	if err := x.startControl(ctx); err != nil {
-		return err
+	if x.cfg.ServerURL == "" {
+		return errors.New("remote service connection is not configured")
 	}
 	go x.leaseLoop(ctx)
 	go func() {
@@ -486,27 +567,26 @@ func (x *Connector) Run(ctx context.Context) error {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		connectedAt := time.Now()
-		err := x.runWS(ctx)
+		hbCtx, hbCancel := context.WithTimeout(ctx, 7*time.Second)
+		if err := x.heartbeat(hbCtx); err != nil && hbCtx.Err() == nil {
+			log.Printf("HTTP heartbeat: %v", err)
+		}
+		hbCancel()
+		err := x.pollHTTP(ctx)
 		if ctx.Err() != nil {
 			break
 		}
 		if time.Since(connectedAt) >= 25*time.Second {
 			backoff = time.Second
 		}
-		log.Printf("WebSocket unavailable, using HTTPS long poll: %v", err)
-		// Poll during a jittered reconnect interval. A blocked upgrade does not
-		// prevent task delivery, ACK, cancellation, or journal replay.
+		log.Printf("HTTP command poll: %v", err)
 		jitter := time.Duration(time.Now().UnixNano() % int64(backoff/4+1))
-		hbCtx, hbCancel := context.WithTimeout(ctx, 7*time.Second)
-		if err := x.heartbeat(hbCtx); err != nil && hbCtx.Err() == nil {
-			log.Printf("fallback heartbeat: %v", err)
+		timer := time.NewTimer(backoff + jitter)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
 		}
-		hbCancel()
-		pollCtx, cancel := context.WithTimeout(ctx, backoff+jitter)
-		if err := x.pollHTTP(pollCtx); err != nil && pollCtx.Err() == nil {
-			log.Printf("command poll: %v", err)
-		}
-		cancel()
+		timer.Stop()
 		if backoff < 30*time.Second {
 			backoff *= 2
 			if backoff > 30*time.Second {
@@ -675,7 +755,7 @@ func (x *Connector) handle(ctx context.Context, c protocol.Command) error {
 		x.mu.Lock()
 		a, exists := x.adapters[c.Request.Target.AdapterID]
 		x.mu.Unlock()
-		operationAllowed := (a.Type == "ollama_http" || a.Type == "openai_compatible") && c.Request.Operation == "chat.generate" || a.Type == "codex_app_server" && c.Request.Operation == "agent.run"
+		operationAllowed := (a.Type == "ollama_http" || a.Type == "openai_compatible" || a.Type == "anthropic_compatible") && c.Request.Operation == "chat.generate" || a.Type == "codex_app_server" && c.Request.Operation == "agent.run"
 		if c.Digest != protocol.Digest(c.Request) || !exists || !a.Enabled || !operationAllowed || c.Request.Target.DeviceID != x.cfg.DeviceID || !has(a.Models, c.Request.Target.ModelID) {
 			return errors.New("task violates local adapter policy")
 		}
@@ -818,6 +898,8 @@ func (x *Connector) execute(ctx context.Context, c protocol.Command) {
 			err = x.callCodex(ctx, c, a)
 		case "openai_compatible":
 			err = x.callOpenAI(ctx, c, a)
+		case "anthropic_compatible":
+			err = x.callAnthropic(ctx, c, a)
 		default:
 			err = x.callOllama(ctx, c, a)
 		}

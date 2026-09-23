@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "dev.localsubproxy" "\0"
-            VALUE "FileDescription", "localsubproxy_ui" "\0"
+            VALUE "FileDescription", "LocalSubProxy" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "localsubproxy_ui" "\0"
+            VALUE "InternalName", "LocalSubProxy" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 dev.localsubproxy. All rights reserved." "\0"
-            VALUE "OriginalFilename", "localsubproxy_ui.exe" "\0"
-            VALUE "ProductName", "localsubproxy_ui" "\0"
+            VALUE "OriginalFilename", "LocalSubProxy.exe" "\0"
+            VALUE "ProductName", "LocalSubProxy" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

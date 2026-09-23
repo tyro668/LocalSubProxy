@@ -18,7 +18,7 @@ import (
 )
 
 const deviceToken = "device-token-0123456789-0123456789-abc"
-const saasToken = "saas-token-0123456789-0123456789-abcd"
+const remoteToken = "remote-token-0123456789-0123456789-abcd"
 const journalKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 
 func api(t *testing.T, client *http.Client, base, method, path, token string, body any, out any) int {
@@ -66,7 +66,7 @@ func TestEndToEndAndIdempotency(t *testing.T) {
 	}))
 	defer model.Close()
 	dir := t.TempDir()
-	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), SAASToken: saasToken, DeviceID: "dev_1", DeviceToken: deviceToken})
+	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), RemoteToken: remoteToken, DeviceID: "dev_1", DeviceToken: deviceToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +77,9 @@ func TestEndToEndAndIdempotency(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	runDone := make(chan struct{})
+	defer func() { cancel(); <-runDone }()
+	go func() { defer close(runDone); _ = c.Run(ctx) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var v struct {
@@ -86,7 +87,7 @@ func TestEndToEndAndIdempotency(t *testing.T) {
 				Status string `json:"status"`
 			} `json:"devices"`
 		}
-		api(t, cloud.Client(), cloud.URL, "GET", "/v1/connectors", saasToken, nil, &v)
+		api(t, cloud.Client(), cloud.URL, "GET", "/v1/connectors", remoteToken, nil, &v)
 		if len(v.Devices) > 0 && v.Devices[0].Status == "online" {
 			break
 		}
@@ -96,7 +97,7 @@ func TestEndToEndAndIdempotency(t *testing.T) {
 	create := func() protocol.Task {
 		body, _ := json.Marshal(req)
 		r, _ := http.NewRequest("POST", cloud.URL+"/v1/llm-tasks", bytes.NewReader(body))
-		r.Header.Set("Authorization", "Bearer "+saasToken)
+		r.Header.Set("Authorization", "Bearer "+remoteToken)
 		r.Header.Set("Idempotency-Key", "one-key-123")
 		resp, err := cloud.Client().Do(r)
 		if err != nil {
@@ -120,7 +121,7 @@ func TestEndToEndAndIdempotency(t *testing.T) {
 	var got protocol.Task
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		api(t, cloud.Client(), cloud.URL, "GET", "/v1/llm-tasks/"+first.ID, saasToken, nil, &got)
+		api(t, cloud.Client(), cloud.URL, "GET", "/v1/llm-tasks/"+first.ID, remoteToken, nil, &got)
 		if got.State == "SUCCEEDED" {
 			break
 		}
@@ -140,6 +141,7 @@ func TestEndToEndAndIdempotency(t *testing.T) {
 	}
 	// Restart reads the encrypted journal and must not make another model call.
 	cancel()
+	<-runDone
 	_, err = connector.New(connector.Config{ServerURL: cloud.URL, DeviceID: "dev_1", DeviceToken: deviceToken, AdapterID: "ollama-local", OllamaURL: model.URL, AllowedModels: []string{"test-model"}, JournalFile: filepath.Join(dir, "journal.enc"), JournalKey: journalKey})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +166,7 @@ func TestCancelRunningTask(t *testing.T) {
 	}))
 	defer model.Close()
 	dir := t.TempDir()
-	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), SAASToken: saasToken, DeviceID: "dev_1", DeviceToken: deviceToken})
+	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), RemoteToken: remoteToken, DeviceID: "dev_1", DeviceToken: deviceToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,14 +177,15 @@ func TestCancelRunningTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	runDone := make(chan struct{})
+	defer func() { cancel(); <-runDone }()
+	go func() { defer close(runDone); _ = c.Run(ctx) }()
 	req := protocol.CreateTask{Target: protocol.Target{DeviceID: "dev_1", AdapterID: "ollama-local", ModelID: "test-model"}, Operation: "chat.generate", Input: protocol.Input{Messages: []protocol.Message{{Role: "user", Content: "wait"}}}}
 	// Wait for the first heartbeat before submitting.
 	time.Sleep(100 * time.Millisecond)
 	body, _ := json.Marshal(req)
 	r, _ := http.NewRequest("POST", cloud.URL+"/v1/llm-tasks", bytes.NewReader(body))
-	r.Header.Set("Authorization", "Bearer "+saasToken)
+	r.Header.Set("Authorization", "Bearer "+remoteToken)
 	r.Header.Set("Idempotency-Key", "cancel-key-123")
 	resp, err := cloud.Client().Do(r)
 	if err != nil {
@@ -199,13 +202,13 @@ func TestCancelRunningTask(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("model never started")
 	}
-	if code := api(t, cloud.Client(), cloud.URL, "POST", "/v1/llm-tasks/"+task.ID+"/cancel", saasToken, map[string]any{}, nil); code != 202 {
+	if code := api(t, cloud.Client(), cloud.URL, "POST", "/v1/llm-tasks/"+task.ID+"/cancel", remoteToken, map[string]any{}, nil); code != 202 {
 		t.Fatalf("cancel: %d", code)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	var got protocol.Task
 	for time.Now().Before(deadline) {
-		api(t, cloud.Client(), cloud.URL, "GET", "/v1/llm-tasks/"+task.ID, saasToken, nil, &got)
+		api(t, cloud.Client(), cloud.URL, "GET", "/v1/llm-tasks/"+task.ID, remoteToken, nil, &got)
 		if got.State == "CANCELLED" {
 			break
 		}

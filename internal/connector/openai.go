@@ -16,10 +16,21 @@ import (
 )
 
 // callOpenAI accepts the Chat Completions SSE subset used by OpenAI-compatible providers.
-// The configured key never enters the SaaS protocol, journal, health report or logs.
+// The configured key never enters the remote service protocol, journal, health report or logs.
 func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a AdapterConfig) error {
-	body, _ := json.Marshal(map[string]any{"model": c.Request.Target.ModelID, "messages": c.Request.Input.Messages, "stream": true})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(a.BaseURL, "/")+"/v1/chat/completions", bytes.NewReader(body))
+	payload := map[string]any{"model": c.Request.Target.ModelID, "messages": c.Request.Input.Messages, "stream": true}
+	if a.MaxOutputTokens > 0 {
+		payload["max_tokens"] = a.MaxOutputTokens
+	}
+	if a.ReasoningEffort != "" && (a.ReasoningEffort != "off" || a.Provider == "deepseek") {
+		effort := a.ReasoningEffort
+		if effort == "off" {
+			effort = "none"
+		}
+		payload["reasoning_effort"] = effort
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, adapterEndpoint(a, "/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -42,29 +53,6 @@ func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a Adapte
 	default:
 		return knownFailure(fmt.Sprintf("UPSTREAM_ERROR: provider HTTP %d", res.StatusCode))
 	}
-	emit := func(s string, total *int) error {
-		if !utf8.ValidString(s) {
-			return errors.New("invalid provider UTF-8")
-		}
-		*total += len(s)
-		if *total > 10<<20 {
-			return knownFailure("OUTPUT_LIMIT_EXCEEDED")
-		}
-		for len(s) > 0 {
-			n := len(s)
-			if n > 32<<10 {
-				n = 32 << 10
-				for n > 0 && !utf8.RuneStart(s[n]) {
-					n--
-				}
-			}
-			if err := x.emit(c, "output.delta", map[string]string{"channel": "answer", "text": s[:n]}); err != nil {
-				return err
-			}
-			s = s[n:]
-		}
-		return nil
-	}
 	if strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
 		var completion struct {
 			Choices []struct {
@@ -80,7 +68,7 @@ func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a Adapte
 			return errors.New("provider returned no choices")
 		}
 		total := 0
-		return emit(completion.Choices[0].Message.Content, &total)
+		return x.emitProviderText(c, completion.Choices[0].Message.Content, &total)
 	}
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
@@ -114,7 +102,7 @@ func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a Adapte
 			return knownFailure("UPSTREAM_ERROR: provider stream error")
 		}
 		for _, choice := range chunk.Choices {
-			if err := emit(choice.Delta.Content, &total); err != nil {
+			if err := x.emitProviderText(c, choice.Delta.Content, &total); err != nil {
 				return err
 			}
 		}
@@ -124,6 +112,30 @@ func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a Adapte
 	}
 	if !done {
 		return errors.New("provider stream ended without done marker")
+	}
+	return nil
+}
+
+func (x *Connector) emitProviderText(c protocol.Command, s string, total *int) error {
+	if !utf8.ValidString(s) {
+		return errors.New("invalid provider UTF-8")
+	}
+	*total += len(s)
+	if *total > 10<<20 {
+		return knownFailure("OUTPUT_LIMIT_EXCEEDED")
+	}
+	for len(s) > 0 {
+		n := len(s)
+		if n > 32<<10 {
+			n = 32 << 10
+			for n > 0 && !utf8.RuneStart(s[n]) {
+				n--
+			}
+		}
+		if err := x.emit(c, "output.delta", map[string]string{"channel": "answer", "text": s[:n]}); err != nil {
+			return err
+		}
+		s = s[n:]
 	}
 	return nil
 }

@@ -179,8 +179,9 @@ type AdapterHealth struct {
 }
 
 type Heartbeat struct {
-	Protocol string          `json:"protocol"`
-	DeviceID string          `json:"device_id"`
-	Adapter  AdapterHealth   `json:"adapter"`
-	Adapters []AdapterHealth `json:"adapters,omitempty"`
+	Protocol        string          `json:"protocol"`
+	DeviceID        string          `json:"device_id"`
+	Adapter         AdapterHealth   `json:"adapter"`
+	Adapters        []AdapterHealth `json:"adapters,omitempty"`
+	SnapshotVersion int64           `json:"snapshot_version,omitempty"`
 }

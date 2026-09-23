@@ -1,9 +1,92 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
 #include <windows.h>
+#include <shellapi.h>
+
+#include <memory>
+#include <string>
 
 #include "flutter_window.h"
+#include "resource.h"
 #include "utils.h"
+
+namespace {
+constexpr UINT kTrayCallbackMessage = WM_APP + 1;
+constexpr UINT kTrayIconId = 1;
+constexpr WORD kTrayCmdConfig = 1001;
+constexpr WORD kTrayCmdQuit = 1002;
+
+WNDPROC original_wnd_proc = nullptr;
+std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> tray_channel;
+
+void RemoveTrayIcon(HWND window) {
+  NOTIFYICONDATAW nid = {};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = window;
+  nid.uID = kTrayIconId;
+  ::Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+// 托盘消息处理：子类化主窗口，点击托盘图标弹出「配置 / 退出」菜单，
+// 菜单选择经 MethodChannel 转发给 Dart 侧处理。
+LRESULT CALLBACK TrayWndProc(HWND window, UINT message, WPARAM wparam,
+                             LPARAM lparam) {
+  switch (message) {
+    case kTrayCallbackMessage:
+      if (LOWORD(lparam) == WM_LBUTTONUP || LOWORD(lparam) == WM_RBUTTONUP) {
+        POINT cursor;
+        ::GetCursorPos(&cursor);
+        HMENU menu = ::CreatePopupMenu();
+        ::AppendMenuW(menu, MF_STRING, kTrayCmdConfig, L"配置");
+        ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(menu, MF_STRING, kTrayCmdQuit, L"退出");
+        ::SetForegroundWindow(window);
+        ::TrackPopupMenu(menu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, cursor.x,
+                         cursor.y, 0, window, nullptr);
+        ::PostMessage(window, WM_NULL, 0, 0);
+        ::DestroyMenu(menu);
+        return 0;
+      }
+      break;
+    case WM_COMMAND:
+      switch (LOWORD(wparam)) {
+        case kTrayCmdConfig:
+          tray_channel->InvokeMethod("config", nullptr);
+          return 0;
+        case kTrayCmdQuit:
+          tray_channel->InvokeMethod("quit", nullptr);
+          return 0;
+      }
+      break;
+    case WM_NCDESTROY:
+      RemoveTrayIcon(window);
+      break;
+  }
+  return ::CallWindowProcW(original_wnd_proc, window, message, wparam, lparam);
+}
+
+void AddTrayIcon(HWND window) {
+  original_wnd_proc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+      window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TrayWndProc)));
+
+  NOTIFYICONDATAW nid = {};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = window;
+  nid.uID = kTrayIconId;
+  nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+  nid.uCallbackMessage = kTrayCallbackMessage;
+  nid.hIcon = static_cast<HICON>(::LoadImageW(
+      ::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON,
+      32, 32, LR_DEFAULTCOLOR | LR_SHARED));
+  if (nid.hIcon == nullptr) {
+    nid.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
+  }
+  ::lstrcpyW(nid.szTip, L"LocalSubProxy");
+  ::Shell_NotifyIconW(NIM_ADD, &nid);
+}
+}  // namespace
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
@@ -27,10 +110,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"localsubproxy_ui", origin, size)) {
+  if (!window.Create(L"", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
+
+  tray_channel =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          window.view_controller()->engine()->messenger(), "localsubproxy/tray",
+          &flutter::StandardMethodCodec::GetInstance());
+  AddTrayIcon(window.GetHandle());
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {
@@ -38,6 +127,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
+  tray_channel.reset();
   ::CoUninitialize();
   return EXIT_SUCCESS;
 }

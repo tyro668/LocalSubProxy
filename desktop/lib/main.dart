@@ -1,247 +1,671 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/material.dart';
 
-void main() => runApp(const ProxyApp());
+import 'package:shadcn_flutter/shadcn_flutter.dart';
+import 'package:window_manager/window_manager.dart';
 
-String defaultTokenPath() {
-  final env = Platform.environment;
-  if (Platform.isWindows) {
-    return "${env['APPDATA'] ?? env['USERPROFILE'] ?? '.'}\\localsubproxy\\control.token";
-  }
-  return "${env['HOME'] ?? '.'}/Library/Application Support/localsubproxy/control.token";
-}
+import 'native_api.dart';
+import 'profile_workspace.dart';
+import 'tray.dart';
 
-class LocalApi {
-  LocalApi(this.origin, this.tokenPath);
-  final String origin, tokenPath;
-  Future<dynamic> request(String method, String path, [Map<String, dynamic>? body]) async {
-    final token = (await File(tokenPath).readAsString()).trim();
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
-    try {
-      final req = await client.openUrl(method, Uri.parse('$origin$path'));
-      req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      if (body != null) {
-        req.headers.contentType = ContentType.json;
-        req.write(jsonEncode(body));
-      }
-      final res = await req.close().timeout(const Duration(seconds: 10));
-      final data = await utf8.decoder.bind(res).join();
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        throw Exception('HTTP ${res.statusCode}: ${data.trim()}');
-      }
-      return data.isEmpty ? null : jsonDecode(data);
-    } finally {
-      client.close(force: true);
-    }
-  }
+const _brand = Color(0xFF5B37DD);
+const _brandForeground = Color(0xFFFFFFFF);
+const _brandDark = Color(0xFFAB94FF);
+const _brandDarkForeground = Color(0xFF0C1224);
+
+String _transportLabel(Object? transport) => switch (transport) {
+  'http' => 'HTTP 长轮询',
+  'https' => 'HTTPS 长轮询',
+  _ => '未连接',
+};
+
+ThemeData _lightTheme() => ThemeData(
+  colorScheme: ColorSchemes.lightZinc.copyWith(
+    primary: () => _brand,
+    primaryForeground: () => _brandForeground,
+    ring: () => _brand,
+  ),
+  radius: 0.6,
+);
+
+ThemeData _darkTheme() => ThemeData.dark(
+  colorScheme: ColorSchemes.darkZinc.copyWith(
+    primary: () => _brandDark,
+    primaryForeground: () => _brandDarkForeground,
+    ring: () => _brandDark,
+  ),
+  radius: 0.6,
+);
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+  runApp(const ProxyApp());
 }
 
 class ProxyApp extends StatelessWidget {
   const ProxyApp({super.key});
+
   @override
-  Widget build(BuildContext context) => MaterialApp(
+  Widget build(BuildContext context) => ShadcnApp(
     title: 'LocalSubProxy',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff3958cc)),
-      scaffoldBackgroundColor: const Color(0xfff6f7fb),
-    ),
+    theme: _lightTheme(),
+    darkTheme: _darkTheme(),
+    themeMode: ThemeMode.system,
     home: const HomePage(),
   );
 }
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  final origin = TextEditingController(text: 'http://127.0.0.1:8765');
-  final tokenPath = TextEditingController(text: defaultTokenPath());
-  final binary = TextEditingController(text: Platform.isWindows ? 'localsubproxy.exe' : 'localsubproxy');
-  final serverUrl = TextEditingController(text: 'http://127.0.0.1:8080');
-  final deviceId = TextEditingController(text: 'dev_local');
-  final deviceToken = TextEditingController();
-  final journalKey = TextEditingController();
+  final remoteUrl = TextEditingController();
+  final legacyKey = TextEditingController();
   Timer? timer;
-  Process? process;
+  bool kernelReady = false;
+  String? kernelError;
   Map<String, dynamic>? status;
   List<Map<String, dynamic>> adapters = [];
-  String? error;
-  bool loading = false;
-  LocalApi get api => LocalApi(origin.text.trim(), tokenPath.text.trim());
+  bool refreshing = false;
+  bool busy = false;
+  bool awaitingCode = false;
+  String? pendingRemoteURL;
+  String claimCodeValue = '';
+  int otpGeneration = 0;
+
+  NativeApi get api => NativeApi.instance;
 
   @override
   void initState() {
     super.initState();
-    refresh();
+    // 首帧渲染后再创建托盘项；应用启动早期创建 NSStatusItem 会导致其无法正确寄宿到菜单栏
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => AppTray.instance.init(),
+    );
+    boot();
     timer = Timer.periodic(const Duration(seconds: 10), (_) => refresh());
   }
+
   @override
   void dispose() {
     timer?.cancel();
-    for (final c in [origin, tokenPath, binary, serverUrl, deviceId, deviceToken, journalKey]) {
-      c.dispose();
-    }
+    remoteUrl.dispose();
+    legacyKey.dispose();
     super.dispose();
   }
-  void show(String message) {
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+
+  void show(String message, {bool error = false}) {
+    if (!mounted) return;
+    showToast(
+      context: context,
+      location: ToastLocation.bottomRight,
+      showDuration: const Duration(seconds: 4),
+      builder: (context, overlay) {
+        final theme = Theme.of(context);
+        return SurfaceCard(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                error ? LucideIcons.triangleAlert : LucideIcons.circleCheck,
+                size: 16,
+                color: error
+                    ? theme.colorScheme.destructive
+                    : theme.colorScheme.chart2,
+              ),
+              const Gap(10),
+              Expanded(child: Text(message).small()),
+            ],
+          ),
+        );
+      },
+    );
   }
-  Future<void> refresh() async {
-    if (loading) return;
-    loading = true;
+
+  Future<bool> confirm({
+    required String title,
+    required String message,
+    required String action,
+    bool destructive = false,
+  }) async {
+    final yes = await showOverlay<bool>(
+      context,
+      DialogConfiguration<bool>(
+        builder: (ctx) => AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            OutlineButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('取消'),
+            ),
+            destructive
+                ? DestructiveButton(
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: Text(action),
+                  )
+                : PrimaryButton(
+                    onPressed: () => Navigator.of(ctx).pop(true),
+                    child: Text(action),
+                  ),
+          ],
+        ),
+      ),
+    ).future;
+    return yes == true;
+  }
+
+  Future<void> boot({String? journalKey}) async {
     try {
-      final s = await api.request('GET', '/v1/status') as Map<String, dynamic>;
-      final a = await api.request('GET', '/v1/adapters') as Map<String, dynamic>;
-      if (mounted) setState(() {
-        status = s;
-        adapters = (a['adapters'] as List).cast<Map<String, dynamic>>();
-        error = null;
-      });
+      api.start(journalKey: journalKey);
+      legacyKey.clear();
+      if (mounted) {
+        setState(() {
+          kernelReady = true;
+          kernelError = null;
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() { status = null; error = e.toString(); });
-    } finally {
-      loading = false;
-    }
-  }
-  Future<void> startProxy() async {
-    if (deviceToken.text.length < 32 || journalKey.text.length != 64) {
-      show('设备令牌至少 32 字符；加密密钥需为 64 位十六进制字符串。');
+      if (mounted) {
+        setState(() {
+          kernelReady = false;
+          kernelError = e.toString();
+        });
+      }
       return;
     }
-    try {
-      process = await Process.start(binary.text.trim(), [
-        'connector', '-server-url', serverUrl.text.trim(),
-        '-device-id', deviceId.text.trim(),
-        '-control-listen', Uri.parse(origin.text.trim()).authority,
-        '-control-token-file', tokenPath.text.trim(),
-      ], environment: {
-        'LOCALSUBPROXY_DEVICE_TOKEN': deviceToken.text,
-        'LOCALSUBPROXY_JOURNAL_KEY': journalKey.text,
-      });
-      process!.stdout.drain<void>();
-      process!.stderr.drain<void>();
-      await Future<void>.delayed(const Duration(milliseconds: 800));
-      await refresh();
-      if (status == null) throw Exception('连接器未启动；请检查二进制路径、密钥和 SaaS 地址。');
-      show('连接器已启动');
-    } catch (e) { show('启动失败：$e'); }
+    await refresh();
   }
+
+  Future<void> refresh({bool force = false}) async {
+    if (!kernelReady || refreshing || (busy && !force)) return;
+    refreshing = true;
+    try {
+      final s = api.status();
+      final a = api.listAdapters();
+      if (mounted) {
+        setState(() {
+          status = s;
+          adapters = a;
+        });
+      }
+    } catch (_) {
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  Future<void> prepareConnection() async {
+    final url = remoteUrl.text.trim();
+    if (url.isEmpty) {
+      show('请输入远端服务地址。', error: true);
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      await prepareConnectionAsync(url);
+      if (mounted) {
+        setState(() {
+          awaitingCode = true;
+          pendingRemoteURL = url;
+          claimCodeValue = '';
+          otpGeneration++;
+        });
+      }
+    } catch (e) {
+      if (mounted) show('连接远端服务失败：$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> claim() async {
+    final code = claimCodeValue.trim();
+    if (!RegExp(r'^\d{8}$').hasMatch(code)) {
+      show('请输入远端服务页面显示的 8 位数字验证码。', error: true);
+      return;
+    }
+    setState(() => busy = true);
+    try {
+      final url = pendingRemoteURL ?? remoteUrl.text.trim();
+      await claimAsync(url, code);
+      if (mounted) {
+        setState(() {
+          awaitingCode = false;
+          pendingRemoteURL = null;
+          claimCodeValue = '';
+          otpGeneration++;
+        });
+      }
+      await refresh(force: true);
+      show('已连接远端服务');
+    } catch (e) {
+      if (mounted) show('连接失败：$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> disconnect() async {
+    final yes = await confirm(
+      title: '断开连接',
+      message: '将清除本机连接信息。模型配置会保留；再次连接需从远端服务获取新验证码。',
+      action: '断开',
+      destructive: true,
+    );
+    if (!yes || !mounted) return;
+    setState(() => busy = true);
+    try {
+      await disconnectAsync();
+      await refresh(force: true);
+      show('已断开');
+    } catch (e) {
+      if (mounted) show('断开失败：$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> edit([Map<String, dynamic>? existing]) async {
-    final changed = await showDialog<bool>(context: context, builder: (_) => AdapterDialog(api: api, existing: existing));
+    final changed = await showOverlay<bool>(
+      context,
+      DialogConfiguration<bool>(
+        builder: (_) => AdapterDialog(api: api, existing: existing),
+      ),
+    ).future;
     if (changed == true) await refresh();
   }
+
   Future<void> remove(Map<String, dynamic> adapter) async {
-    final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
-      title: const Text('删除适配器'),
-      content: Text('删除 ${adapter['name']?.toString().isNotEmpty == true ? adapter['name'] : adapter['id']}？'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
-      ],
-    ));
-    if (yes != true) return;
+    final label = adapter['name']?.toString().isNotEmpty == true
+        ? adapter['name']
+        : adapter['id'];
+    final yes = await confirm(
+      title: '删除适配器',
+      message: '删除 $label？',
+      action: '删除',
+      destructive: true,
+    );
+    if (!yes) return;
     try {
-      await api.request('DELETE', '/v1/adapters/${Uri.encodeComponent(adapter['id'] as String)}');
+      api.deleteAdapter(adapter['id'] as String);
       await refresh();
-    } catch (e) { show('$e'); }
+    } catch (e) {
+      if (mounted) show('$e', error: true);
+    }
   }
-  Widget field(TextEditingController controller, String label, {bool secret = false}) =>
-    Padding(padding: const EdgeInsets.only(bottom: 12), child: TextField(
-      controller: controller, obscureText: secret,
-      decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), isDense: true),
-    ));
+
+  Widget connectionCard() {
+    if (!kernelReady) {
+      final needsMigration =
+          kernelError?.contains('legacy encrypted data requires journal key') ==
+          true;
+      return Card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Alert(
+              destructive: !needsMigration,
+              leading: Icon(
+                needsMigration
+                    ? LucideIcons.keyRound
+                    : LucideIcons.triangleAlert,
+              ),
+              title: Text(needsMigration ? '需要迁移旧版配置' : '内核启动失败'),
+              content: Text(
+                needsMigration
+                    ? '检测到旧版加密配置。输入之前使用的本机加密密钥以迁移模型配置。'
+                    : (kernelError ?? '内核启动失败'),
+              ),
+            ),
+            if (needsMigration) ...[
+              const Gap(16),
+              LabeledField(
+                label: '旧版 64 位十六进制本机加密密钥',
+                child: TextField(
+                  controller: legacyKey,
+                  placeholder: const Text('64 位十六进制'),
+                  features: const [InputFeature.passwordToggle()],
+                ),
+              ),
+            ],
+            const Gap(16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: PrimaryButton(
+                onPressed: () => boot(
+                  journalKey: needsMigration ? legacyKey.text.trim() : null,
+                ),
+                leading: Icon(
+                  needsMigration ? LucideIcons.keyRound : LucideIcons.refreshCw,
+                ),
+                child: Text(needsMigration ? '迁移并启动' : '重试'),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final paired = status?['paired'] == true;
+    final theme = Theme.of(context);
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                paired ? LucideIcons.circleCheck : LucideIcons.cloudOff,
+                size: 18,
+                color: paired
+                    ? theme.colorScheme.chart2
+                    : theme.colorScheme.mutedForeground,
+              ),
+              const Gap(8),
+              Expanded(child: Text(paired ? '已连接' : '未连接').medium()),
+              Tooltip(
+                tooltip: (context) => const TooltipContainer(child: Text('刷新')),
+                child: IconButton.ghost(
+                  density: ButtonDensity.icon,
+                  icon: const Icon(LucideIcons.refreshCw),
+                  onPressed: busy ? null : () => refresh(),
+                ),
+              ),
+              if (paired)
+                OutlineButton(
+                  size: ButtonSize.small,
+                  onPressed: busy ? null : disconnect,
+                  child: const Text('断开'),
+                ),
+            ],
+          ),
+          if (paired) ...[
+            const Gap(14),
+            _StatRow(
+              '设备',
+              '${status?['device_name'] ?? status?['device_id'] ?? ''}',
+            ),
+            _StatRow('地址', '${status?['remote_url'] ?? ''}'),
+            _StatRow('传输', _transportLabel(status?['transport'])),
+            _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
+          ] else ...[
+            const Gap(8),
+            const Text('输入远端服务地址并点击连接，再输入远端服务页面显示的验证码。').small().muted(),
+            const Gap(16),
+            if (awaitingCode)
+              Text(
+                '远端服务地址：${pendingRemoteURL ?? remoteUrl.text.trim()}',
+              ).small().medium()
+            else
+              LabeledField(
+                label: '远端服务地址',
+                child: TextField(
+                  controller: remoteUrl,
+                  placeholder: const Text('https://remote.example.com'),
+                  features: const [InputFeature.clear()],
+                ),
+              ),
+            if (awaitingCode) ...[
+              const Gap(16),
+              LabeledField(
+                label: '远端服务页面显示的数字验证码',
+                hint: '8 位数字，可直接粘贴',
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: InputOTP(
+                    key: ValueKey(otpGeneration),
+                    onChanged: (value) => claimCodeValue = value.otpToString(),
+                    onSubmitted: (_) {
+                      if (!busy) claim();
+                    },
+                    children: [
+                      for (var i = 0; i < 4; i++)
+                        InputOTPChild.character(allowDigit: true),
+                      InputOTPChild.separator,
+                      for (var i = 0; i < 4; i++)
+                        InputOTPChild.character(allowDigit: true),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            const Gap(16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (awaitingCode) ...[
+                  GhostButton(
+                    onPressed: busy
+                        ? null
+                        : () => setState(() {
+                            awaitingCode = false;
+                            pendingRemoteURL = null;
+                            claimCodeValue = '';
+                            otpGeneration++;
+                          }),
+                    child: const Text('返回'),
+                  ),
+                  const Gap(8),
+                ],
+                PrimaryButton(
+                  onPressed: busy
+                      ? null
+                      : (awaitingCode ? claim : prepareConnection),
+                  leading: const Icon(LucideIcons.link),
+                  child: Text(busy ? '处理中…' : (awaitingCode ? '完成连接' : '连接')),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget adapterTile(Map<String, dynamic> adapter) {
+    final type = adapter['type'] as String?;
+    final health = adapter['enabled'] != true
+        ? '停用'
+        : adapter['health'] == 'ready'
+        ? '可用'
+        : adapter['health'] == 'storage_full'
+        ? '存储已满'
+        : adapter['health'] == 'unavailable'
+        ? '不可用'
+        : '检测中';
+    final models = (adapter['models'] as List?)?.join(', ') ?? '';
+    final subtitle = StringBuffer('${adapterTypeShort(type)} · $models');
+    if (adapter['auth_state'] == 'required') subtitle.write(' · 需要登录');
+    final name = (adapter['name'] as String?)?.isNotEmpty == true
+        ? adapter['name'] as String
+        : '${adapter['id']}';
+    return Card(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Basic(
+        padding: EdgeInsets.zero,
+        leadingAlignment: Alignment.center,
+        trailingAlignment: Alignment.center,
+        leading: _TypeMark(type),
+        title: Text(name).medium().singleLine().ellipsis,
+        subtitle: Text(
+          subtitle.toString(),
+        ).small().muted().singleLine().ellipsis,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _HealthBadge(health),
+            const Gap(4),
+            Tooltip(
+              tooltip: (context) => const TooltipContainer(child: Text('编辑')),
+              child: IconButton.ghost(
+                density: ButtonDensity.icon,
+                icon: const Icon(LucideIcons.pencil),
+                onPressed: () => edit(adapter),
+              ),
+            ),
+            Tooltip(
+              tooltip: (context) => const TooltipContainer(child: Text('删除')),
+              child: IconButton.destructive(
+                density: ButtonDensity.icon,
+                icon: const Icon(LucideIcons.trash2),
+                onPressed: () => remove(adapter),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final wide = MediaQuery.sizeOf(context).width > 850;
+    final theme = Theme.of(context);
+    final pageColor = theme.colorScheme.brightness == Brightness.light
+        ? theme.colorScheme.muted
+        : theme.colorScheme.background;
     return Scaffold(
-      appBar: AppBar(title: const Text('LocalSubProxy'), actions: [
-        IconButton(tooltip: '刷新', onPressed: refresh, icon: const Icon(Icons.refresh)),
-        const SizedBox(width: 12),
-      ]),
-      body: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 1120),
-        child: ListView(padding: const EdgeInsets.all(24), children: [
-          Text('本机模型接入', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 6),
-          const Text('管理官方订阅客户端、本地模型和第三方 OpenAI 兼容 API。'),
-          const SizedBox(height: 20),
-          Card(child: Padding(padding: const EdgeInsets.all(20), child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Icon(status == null ? Icons.cloud_off : Icons.check_circle,
-                  color: status == null ? Colors.orange : Colors.green),
-                const SizedBox(width: 10),
-                Text(status == null ? '本机连接器未连接' : '本机连接器已连接',
-                  style: Theme.of(context).textTheme.titleMedium),
-              ]),
-              const SizedBox(height: 8),
-              Text(status == null ? (error ?? '请启动连接器。') :
-                '设备 ${status!['device_id']} · SaaS ${status!['server_url']} · 正在执行 ${status!['running_tasks']} 个任务'),
-              const SizedBox(height: 14),
-              if (wide) Row(children: [
-                Expanded(child: field(origin, '管理接口地址')),
-                const SizedBox(width: 12),
-                Expanded(child: field(tokenPath, '本机令牌文件')),
-              ]) else ...[field(origin, '管理接口地址'), field(tokenPath, '本机令牌文件')],
-              Align(alignment: Alignment.centerRight,
-                child: OutlinedButton(onPressed: refresh, child: const Text('连接管理接口'))),
-            ],
-          ))),
-          if (status == null) ...[
-            const SizedBox(height: 16),
-            Card(child: Padding(padding: const EdgeInsets.all(20), child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('启动连接器', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
-                field(binary, 'Go 可执行文件路径'),
-                if (wide) Row(children: [
-                  Expanded(child: field(serverUrl, 'SaaS 地址')),
-                  const SizedBox(width: 12),
-                  Expanded(child: field(deviceId, '设备 ID')),
-                ]) else ...[field(serverUrl, 'SaaS 地址'), field(deviceId, '设备 ID')],
-                field(deviceToken, '设备令牌', secret: true),
-                field(journalKey, '本机加密密钥（64 位十六进制）', secret: true),
-                Align(alignment: Alignment.centerRight, child: FilledButton.icon(
-                  onPressed: startProxy, icon: const Icon(Icons.play_arrow), label: const Text('启动'))),
-              ],
-            ))),
-          ],
-          const SizedBox(height: 24),
-          Row(children: [
-            Expanded(child: Text('适配器', style: Theme.of(context).textTheme.headlineSmall)),
-            FilledButton.icon(onPressed: status == null ? null : () => edit(),
-              icon: const Icon(Icons.add), label: const Text('添加')),
-          ]),
-          const SizedBox(height: 12),
-          if (adapters.isEmpty) const Card(child: Padding(padding: EdgeInsets.all(28),
-            child: Text('暂无适配器。连接本机服务后添加官方订阅、本地模型或第三方 API。'))),
-          ...adapters.map((a) => Card(child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            leading: Icon(a['type'] == 'codex_app_server' ? Icons.terminal :
-              a['type'] == 'ollama_http' ? Icons.computer : Icons.cloud_outlined),
-            title: Text((a['name'] as String?)?.isNotEmpty == true ? a['name'] : a['id']),
-            subtitle: Text("${a['type']} · ${(a['models'] as List).join(', ')}${a['has_api_key'] == true ? ' · 已设置 API Key' : ''}"),
-            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-              Chip(label: Text(a['enabled'] == true ? '启用' : '停用')),
-              IconButton(tooltip: '编辑', onPressed: () => edit(a), icon: const Icon(Icons.edit_outlined)),
-              IconButton(tooltip: '删除', onPressed: () => remove(a), icon: const Icon(Icons.delete_outline)),
-            ]),
-          ))),
-        ]),
-      )),
+      backgroundColor: pageColor,
+      footerBackgroundColor: pageColor,
+      loadingProgressIndeterminate: busy,
+      footers: [
+        const Divider(),
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.62,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+            child: connectionCard(),
+          ),
+        ),
+      ],
+      child: kernelReady
+          ? ProfileWorkspace(
+              api: api,
+              adapters: adapters,
+              onChanged: () => refresh(force: true),
+            )
+          : const SizedBox.expand(),
     );
   }
 }
 
+class LabeledField extends StatelessWidget {
+  const LabeledField({
+    super.key,
+    required this.label,
+    required this.child,
+    this.hint,
+  });
+
+  final String label;
+  final Widget child;
+  final String? hint;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(label).small().medium(),
+        const Gap(6),
+        child,
+        if (hint != null) ...[const Gap(4), Text(hint!).xSmall().muted()],
+      ],
+    );
+  }
+}
+
+class _StatRow extends StatelessWidget {
+  const _StatRow(this.label, this.value);
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          SizedBox(width: 48, child: Text(label).small().muted()),
+          Expanded(child: Text(value).small().medium().singleLine().ellipsis),
+        ],
+      ),
+    );
+  }
+}
+
+class _TypeMark extends StatelessWidget {
+  const _TypeMark(this.type);
+
+  final String? type;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final icon = switch (type) {
+      'codex_app_server' => LucideIcons.terminal,
+      'ollama_http' => LucideIcons.monitor,
+      _ => LucideIcons.cloud,
+    };
+    return Container(
+      width: 36,
+      height: 36,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.muted,
+        borderRadius: BorderRadius.circular(theme.radiusMd),
+      ),
+      child: Icon(icon, size: 16, color: theme.colorScheme.foreground),
+    );
+  }
+}
+
+class _HealthBadge extends StatelessWidget {
+  const _HealthBadge(this.health);
+
+  final String health;
+
+  @override
+  Widget build(BuildContext context) {
+    final child = Text(health);
+    return switch (health) {
+      '可用' => PrimaryBadge(child: child),
+      '停用' => OutlineBadge(child: child),
+      '存储已满' || '不可用' => DestructiveBadge(child: child),
+      _ => SecondaryBadge(child: child),
+    };
+  }
+}
+
+String adapterTypeShort(String? type) => switch (type) {
+  'codex_app_server' => 'Codex',
+  'anthropic_compatible' => 'Anthropic 兼容',
+  'ollama_http' => 'Ollama',
+  _ => 'OpenAI 兼容',
+};
+
+String adapterTypeLabel(String type) => switch (type) {
+  'codex_app_server' => 'OpenAI Codex（订阅）',
+  'anthropic_compatible' => 'Anthropic 兼容协议',
+  'ollama_http' => '旧版 Ollama',
+  _ => 'OpenAI 兼容协议',
+};
+
 class AdapterDialog extends StatefulWidget {
   const AdapterDialog({super.key, required this.api, this.existing});
-  final LocalApi api;
+
+  final NativeApi api;
   final Map<String, dynamic>? existing;
+
   @override
   State<AdapterDialog> createState() => _AdapterDialogState();
 }
@@ -249,33 +673,62 @@ class AdapterDialog extends StatefulWidget {
 class _AdapterDialogState extends State<AdapterDialog> {
   late final id = TextEditingController(text: widget.existing?['id'] ?? '');
   late final name = TextEditingController(text: widget.existing?['name'] ?? '');
-  late final url = TextEditingController(text: widget.existing?['base_url'] ?? '');
-  late final codex = TextEditingController(text: widget.existing?['codex_bin'] ?? 'codex');
-  late final models = TextEditingController(text: (widget.existing?['models'] as List?)?.join(', ') ?? '');
+  late final url = TextEditingController(
+    text: widget.existing?['base_url'] ?? '',
+  );
+  late final codex = TextEditingController(
+    text: widget.existing?['codex_bin'] ?? 'codex',
+  );
+  late final models = TextEditingController(
+    text: (widget.existing?['models'] as List?)?.join(', ') ?? '',
+  );
   final apiKey = TextEditingController();
   late String type = widget.existing?['type'] ?? 'codex_app_server';
-  late bool enabled = widget.existing?['enabled'] ?? true;
+  late bool skipModelProbe = widget.existing?['skip_model_probe'] ?? false;
   bool saving = false;
   String? error;
+
   @override
   void dispose() {
-    for (final c in [id, name, url, codex, models, apiKey]) { c.dispose(); }
+    for (final controller in [id, name, url, codex, models, apiKey]) {
+      controller.dispose();
+    }
     super.dispose();
   }
+
   Future<void> save() async {
-    setState(() { saving = true; error = null; });
+    setState(() {
+      saving = true;
+      error = null;
+    });
     try {
       final body = <String, dynamic>{
-        'id': id.text.trim(), 'name': name.text.trim(), 'type': type,
-        'models': models.text.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList(),
-        'enabled': enabled,
+        'id': id.text.trim(),
+        'name': name.text.trim(),
+        'type': type,
+        'models': models.text
+            .split(',')
+            .map((item) => item.trim())
+            .where((item) => item.isNotEmpty)
+            .toList(),
+        'enabled': true,
+        'skip_model_probe':
+            (type == 'openai_compatible' || type == 'anthropic_compatible') &&
+            skipModelProbe,
       };
-      if (type == 'codex_app_server') { body['codex_bin'] = codex.text.trim(); }
-      else { body['base_url'] = url.text.trim(); }
-      if (type == 'openai_compatible') { body['api_key'] = apiKey.text.trim(); }
-      final current = widget.existing;
-      await widget.api.request(current == null ? 'POST' : 'PUT',
-        current == null ? '/v1/adapters' : '/v1/adapters/${Uri.encodeComponent(current['id'] as String)}', body);
+      if (type == 'codex_app_server') {
+        body['codex_bin'] = codex.text.trim();
+      } else {
+        body['base_url'] = url.text.trim();
+      }
+      if (type == 'openai_compatible' || type == 'anthropic_compatible') {
+        body['api_key'] = apiKey.text.trim();
+      }
+      if (widget.existing == null) {
+        widget.api.createAdapter(body);
+      } else {
+        widget.api.updateAdapter(body);
+      }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) setState(() => error = e.toString());
@@ -283,40 +736,183 @@ class _AdapterDialogState extends State<AdapterDialog> {
       if (mounted) setState(() => saving = false);
     }
   }
+
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.existing == null ? '添加适配器' : '编辑适配器'),
-    content: SizedBox(width: 520, child: SingleChildScrollView(child: Column(
-      mainAxisSize: MainAxisSize.min, children: [
-        DropdownButtonFormField<String>(
-          initialValue: type,
-          decoration: const InputDecoration(labelText: '类型'),
-          items: const [
-            DropdownMenuItem(value: 'codex_app_server', child: Text('官方 Codex 订阅客户端')),
-            DropdownMenuItem(value: 'ollama_http', child: Text('本机 Ollama')),
-            DropdownMenuItem(value: 'openai_compatible', child: Text('OpenAI 兼容 API')),
-          ],
-          onChanged: widget.existing == null ? (v) => setState(() => type = v!) : null,
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final creating = widget.existing == null;
+    return AlertDialog(
+      title: Text(creating ? '添加适配器' : '编辑适配器'),
+      content: DefaultTextStyle(
+        style: theme.typography.small.copyWith(
+          color: theme.colorScheme.foreground,
         ),
-        TextField(controller: id, enabled: widget.existing == null,
-          decoration: const InputDecoration(labelText: '适配器 ID')),
-        TextField(controller: name, decoration: const InputDecoration(labelText: '显示名称')),
-        if (type == 'codex_app_server')
-          TextField(controller: codex, decoration: const InputDecoration(labelText: '官方 Codex CLI 路径')),
-        if (type != 'codex_app_server')
-          TextField(controller: url, decoration: const InputDecoration(labelText: 'API 根地址（HTTPS 或本机 HTTP）')),
-        if (type == 'openai_compatible')
-          TextField(controller: apiKey, obscureText: true, decoration: InputDecoration(
-            labelText: widget.existing?['has_api_key'] == true ? 'API Key（留空保留原密钥）' : 'API Key')),
-        TextField(controller: models, decoration: const InputDecoration(labelText: '允许的模型 ID（逗号分隔）')),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('启用'), value: enabled,
-          onChanged: (v) => setState(() => enabled = v)),
-        if (error != null) Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        child: SizedBox(
+          width: 460,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LabeledField(
+                  label: '类型',
+                  child: Select<String>(
+                    value: type,
+                    enabled: creating,
+                    constraints: const BoxConstraints(minWidth: 460),
+                    placeholder: const Text('选择类型'),
+                    itemBuilder: (context, item) =>
+                        Text(adapterTypeLabel(item)),
+                    onChanged: creating
+                        ? (value) {
+                            if (value == null) return;
+                            setState(() => type = value);
+                          }
+                        : null,
+                    popup: (context) => const SelectPopup(
+                      items: SelectItemList(
+                        children: [
+                          SelectItemButton(
+                            value: 'codex_app_server',
+                            child: Text('OpenAI Codex（订阅）'),
+                          ),
+                          SelectItemButton(
+                            value: 'openai_compatible',
+                            child: Text('OpenAI 兼容协议'),
+                          ),
+                          SelectItemButton(
+                            value: 'anthropic_compatible',
+                            child: Text('Anthropic 兼容协议'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const Gap(14),
+                LabeledField(
+                  label: '适配器 ID',
+                  child: TextField(
+                    controller: id,
+                    enabled: creating,
+                    placeholder: const Text('例如 local-codex'),
+                  ),
+                ),
+                const Gap(14),
+                LabeledField(
+                  label: '显示名称',
+                  child: TextField(
+                    controller: name,
+                    placeholder: const Text('在列表中显示的名称'),
+                  ),
+                ),
+                const Gap(14),
+                if (type == 'codex_app_server')
+                  LabeledField(
+                    label: '官方 Codex CLI 路径',
+                    child: TextField(
+                      controller: codex,
+                      placeholder: const Text('codex'),
+                    ),
+                  )
+                else
+                  LabeledField(
+                    label: 'API 根地址（HTTPS 或本机 HTTP）',
+                    child: TextField(
+                      controller: url,
+                      placeholder: const Text('https://host/v1'),
+                    ),
+                  ),
+                if (type == 'openai_compatible' ||
+                    type == 'anthropic_compatible') ...[
+                  const Gap(14),
+                  LabeledField(
+                    label: widget.existing?['has_api_key'] == true
+                        ? 'API Key（留空保留原密钥）'
+                        : 'API Key',
+                    child: TextField(
+                      controller: apiKey,
+                      placeholder: const Text('sk-...'),
+                      features: const [InputFeature.passwordToggle()],
+                    ),
+                  ),
+                  const Gap(14),
+                  _ToggleRow(
+                    title: '跳过模型列表探测',
+                    subtitle: '提供方不支持 GET /models 时使用；按已配置的模型开放任务。',
+                    value: skipModelProbe,
+                    onChanged: (value) =>
+                        setState(() => skipModelProbe = value),
+                  ),
+                ],
+                const Gap(14),
+                LabeledField(
+                  label: '允许的模型 ID（逗号分隔）',
+                  child: TextField(
+                    controller: models,
+                    placeholder: const Text('gpt-4o, gpt-4o-mini'),
+                  ),
+                ),
+                const Gap(8),
+                if (error != null) ...[
+                  const Gap(8),
+                  Text(
+                    error!,
+                    style: TextStyle(color: theme.colorScheme.destructive),
+                  ).small(),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        OutlineButton(
+          onPressed: saving ? null : () => Navigator.pop(context, false),
+          child: const Text('取消'),
+        ),
+        PrimaryButton(
+          onPressed: saving ? null : save,
+          child: Text(saving ? '保存中…' : '保存'),
+        ),
       ],
-    ))),
-    actions: [
-      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-      FilledButton(onPressed: saving ? null : save, child: const Text('保存')),
-    ],
-  );
+    );
+  }
+}
+
+class _ToggleRow extends StatelessWidget {
+  const _ToggleRow({
+    required this.title,
+    required this.value,
+    required this.onChanged,
+    this.subtitle,
+  });
+
+  final String title;
+  final String? subtitle;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title).small().medium(),
+              if (subtitle != null) ...[
+                const Gap(2),
+                Text(subtitle!).xSmall().muted(),
+              ],
+            ],
+          ),
+        ),
+        const Gap(12),
+        Switch(value: value, onChanged: onChanged),
+      ],
+    );
+  }
 }
