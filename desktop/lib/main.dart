@@ -7,7 +7,7 @@ import 'native_api.dart';
 import 'profile_workspace.dart';
 import 'tray.dart';
 
-const _brand = Color(0xFF5B37DD);
+const _brand = Color(0xFF4D25D8);
 const _brandForeground = Color(0xFFFFFFFF);
 const _brandDark = Color(0xFFAB94FF);
 const _brandDarkForeground = Color(0xFF0C1224);
@@ -51,7 +51,7 @@ class ProxyApp extends StatelessWidget {
     debugShowCheckedModeBanner: false,
     theme: _lightTheme(),
     darkTheme: _darkTheme(),
-    themeMode: ThemeMode.system,
+    themeMode: ThemeMode.light,
     home: const HomePage(),
   );
 }
@@ -77,8 +77,15 @@ class _HomePageState extends State<HomePage> {
   String? pendingRemoteURL;
   String claimCodeValue = '';
   int otpGeneration = 0;
+  VoidCallback? _connectionRefresh;
 
   NativeApi get api => NativeApi.instance;
+
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _connectionRefresh?.call();
+  }
 
   @override
   void initState() {
@@ -270,6 +277,13 @@ class _HomePageState extends State<HomePage> {
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+
+  Future<void> openConnection() async {
+    await showOverlay<void>(
+      context,
+      DialogConfiguration<void>(builder: (_) => _ConnectionRelay(host: this)),
+    ).future;
   }
 
   Future<void> edit([Map<String, dynamic>? existing]) async {
@@ -526,35 +540,66 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final pageColor = theme.colorScheme.brightness == Brightness.light
-        ? theme.colorScheme.muted
-        : theme.colorScheme.background;
     return Scaffold(
-      backgroundColor: pageColor,
-      footerBackgroundColor: pageColor,
+      backgroundColor: const Color(0xFFFFFFFF),
       loadingProgressIndeterminate: busy,
-      footers: [
-        const Divider(),
-        ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(context).height * 0.62,
-          ),
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-            child: connectionCard(),
-          ),
-        ),
-      ],
       child: kernelReady
           ? ProfileWorkspace(
               api: api,
               adapters: adapters,
+              status: status,
+              onConnectionTap: openConnection,
               onChanged: () => refresh(force: true),
             )
-          : const SizedBox.expand(),
+          : Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 560),
+                child: connectionCard(),
+              ),
+            ),
     );
   }
+}
+
+class _ConnectionRelay extends StatefulWidget {
+  const _ConnectionRelay({required this.host});
+
+  final _HomePageState host;
+
+  @override
+  State<_ConnectionRelay> createState() => _ConnectionRelayState();
+}
+
+class _ConnectionRelayState extends State<_ConnectionRelay> {
+  void refresh() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    widget.host._connectionRefresh = refresh;
+  }
+
+  @override
+  void dispose() {
+    if (widget.host._connectionRefresh == refresh) {
+      widget.host._connectionRefresh = null;
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('远端服务连接'),
+    content: SizedBox(width: 470, child: widget.host.connectionCard()),
+    actions: [
+      OutlineButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('关闭'),
+      ),
+    ],
+  );
 }
 
 class LabeledField extends StatelessWidget {

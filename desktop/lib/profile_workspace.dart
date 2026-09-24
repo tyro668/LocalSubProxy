@@ -6,11 +6,13 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'native_api.dart';
 
-const _purple = Color(0xFF5B37DD);
-const _border = Color(0xFFDFD9EC);
-const _ink = Color(0xFF292D3B);
-const _muted = Color(0xFF707586);
-const _soft = Color(0xFFF0ECFF);
+const _headerHeight = 52.0;
+const _purple = Color(0xFF4D25D8);
+const _border = Color(0xFFDFE3ED);
+const _ink = Color(0xFF202637);
+const _muted = Color(0xFF6F7689);
+const _soft = Color(0xFFF1ECFF);
+const _green = Color(0xFF148653);
 
 class ProfileWorkspace extends StatefulWidget {
   const ProfileWorkspace({
@@ -18,11 +20,15 @@ class ProfileWorkspace extends StatefulWidget {
     required this.api,
     required this.adapters,
     required this.onChanged,
+    this.status,
+    this.onConnectionTap,
   });
 
   final NativeApi api;
   final List<Map<String, dynamic>> adapters;
   final Future<void> Function() onChanged;
+  final Map<String, dynamic>? status;
+  final VoidCallback? onConnectionTap;
 
   @override
   State<ProfileWorkspace> createState() => _ProfileWorkspaceState();
@@ -49,22 +55,30 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   String? loginURL;
   String? testStatus;
   bool testPassed = false;
+  bool editorOpen = false;
   String? error;
   List<String> codexModels = [];
   List<String> originalModels = [];
   String originalModel = '';
   Timer? loginPoll;
-  VoidCallback? _dialogRefresh;
   String? highlightedID;
+  final List<Map<String, dynamic>> pending = [];
 
-  Map<String, dynamic>? get selected {
-    for (final item in widget.adapters) {
-      if (item['id'] == selectedID) return item;
+  List<Map<String, dynamic>> get schemes => [...pending, ...widget.adapters];
+
+  Map<String, dynamic>? _schemeById(String? id) {
+    if (id == null) return null;
+    for (final item in schemes) {
+      if (item['id'] == id) return item;
     }
     return null;
   }
 
-  bool get creating => selectedID == null;
+  Map<String, dynamic>? get selected => _schemeById(selectedID);
+
+  Map<String, dynamic>? get highlighted => _schemeById(highlightedID);
+
+  bool get creating => selected?['draft'] == true;
   bool get hasReusableKey =>
       selected?['has_api_key'] == true &&
       selected?['type'] == type &&
@@ -97,26 +111,21 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   void didUpdateWidget(covariant ProfileWorkspace oldWidget) {
     super.didUpdateWidget(oldWidget);
     _pickHighlight();
+    if (selectedID != null && _schemeById(selectedID) == null) {
+      selectedID = null;
+      editorOpen = false;
+    }
   }
 
   void _pickHighlight() {
-    if (widget.adapters.any((item) => item['id'] == highlightedID)) return;
-    if (widget.adapters.isEmpty) {
+    if (_schemeById(highlightedID) != null) return;
+    if (schemes.isEmpty) {
       highlightedID = null;
       return;
     }
-    final defaults = widget.adapters.where(
-      (item) => item['is_default'] == true,
-    );
+    final defaults = schemes.where((item) => item['is_default'] == true);
     highlightedID =
-        (defaults.isNotEmpty ? defaults.first : widget.adapters.first)['id']
-            as String?;
-  }
-
-  @override
-  void setState(VoidCallback fn) {
-    super.setState(fn);
-    _dialogRefresh?.call();
+        (defaults.isNotEmpty ? defaults.first : schemes.first)['id'] as String?;
   }
 
   @override
@@ -146,6 +155,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
 
   void load(Map<String, dynamic> a) {
     selectedID = a['id'] as String;
+    highlightedID = selectedID;
+    editorOpen = true;
     provider = switch (a['type']) {
       'codex_app_server' => 'codex',
       'anthropic_compatible' => 'anthropic',
@@ -180,26 +191,37 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (provider == 'codex') refreshCodex();
   }
 
-  void newProfile() {
-    selectedID = null;
-    name.text = '';
-    model.text = '';
-    originalModels = [];
-    originalModel = '';
-    provider = 'codex';
-    baseURL.text = '';
-    apiKey.clear();
-    codexPath.text = 'codex';
-    contextWindow.text = '';
-    maxTokens.text = '';
-    reasoning = 'medium';
-    isDefault = widget.adapters.isEmpty;
-    skipModelProbe = false;
-    dirty = false;
-    testStatus = null;
-    error = null;
-    if (mounted) setState(() {});
-    refreshCodex();
+  Future<void> addScheme() async {
+    if (editorOpen && !await allowDiscard() || !mounted) return;
+    final draft = <String, dynamic>{
+      'id': 'draft_${DateTime.now().microsecondsSinceEpoch}',
+      'name': '未命名方案',
+      'type': 'codex_app_server',
+      'provider': 'codex',
+      'models': <String>[],
+      'codex_bin': 'codex',
+      'enabled': true,
+      'is_default': false,
+      'draft': true,
+    };
+    setState(() {
+      editorOpen = false;
+      dirty = false;
+      selectedID = null;
+      pending.insert(0, draft);
+      highlightedID = draft['id'] as String;
+    });
+  }
+
+  Future<void> selectScheme(Map<String, dynamic> scheme) async {
+    if (highlightedID == scheme['id'] && !editorOpen) return;
+    if (editorOpen && !await allowDiscard() || !mounted) return;
+    setState(() {
+      highlightedID = scheme['id'] as String?;
+      editorOpen = false;
+      dirty = false;
+      selectedID = null;
+    });
   }
 
   Future<bool> confirm(String title, String message, String action) async {
@@ -230,25 +252,20 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     return confirm('放弃未保存的更改？', '当前方案的更改尚未保存。', '放弃更改');
   }
 
-  Future<void> openEditor([Map<String, dynamic>? existing]) async {
-    if (!mounted) return;
-    if (existing == null) {
-      newProfile();
-    } else {
-      load(existing);
+  Future<void> openEditor(Map<String, dynamic> existing) async {
+    if (!mounted ||
+        (editorOpen && selectedID != existing['id'] && !await allowDiscard())) {
+      return;
     }
-    await showOverlay<void>(
-      context,
-      DialogConfiguration<void>(
-        barrierDismissible: false,
-        barrierColor: const Color.fromRGBO(0, 0, 0, 0.72),
-        builder: (ctx) => _EditorRelay(host: this),
-      ),
-    ).future;
+    load(existing);
   }
 
   Future<void> setDefault(Map<String, dynamic> a) async {
     if (a['is_default'] == true) return;
+    if (a['draft'] == true) {
+      setState(() => error = '请先保存方案，再设为默认。');
+      return;
+    }
     if (!await allowDiscard() || !mounted) return;
     try {
       final body = <String, dynamic>{...a, 'is_default': true};
@@ -271,6 +288,19 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         !mounted)
       return;
     try {
+      if (a['draft'] == true) {
+        setState(() {
+          pending.removeWhere((item) => item['id'] == a['id']);
+          if (selectedID == a['id']) {
+            selectedID = null;
+            editorOpen = false;
+            dirty = false;
+          }
+          if (highlightedID == a['id']) highlightedID = null;
+          _pickHighlight();
+        });
+        return;
+      }
       await deleteAdapterAsync(a['id'] as String);
       if (selectedID == a['id']) selectedID = null;
       dirty = false;
@@ -352,6 +382,10 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (result != true || !mounted || next.isEmpty || next == a['name']) {
       return;
     }
+    if (a['draft'] == true) {
+      setState(() => a['name'] = next);
+      return;
+    }
     try {
       final body = <String, dynamic>{...a, 'name': next};
       body.remove('has_api_key');
@@ -364,109 +398,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     }
   }
 
-  Future<void> closeEditor(BuildContext dialogContext) async {
-    if (!await allowDiscard() || !dialogContext.mounted) return;
-    dirty = false;
-    _dialogRefresh = null;
-    Navigator.of(dialogContext).pop();
-  }
-
-  Widget _editorDialog(BuildContext dialogContext) {
-    final theme = Theme.of(dialogContext);
-    final size = MediaQuery.sizeOf(dialogContext);
-    final width = size.width - 80 < 880 ? size.width - 80 : 880.0;
-    final height = size.height * 0.78;
-    return SizedBox(
-      width: width,
-      height: height,
-      child: ModalContainer(
-        filled: true,
-        fillColor: theme.colorScheme.popover,
-        borderColor: theme.colorScheme.border,
-        borderWidth: 1,
-        borderRadius: BorderRadius.circular(theme.radiusXl),
-        clipBehavior: Clip.antiAlias,
-        padding: EdgeInsets.zero,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
-              child: Text(creating ? '添加方案' : '编辑方案').large().semiBold(),
-            ),
-            const Divider(),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: name,
-                      placeholder: const Text('方案名称（默认使用模型 ID）'),
-                    ),
-                    const Gap(16),
-                    authPanel(),
-                    const Gap(16),
-                    modelPanel(),
-                    if (error != null) ...[
-                      const Gap(10),
-                      Text(
-                        error!,
-                        style: const TextStyle(
-                          color: Color(0xFFAD3232),
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-              child: Row(
-                children: [
-                  OutlineButton(
-                    onPressed: working ? null : test,
-                    leading: const Icon(LucideIcons.play, size: 16),
-                    child: const Text('测试连接'),
-                  ),
-                  const Gap(10),
-                  Icon(
-                    testPassed ? LucideIcons.circleCheck : LucideIcons.server,
-                    color: testPassed ? const Color(0xFF218153) : _muted,
-                    size: 17,
-                  ),
-                  const Gap(7),
-                  Expanded(
-                    child: Text(
-                      testStatus ?? '连接尚未测试',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: _muted, fontSize: 13),
-                    ),
-                  ),
-                  const Gap(12),
-                  OutlineButton(
-                    onPressed: working
-                        ? null
-                        : () => closeEditor(dialogContext),
-                    child: const Text('取消'),
-                  ),
-                  const Gap(8),
-                  PrimaryButton(
-                    onPressed: working ? null : () => save(dialogContext),
-                    child: Text(working ? '处理中…' : '确定'),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  Future<void> closeEditor() async {
+    if (!await allowDiscard() || !mounted) return;
+    setState(() {
+      dirty = false;
+      editorOpen = false;
+    });
   }
 
   void changeProvider(String? value) {
@@ -687,7 +624,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     }
   }
 
-  Future<void> save([BuildContext? dialogContext]) async {
+  Future<void> save() async {
     final issue = validate();
     if (issue != null) {
       setState(() => error = issue);
@@ -699,24 +636,20 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     });
     try {
       final draft = body();
+      final draftID = selectedID;
       if (creating) {
         await createAdapterAsync(draft);
+        pending.removeWhere((item) => item['id'] == draftID);
       } else {
         await updateAdapterAsync(draft);
       }
       selectedID = draft['id'] as String;
+      highlightedID = selectedID;
       dirty = false;
       await widget.onChanged();
-      if (dialogContext != null && dialogContext.mounted) {
-        _dialogRefresh = null;
-        Navigator.of(dialogContext).pop();
-        return;
+      if (mounted) {
+        setState(() => testStatus ??= '设置已保存');
       }
-      if (mounted)
-        setState(() {
-          dirty = false;
-          testStatus ??= '设置已保存';
-        });
     } catch (e) {
       if (mounted) setState(() => error = '保存失败：$e');
     } finally {
@@ -724,114 +657,99 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     }
   }
 
-  Widget iconBox(IconData icon) => Container(
-    width: 42,
-    height: 42,
-    alignment: Alignment.center,
-    decoration: BoxDecoration(
-      color: _soft,
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Icon(icon, color: _purple, size: 24),
+  String _providerLabel(Map<String, dynamic> adapter) =>
+      switch (adapter['type']) {
+        'codex_app_server' => 'OpenAI Codex（订阅）',
+        'anthropic_compatible' => 'Anthropic 兼容协议',
+        'ollama_http' => '旧版 Ollama',
+        _ => 'OpenAI 兼容协议',
+      };
+
+  Widget _separator() => const ColoredBox(
+    color: _border,
+    child: SizedBox(height: 1, width: double.infinity),
   );
 
-  Map<String, dynamic>? get highlighted {
-    for (final item in widget.adapters) {
-      if (item['id'] == highlightedID) return item;
-    }
-    return null;
-  }
+  Widget _statusDot(bool active, {double size = 10}) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(
+      color: active ? _green : const Color(0xFF9AA2B2),
+      shape: BoxShape.circle,
+    ),
+  );
 
-  String _providerLabel(Map<String, dynamic> adapter) {
-    return switch (adapter['type']) {
-      'codex_app_server' => 'OpenAI Codex（订阅）',
-      'anthropic_compatible' => 'Anthropic 兼容协议',
-      'ollama_http' => '旧版 Ollama',
-      _ => 'OpenAI 兼容协议',
-    };
-  }
+  Widget _tableCell(String value, {bool bold = false}) => Text(
+    value,
+    maxLines: 1,
+    overflow: TextOverflow.ellipsis,
+    style: TextStyle(
+      color: _ink,
+      fontSize: 13,
+      fontWeight: bold ? FontWeight.w600 : FontWeight.w500,
+    ),
+  );
 
-  Widget schemeRow(Map<String, dynamic> adapter) {
+  Widget _schemeRow(Map<String, dynamic> adapter) {
     final active = adapter['id'] == highlightedID;
-    final models = (adapter['models'] as List?)?.cast<String>() ?? [];
-    final model = models.isEmpty ? '未设置模型' : models.first;
+    final name = '${adapter['name'] ?? adapter['id']}';
     return GestureDetector(
-      onTap: () => setState(() => highlightedID = adapter['id'] as String?),
+      behavior: HitTestBehavior.opaque,
+      onTap: () => selectScheme(adapter),
       child: Container(
+        height: 62,
         color: active ? _soft : const Color(0xFFFFFFFF),
-        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Row(
           children: [
-            Icon(
-              active ? LucideIcons.circleCheck : LucideIcons.circle,
-              color: active ? _purple : _muted,
-              size: 18,
-            ),
-            const Gap(12),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              flex: 4,
+              child: Row(
                 children: [
-                  Row(
-                    children: [
-                      Flexible(
-                        child: Text(
-                          '${adapter['name'] ?? adapter['id']}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: _ink,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
+                  Flexible(child: _tableCell(name, bold: true)),
+                  if (adapter['is_default'] == true) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEAE3FF),
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: const Text(
+                        '默认',
+                        style: TextStyle(
+                          color: _purple,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                      if (adapter['is_default'] == true) ...[
-                        const Gap(8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 3,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _purple,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Text(
-                            '默认',
-                            style: TextStyle(
-                              color: Color(0xFFFFFFFF),
-                              fontSize: 10,
-                            ),
-                          ),
-                        ),
-                      ],
-                      if (adapter['enabled'] == false) ...[
-                        const Gap(8),
-                        const Text(
-                          '停用',
-                          style: TextStyle(color: _muted, fontSize: 12),
-                        ),
-                      ],
-                    ],
-                  ),
-                  const Gap(3),
-                  Text(
-                    '${_providerLabel(adapter)} · $model',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: _muted, fontSize: 12),
-                  ),
+                    ),
+                  ],
                 ],
               ),
             ),
-            IconButton.ghost(
-              density: ButtonDensity.icon,
-              icon: const Icon(LucideIcons.ellipsisVertical, size: 17),
-              onPressed: () {
-                setState(() => highlightedID = adapter['id'] as String?);
-                options(adapter);
-              },
+            const SizedBox(width: 12),
+            Expanded(flex: 5, child: _tableCell(_providerLabel(adapter))),
+            SizedBox(
+              width: 72,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  IconButton.ghost(
+                    density: ButtonDensity.icon,
+                    icon: const Icon(LucideIcons.pencil, size: 17),
+                    onPressed: () => openEditor(adapter),
+                  ),
+                  IconButton.ghost(
+                    density: ButtonDensity.icon,
+                    icon: const Icon(LucideIcons.ellipsisVertical, size: 18),
+                    onPressed: () => options(adapter),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -839,29 +757,148 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     );
   }
 
-  Widget fieldRow(String label, Widget child) => Padding(
-    padding: const EdgeInsets.only(top: 19),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        SizedBox(
-          width: 132,
-          child: Text(
-            label,
+  Widget _leftFooter() {
+    final paired = widget.status?['paired'] == true;
+    final device =
+        '${widget.status?['device_name'] ?? widget.status?['device_id'] ?? '本机设备'}';
+    final count = widget.status?['running_tasks'] ?? 0;
+    return Container(
+      height: 70,
+      padding: const EdgeInsets.symmetric(horizontal: 22),
+      decoration: const BoxDecoration(
+        color: Color(0xFFFFFFFF),
+        border: Border(top: BorderSide(color: _border)),
+      ),
+      child: Row(
+        children: [
+          _statusDot(paired),
+          const SizedBox(width: 9),
+          Text(
+            paired ? '已连接' : '未连接',
             style: const TextStyle(
               color: _ink,
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
             ),
           ),
+          const SizedBox(width: 15),
+          Container(width: 1, height: 22, color: _border),
+          const SizedBox(width: 15),
+          const Icon(LucideIcons.monitor, size: 16, color: _muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              device,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: _ink, fontSize: 13),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Container(width: 1, height: 22, color: _border),
+          const SizedBox(width: 14),
+          const Icon(LucideIcons.list, size: 16, color: _muted),
+          const SizedBox(width: 7),
+          Text('$count 个任务', style: const TextStyle(color: _ink, fontSize: 13)),
+          const SizedBox(width: 10),
+          GhostButton(
+            onPressed: widget.onConnectionTap,
+            child: Text(paired ? '连接详情  ›' : '连接远端服务  ›'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _leftPane() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SizedBox(
+        height: _headerHeight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: [
+              Image.asset(
+                'assets/brand/localsubproxy_mark.png',
+                width: 28,
+                height: 28,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  '配置方案',
+                  style: TextStyle(
+                    color: _ink,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              PrimaryButton(
+                size: ButtonSize.small,
+                onPressed: addScheme,
+                leading: const Icon(LucideIcons.plus, size: 15),
+                child: const Text('添加方案'),
+              ),
+            ],
+          ),
         ),
-        Expanded(child: child),
+      ),
+      _separator(),
+      Container(
+        height: 46,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        color: const Color(0xFFFAFBFD),
+        child: Row(
+          children: [
+            Expanded(flex: 4, child: _tableCell('方案名称', bold: true)),
+            const SizedBox(width: 12),
+            Expanded(flex: 5, child: _tableCell('服务', bold: true)),
+            SizedBox(width: 72, child: _tableCell('操作', bold: true)),
+          ],
+        ),
+      ),
+      _separator(),
+      Expanded(
+        child: schemes.isEmpty
+            ? const Center(
+                child: Text(
+                  '还没有模型方案，点击右上角添加。',
+                  style: TextStyle(color: _muted, fontSize: 13),
+                ),
+              )
+            : ListView.separated(
+                itemCount: schemes.length,
+                separatorBuilder: (_, _) => _separator(),
+                itemBuilder: (_, index) => _schemeRow(schemes[index]),
+              ),
+      ),
+    ],
+  );
+
+  Widget _formField(String label, Widget child) => Padding(
+    padding: const EdgeInsets.only(bottom: 18),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: _ink,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        child,
       ],
     ),
   );
 
-  Widget providerSelect() => Select<String>(
+  Widget _providerSelect() => Select<String>(
     value: provider,
+    constraints: const BoxConstraints(minWidth: 280),
     itemBuilder: (context, value) => Text(switch (value) {
       'codex' => 'OpenAI Codex（订阅）',
       'openai' => 'OpenAI 兼容协议',
@@ -880,105 +917,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     ),
   );
 
-  Widget authPanel() => panel(LucideIcons.wifi, '服务与认证', [
-    fieldRow('API 提供商', providerSelect()),
-    if (provider == 'codex') ...[
-      const Gap(21),
-      Container(
-        padding: const EdgeInsets.all(17),
-        decoration: BoxDecoration(
-          border: Border.all(color: _border),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              codexConnected ? LucideIcons.circleCheck : LucideIcons.circleHelp,
-              color: codexConnected ? const Color(0xFF218153) : _muted,
-              size: 25,
-            ),
-            const Gap(12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'ChatGPT 订阅（Codex）连接',
-                    style: TextStyle(
-                      color: _ink,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Gap(4),
-                  Text(
-                    codexConnected
-                        ? '已连接：本地 Codex CLI 登录态'
-                        : checkingCodex
-                        ? '正在检查本机登录态…'
-                        : '尚未连接本机 Codex CLI',
-                    style: TextStyle(
-                      color: codexConnected ? const Color(0xFF218153) : _muted,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            OutlineButton(
-              onPressed: working
-                  ? null
-                  : (codexConnected ? logoutCodex : connectCodex),
-              child: Text(codexConnected ? '断开连接' : '连接订阅'),
-            ),
-          ],
-        ),
-      ),
-      if (loginPending) ...[
-        const Gap(12),
-        Text(
-          '请在浏览器完成登录，然后等待自动检测。',
-          style: const TextStyle(color: _muted, fontSize: 12),
-        ),
-        if (loginURL != null)
-          SelectableText(
-            loginURL!,
-            style: const TextStyle(color: _purple, fontSize: 11),
-          ),
-        const Gap(8),
-        Row(
-          children: [
-            OutlineButton(onPressed: checkLogin, child: const Text('检查登录')),
-            const Gap(8),
-            OutlineButton(onPressed: cancelLogin, child: const Text('取消')),
-          ],
-        ),
-      ],
-      fieldRow(
-        'Codex CLI 路径',
-        TextField(controller: codexPath, placeholder: const Text('codex')),
-      ),
-    ] else ...[
-      fieldRow(
-        'API 地址',
-        TextField(
-          controller: baseURL,
-          placeholder: const Text('https://example.com/v1'),
-        ),
-      ),
-      if (provider != 'legacy_ollama')
-        fieldRow(
-          'API 密钥',
-          TextField(
-            controller: apiKey,
-            placeholder: Text(hasReusableKey ? '已保存密钥，留空则保留' : '输入 API 密钥'),
-            features: const [InputFeature.passwordToggle()],
-          ),
-        ),
-    ],
-  ]);
-
-  Widget modelSelect() {
+  Widget _modelSelect() {
     if (provider != 'codex') {
       return TextField(
         controller: model,
@@ -989,14 +928,15 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       if (model.text.isNotEmpty) model.text,
       ...codexModels,
     }.toList();
-    if (choices.isEmpty)
+    if (choices.isEmpty) {
       return TextField(controller: model, placeholder: const Text('输入模型 ID'));
+    }
     return Select<String>(
       value: model.text.isEmpty ? null : model.text,
       placeholder: const Text('选择模型'),
-      constraints: const BoxConstraints(minWidth: 240),
+      constraints: const BoxConstraints(minWidth: 230),
       popupWidthConstraint: PopoverConstraint.anchorMinSize,
-      popupConstraints: const BoxConstraints(maxHeight: 280, minWidth: 240),
+      popupConstraints: const BoxConstraints(maxHeight: 280, minWidth: 230),
       itemBuilder: (context, value) => Text(value),
       onChanged: (value) {
         if (value == null || value == model.text) return;
@@ -1014,7 +954,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     );
   }
 
-  Future<void> customModel() async {
+  Future<void> _customModel() async {
     final input = TextEditingController(text: model.text);
     final result = await showOverlay<bool>(
       context,
@@ -1045,249 +985,357 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     input.dispose();
   }
 
-  Widget modelPanel() => panel(LucideIcons.slidersHorizontal, '模型与推理', [
-    fieldRow(
-      '模型',
-      Row(
-        children: [
-          Expanded(child: modelSelect()),
-          const Gap(8),
-          OutlineButton(
-            onPressed: customModel,
-            leading: const Icon(LucideIcons.pencil, size: 16),
-            child: const Text('自定义模型'),
-          ),
-        ],
-      ),
+  Widget _reasoningSelect() => Container(
+    height: 38,
+    decoration: BoxDecoration(
+      border: Border.all(color: _border),
+      borderRadius: BorderRadius.circular(7),
     ),
-    fieldRow(
-      '上下文窗口',
-      TextField(controller: contextWindow, placeholder: const Text('自动检测')),
-    ),
-    fieldRow(
-      '最大输出 Token',
-      TextField(controller: maxTokens, placeholder: const Text('自动检测')),
-    ),
-    if (provider != 'anthropic' && provider != 'legacy_ollama')
-      fieldRow(
-        '思考强度',
-        Container(
-          height: 47,
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            border: Border.all(color: _border),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              for (final item in const [
-                ('off', '关闭'),
-                ('low', '低'),
-                ('medium', '中'),
-                ('high', '高'),
-              ])
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => setState(() {
-                      reasoning = item.$1;
-                      dirty = true;
-                      testStatus = null;
-                    }),
-                    child: Container(
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: reasoning == item.$1
-                            ? _purple
-                            : const Color(0x00000000),
-                        borderRadius: BorderRadius.circular(7),
-                      ),
-                      child: Text(
-                        item.$2,
-                        style: TextStyle(
-                          color: reasoning == item.$1
-                              ? const Color(0xFFFFFFFF)
-                              : _muted,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
+    child: Row(
+      children: [
+        for (final item in const [
+          ('off', '关闭'),
+          ('low', '低'),
+          ('medium', '中'),
+          ('high', '高'),
+        ])
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() {
+                reasoning = item.$1;
+                dirty = true;
+                testStatus = null;
+              }),
+              child: Container(
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: reasoning == item.$1
+                      ? _purple
+                      : const Color(0xFFFFFFFF),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  item.$2,
+                  style: TextStyle(
+                    color: reasoning == item.$1
+                        ? const Color(0xFFFFFFFF)
+                        : _muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-            ],
+              ),
+            ),
           ),
-        ),
-      ),
-    if (provider == 'openai' || provider == 'anthropic')
-      fieldRow(
-        '模型列表探测',
-        Row(
-          children: [
-            Switch(
-              value: skipModelProbe,
-              onChanged: (v) => setState(() {
-                skipModelProbe = v;
-                dirty = true;
-              }),
-            ),
-            const Gap(8),
-            const Expanded(
-              child: Text(
-                '提供商不支持 /models 时开启',
-                style: TextStyle(color: _muted, fontSize: 12),
-              ),
-            ),
-          ],
-        ),
-      ),
-  ]);
-
-  Widget panel(IconData icon, String title, List<Widget> children) => Container(
-    padding: const EdgeInsets.fromLTRB(24, 22, 24, 25),
-    decoration: BoxDecoration(
-      color: const Color(0xFFFFFFFF),
-      border: Border.all(color: _border),
-      borderRadius: BorderRadius.circular(13),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            iconBox(icon),
-            const Gap(13),
-            Text(
-              title,
-              style: const TextStyle(
-                color: _ink,
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-        const Gap(4),
-        ...children,
       ],
     ),
   );
 
-  @override
-  Widget build(BuildContext context) {
-    final current = highlighted;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+  Widget _editorFields() => SingleChildScrollView(
+    padding: const EdgeInsets.fromLTRB(26, 24, 26, 28),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _formField(
+          '方案名称',
+          TextField(controller: name, placeholder: const Text('默认使用模型 ID')),
+        ),
+        _formField('API 提供商', _providerSelect()),
+        if (provider == 'codex') ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 18),
+            child: Row(
+              children: [
+                _statusDot(codexConnected),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    codexConnected
+                        ? '本地 Codex 已连接'
+                        : checkingCodex
+                        ? '正在检查本机 Codex 登录态…'
+                        : '本地 Codex 尚未连接',
+                    style: TextStyle(
+                      color: codexConnected ? _green : _muted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                GhostButton(
+                  onPressed: working
+                      ? null
+                      : (codexConnected ? logoutCodex : connectCodex),
+                  child: Text(codexConnected ? '断开连接' : '连接订阅'),
+                ),
+              ],
+            ),
+          ),
+          if (loginPending) ...[
+            const Text(
+              '请在浏览器完成登录，然后等待自动检测。',
+              style: TextStyle(color: _muted, fontSize: 12),
+            ),
+            if (loginURL != null)
+              SelectableText(
+                loginURL!,
+                style: const TextStyle(color: _purple, fontSize: 11),
+              ),
+            Row(
+              children: [
+                OutlineButton(onPressed: checkLogin, child: const Text('检查登录')),
+                const SizedBox(width: 8),
+                OutlineButton(onPressed: cancelLogin, child: const Text('取消')),
+              ],
+            ),
+            const SizedBox(height: 18),
+          ],
+          _formField(
+            'Codex CLI 路径',
+            TextField(controller: codexPath, placeholder: const Text('codex')),
+          ),
+        ] else ...[
+          _formField(
+            'API 地址',
+            TextField(
+              controller: baseURL,
+              placeholder: const Text('https://example.com/v1'),
+            ),
+          ),
+          if (provider != 'legacy_ollama')
+            _formField(
+              'API 密钥',
+              TextField(
+                controller: apiKey,
+                placeholder: Text(hasReusableKey ? '已保存密钥，留空则保留' : '输入 API 密钥'),
+                features: const [InputFeature.passwordToggle()],
+              ),
+            ),
+        ],
+        const SizedBox(height: 4),
+        _separator(),
+        const SizedBox(height: 22),
+        _formField(
+          '模型',
+          Row(
+            children: [
+              Expanded(child: _modelSelect()),
+              const SizedBox(width: 8),
+              GhostButton(
+                onPressed: _customModel,
+                leading: const Icon(LucideIcons.pencil, size: 15),
+                child: const Text('自定义模型'),
+              ),
+            ],
+          ),
+        ),
+        _formField(
+          '上下文窗口',
+          TextField(controller: contextWindow, placeholder: const Text('自动检测')),
+        ),
+        _formField(
+          '最大输出 Token',
+          TextField(controller: maxTokens, placeholder: const Text('自动检测')),
+        ),
+        if (provider != 'anthropic' && provider != 'legacy_ollama')
+          _formField('思考强度', _reasoningSelect()),
+        if (provider == 'openai' || provider == 'anthropic')
+          _formField(
+            '跳过模型列表探测',
+            Row(
+              children: [
+                Switch(
+                  value: skipModelProbe,
+                  onChanged: (v) => setState(() {
+                    skipModelProbe = v;
+                    dirty = true;
+                  }),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    '提供商不支持 /models 时开启',
+                    style: TextStyle(color: _muted, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (error != null)
+          Text(
+            error!,
+            style: const TextStyle(color: Color(0xFFB33535), fontSize: 12),
+          ),
+      ],
+    ),
+  );
+
+  Widget _readOnlyField(String label, String value) => Padding(
+    padding: const EdgeInsets.only(bottom: 18),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: _muted,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          value.isEmpty ? '—' : value,
+          style: const TextStyle(color: _ink, fontSize: 14),
+        ),
+      ],
+    ),
+  );
+
+  Widget _detailView(Map<String, dynamic> scheme) {
+    final models = (scheme['models'] as List?)?.cast<String>() ?? [];
+    final modelName = models.isEmpty ? '未设置' : models.first;
+    final contextWindow = (scheme['context_window'] as int? ?? 0) == 0
+        ? '自动检测'
+        : '${scheme['context_window']}';
+    final maxTokens = (scheme['max_output_tokens'] as int? ?? 0) == 0
+        ? '自动检测'
+        : '${scheme['max_output_tokens']}';
+    final reasoning = switch (scheme['reasoning_effort']) {
+      'low' => '低',
+      'medium' => '中',
+      'high' => '高',
+      'off' => '关闭',
+      _ => '关闭',
+    };
+    final codex = scheme['type'] == 'codex_app_server';
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(26, 24, 26, 28),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (error != null && _dialogRefresh == null) ...[
-            Text(
-              error!,
-              style: const TextStyle(color: Color(0xFFAD3232), fontSize: 12),
-            ),
-            const Gap(10),
-          ],
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFFFFF),
-                border: Border.all(color: _border),
-                borderRadius: BorderRadius.circular(13),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-                    child: Row(
-                      children: [
-                        Image.asset(
-                          'assets/brand/localsubproxy_mark.png',
-                          width: 42,
-                          height: 42,
-                        ),
-                        const Gap(12),
-                        const Expanded(
-                          child: Text(
-                            '配置方案',
-                            style: TextStyle(
-                              color: _ink,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        OutlineButton(
-                          onPressed: current == null
-                              ? null
-                              : () => openEditor(current),
-                          leading: const Icon(LucideIcons.pencil, size: 16),
-                          child: const Text('编辑'),
-                        ),
-                        const Gap(8),
-                        PrimaryButton(
-                          onPressed: () => openEditor(),
-                          leading: const Icon(LucideIcons.plus, size: 16),
-                          child: const Text('添加方案'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(),
-                  Expanded(
-                    child: widget.adapters.isEmpty
-                        ? const Center(
-                            child: Text(
-                              '还没有模型方案。点击添加方案进行配置。',
-                              style: TextStyle(color: _muted, fontSize: 14),
-                            ),
-                          )
-                        : ListView.separated(
-                            itemCount: widget.adapters.length,
-                            separatorBuilder: (context, index) =>
-                                const Divider(),
-                            itemBuilder: (context, index) =>
-                                schemeRow(widget.adapters[index]),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          _readOnlyField('方案名称', '${scheme['name'] ?? scheme['id']}'),
+          _readOnlyField('服务', _providerLabel(scheme)),
+          if (codex)
+            _readOnlyField('Codex CLI 路径', '${scheme['codex_bin'] ?? 'codex'}')
+          else
+            _readOnlyField('API 地址', '${scheme['base_url'] ?? ''}'),
+          _readOnlyField('模型', modelName),
+          _readOnlyField('上下文窗口', contextWindow),
+          _readOnlyField('最大输出 Token', maxTokens),
+          if (scheme['type'] != 'anthropic_compatible' &&
+              scheme['type'] != 'ollama_http')
+            _readOnlyField('思考强度', reasoning),
         ],
       ),
     );
   }
-}
 
-class _EditorRelay extends StatefulWidget {
-  const _EditorRelay({required this.host});
-
-  final _ProfileWorkspaceState host;
+  Widget _rightPane() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SizedBox(
+        height: _headerHeight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            children: [
+              Text(
+                editorOpen ? '编辑方案' : '方案详情',
+                style: const TextStyle(
+                  color: _ink,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (!editorOpen && highlighted != null) ...[
+                const Spacer(),
+                PrimaryButton(
+                  size: ButtonSize.small,
+                  onPressed: () => openEditor(highlighted!),
+                  leading: const Icon(LucideIcons.pencil, size: 15),
+                  child: const Text('编辑'),
+                ),
+              ],
+              if (editorOpen) ...[
+                const SizedBox(width: 16),
+                OutlineButton(
+                  size: ButtonSize.small,
+                  onPressed: working ? null : test,
+                  leading: const Icon(LucideIcons.play, size: 14),
+                  child: const Text('测试连接'),
+                ),
+                const SizedBox(width: 8),
+                _statusDot(testPassed, size: 8),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    testStatus ?? '尚未测试',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: _muted, fontSize: 12),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlineButton(
+                  size: ButtonSize.small,
+                  onPressed: working ? null : closeEditor,
+                  child: const Text('取消'),
+                ),
+                const SizedBox(width: 8),
+                PrimaryButton(
+                  size: ButtonSize.small,
+                  onPressed: working ? null : save,
+                  child: Text(working ? '处理中…' : '保存'),
+                ),
+                IconButton.ghost(
+                  density: ButtonDensity.icon,
+                  icon: const Icon(LucideIcons.x, size: 16),
+                  onPressed: closeEditor,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+      _separator(),
+      Expanded(
+        child: editorOpen
+            ? _editorFields()
+            : highlighted == null
+            ? const Center(
+                child: Text(
+                  '选择左侧方案查看详情，或添加新方案。',
+                  style: TextStyle(color: _muted, fontSize: 13),
+                ),
+              )
+            : _detailView(highlighted!),
+      ),
+    ],
+  );
 
   @override
-  State<_EditorRelay> createState() => _EditorRelayState();
-}
-
-class _EditorRelayState extends State<_EditorRelay> {
-  void refresh() {
-    if (mounted) setState(() {});
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    widget.host._dialogRefresh = refresh;
-  }
-
-  @override
-  void dispose() {
-    if (widget.host._dialogRefresh == refresh) {
-      widget.host._dialogRefresh = null;
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.host._editorDialog(context);
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, size) {
+      final leftWidth = size.maxWidth * (size.maxWidth < 1100 ? 0.45 : 0.52);
+      return ColoredBox(
+        color: const Color(0xFFFFFFFF),
+        child: Column(
+          children: [
+            Expanded(
+              child: Row(
+                children: [
+                  SizedBox(width: leftWidth, child: _leftPane()),
+                  const SizedBox(width: 1, child: ColoredBox(color: _border)),
+                  Expanded(child: _rightPane()),
+                ],
+              ),
+            ),
+            _leftFooter(),
+          ],
+        ),
+      );
+    },
+  );
 }
