@@ -37,7 +37,8 @@ func viewAdapter(a AdapterConfig) AdapterView {
 
 func (x *Connector) Status() map[string]any {
 	x.mu.Lock()
-	running, journalBytes := len(x.running), x.journalBytes
+	running, journalBytes, connected := len(x.running), x.journalBytes, x.online
+	remoteConnected, gatewayConnected := x.remoteOK, x.heartbeatOK && !x.pollFailed
 	x.mu.Unlock()
 	transport := "offline"
 	if x.cfg.ServerURL != "" {
@@ -46,7 +47,7 @@ func (x *Connector) Status() map[string]any {
 			transport = "https"
 		}
 	}
-	return map[string]any{"device_id": x.cfg.DeviceID, "device_name": localDeviceName(), "server_url": x.cfg.ServerURL, "running_tasks": running, "journal_bytes": journalBytes, "transport": transport}
+	return map[string]any{"device_id": x.cfg.DeviceID, "device_name": localDeviceName(), "server_url": x.cfg.ServerURL, "running_tasks": running, "journal_bytes": journalBytes, "transport": transport, "connected": connected, "remote_connected": remoteConnected, "gateway_connected": gatewayConnected}
 }
 
 func (x *Connector) ListAdapters() []AdapterView {

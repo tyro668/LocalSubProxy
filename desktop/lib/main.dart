@@ -95,7 +95,7 @@ class _HomePageState extends State<HomePage> {
       (_) => AppTray.instance.init(),
     );
     boot();
-    timer = Timer.periodic(const Duration(seconds: 10), (_) => refresh());
+    timer = Timer.periodic(const Duration(seconds: 2), (_) => refresh());
   }
 
   @override
@@ -203,6 +203,9 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } catch (_) {
+      if (mounted) {
+        setState(() => status = {...?status, 'connected': false});
+      }
     } finally {
       refreshing = false;
     }
@@ -251,7 +254,7 @@ class _HomePageState extends State<HomePage> {
         });
       }
       await refresh(force: true);
-      show('已连接远端服务');
+      show('配对成功，正在连接远端服务');
     } catch (e) {
       if (mounted) show('连接失败：$e', error: true);
     } finally {
@@ -368,6 +371,7 @@ class _HomePageState extends State<HomePage> {
     }
 
     final paired = status?['paired'] == true;
+    final connected = status?['connected'] == true;
     final theme = Theme.of(context);
     return Card(
       child: Column(
@@ -376,14 +380,14 @@ class _HomePageState extends State<HomePage> {
           Row(
             children: [
               Icon(
-                paired ? LucideIcons.circleCheck : LucideIcons.cloudOff,
+                connected ? LucideIcons.circleCheck : LucideIcons.cloudOff,
                 size: 18,
-                color: paired
+                color: connected
                     ? theme.colorScheme.chart2
                     : theme.colorScheme.mutedForeground,
               ),
               const Gap(8),
-              Expanded(child: Text(paired ? '已连接' : '未连接').medium()),
+              Expanded(child: Text(connected ? '已连接' : '未连接').medium()),
               Tooltip(
                 tooltip: (context) => const TooltipContainer(child: Text('刷新')),
                 child: IconButton.ghost(

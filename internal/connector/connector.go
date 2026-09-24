@@ -28,11 +28,11 @@ import (
 )
 
 type Config struct {
-	ServerURL, DeviceID, DeviceToken, AdapterID, AdapterType, OllamaURL, CodexBin, JournalFile, JournalKey string
-	AllowedModels                                                                                          []string
-	MaxJournalBytes                                                                                        int64
-	Adapters                                                                                               []AdapterConfig
-	AdapterFile                                                                                            string
+	ServerURL, RemoteURL, DeviceID, DeviceToken, AdapterID, AdapterType, OllamaURL, CodexBin, JournalFile, JournalKey string
+	AllowedModels                                                                                                     []string
+	MaxJournalBytes                                                                                                   int64
+	Adapters                                                                                                          []AdapterConfig
+	AdapterFile                                                                                                       string
 }
 
 type AdapterConfig struct {
@@ -84,6 +84,11 @@ type Connector struct {
 	health            map[string]protocol.AdapterHealth
 	lastProbeVersion  int64
 	lastHealthVersion int64
+	heartbeatSnapshot protocol.Heartbeat
+	heartbeatOK       bool
+	pollFailed        bool
+	remoteOK          bool
+	online            bool
 }
 
 func New(cfg Config) (*Connector, error) {
@@ -93,6 +98,11 @@ func New(cfg Config) (*Connector, error) {
 	if cfg.ServerURL != "" {
 		if err := safeURL(cfg.ServerURL); err != nil {
 			return nil, fmt.Errorf("server URL: %w", err)
+		}
+	}
+	if cfg.RemoteURL != "" {
+		if err := safeURL(cfg.RemoteURL); err != nil {
+			return nil, fmt.Errorf("remote service URL: %w", err)
 		}
 	}
 	if cfg.AdapterType == "" {
@@ -127,7 +137,7 @@ func New(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	x := &Connector{cfg: cfg, cipher: c, j: journal{Tasks: map[string]*localTask{}}, adapters: map[string]AdapterConfig{}, health: map[string]protocol.AdapterHealth{}, running: map[string]context.CancelFunc{}, leaseStopped: map[string]bool{}, client: &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, modelClient: &http.Client{Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	x := &Connector{cfg: cfg, cipher: c, j: journal{Tasks: map[string]*localTask{}}, adapters: map[string]AdapterConfig{}, health: map[string]protocol.AdapterHealth{}, running: map[string]context.CancelFunc{}, leaseStopped: map[string]bool{}, remoteOK: cfg.RemoteURL == "", client: &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, modelClient: &http.Client{Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	for _, a := range cfg.Adapters {
 		if err := validateAdapter(&a); err != nil {
 			return nil, err
@@ -373,6 +383,96 @@ func (x *Connector) api(ctx context.Context, verb, path string, body any, out an
 	return nil
 }
 
+func (x *Connector) markHeartbeat(ok bool) {
+	x.mu.Lock()
+	x.heartbeatOK = ok
+	x.updateOnlineLocked()
+	x.mu.Unlock()
+}
+
+func (x *Connector) markPoll(ok bool) {
+	x.mu.Lock()
+	x.pollFailed = !ok
+	x.updateOnlineLocked()
+	x.mu.Unlock()
+}
+
+func (x *Connector) markRemote(ok bool) {
+	x.mu.Lock()
+	x.remoteOK = ok
+	x.updateOnlineLocked()
+	x.mu.Unlock()
+}
+
+func (x *Connector) updateOnlineLocked() {
+	x.online = x.remoteOK && x.heartbeatOK && !x.pollFailed
+}
+
+func (x *Connector) checkRemote(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(x.cfg.RemoteURL, "/")+"/health", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := x.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("remote service health: HTTP %d", resp.StatusCode)
+	}
+	var health struct {
+		Status string `json:"status"`
+		Data   struct {
+			APIBaseURL string `json:"apiBaseUrl"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&health); err != nil {
+		return err
+	}
+	if health.Status != "ok" && health.Data.APIBaseURL == "" {
+		return errors.New("invalid remote service health response")
+	}
+	return nil
+}
+
+func (x *Connector) watchRemote(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err := x.checkRemote(probe)
+		cancel()
+		x.markRemote(err == nil)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (x *Connector) watchGateway(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			x.mu.Lock()
+			hb := x.heartbeatSnapshot
+			x.mu.Unlock()
+			if hb.Protocol == "" {
+				continue
+			}
+			probe, cancel := context.WithTimeout(ctx, 3*time.Second)
+			_ = x.sendHeartbeat(probe, hb)
+			cancel()
+		}
+	}
+}
+
 func (x *Connector) probe(ctx context.Context) protocol.AdapterHealth {
 	x.mu.Lock()
 	a := x.adapters[x.cfg.AdapterID]
@@ -522,6 +622,11 @@ func (x *Connector) probeAll(ctx context.Context) protocol.Heartbeat {
 	if len(hb.Adapters) > 0 {
 		hb.Adapter = hb.Adapters[0]
 	}
+	x.mu.Lock()
+	if hb.SnapshotVersion >= x.heartbeatSnapshot.SnapshotVersion {
+		x.heartbeatSnapshot = hb
+	}
+	x.mu.Unlock()
 	return hb
 }
 
@@ -542,14 +647,31 @@ func (x *Connector) heartbeat(ctx context.Context) error {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	h := x.probeAll(probeCtx)
 	cancel()
-	return x.api(ctx, "POST", "/v1/connector/heartbeat", h, nil)
+	return x.sendHeartbeat(ctx, h)
+}
+
+func (x *Connector) sendHeartbeat(ctx context.Context, h protocol.Heartbeat) error {
+	var response struct {
+		Status string `json:"status"`
+	}
+	err := x.api(ctx, http.MethodPost, "/v1/connector/heartbeat", h, &response)
+	if err == nil && response.Status != "ok" {
+		err = errors.New("invalid gateway heartbeat response")
+	}
+	x.markHeartbeat(err == nil)
+	return err
 }
 
 func (x *Connector) Run(ctx context.Context) error {
 	if x.cfg.ServerURL == "" {
 		return errors.New("remote service connection is not configured")
 	}
+	defer x.markHeartbeat(false)
 	go x.leaseLoop(ctx)
+	go x.watchGateway(ctx)
+	if x.cfg.RemoteURL != "" {
+		go x.watchRemote(ctx)
+	}
 	go func() {
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
@@ -681,8 +803,10 @@ func (x *Connector) pollHTTP(ctx context.Context) error {
 	for ctx.Err() == nil {
 		var cmd protocol.Command
 		if err := x.api(ctx, http.MethodGet, "/v1/connector/commands", nil, &cmd); err != nil {
+			x.markPoll(false)
 			return err
 		}
+		x.markPoll(true)
 		if cmd.Type != "noop" {
 			if err := x.handle(ctx, cmd); err != nil {
 				log.Printf("command rejected: %v", err)

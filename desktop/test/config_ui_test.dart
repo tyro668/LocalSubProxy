@@ -7,7 +7,10 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  Future<void> pumpWorkspace(WidgetTester tester) async {
+  Future<void> pumpWorkspace(
+    WidgetTester tester, {
+    Map<String, dynamic>? connectionStatus,
+  }) async {
     tester.view.physicalSize = const Size(1500, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -18,11 +21,14 @@ void main() {
         home: SizedBox.expand(
           child: ProfileWorkspace(
             api: NativeApi.instance,
-            status: const {
-              'paired': true,
-              'device_name': '测试电脑',
-              'running_tasks': 0,
-            },
+            status:
+                connectionStatus ??
+                const {
+                  'paired': true,
+                  'connected': true,
+                  'device_name': '测试电脑',
+                  'running_tasks': 0,
+                },
             adapters: const [
               {
                 'id': 'deepseek',
@@ -68,6 +74,22 @@ void main() {
     expect(find.text('测试连接'), findsNothing);
     expect(find.text('保存'), findsNothing);
     expect(find.text('测试电脑'), findsOneWidget);
+    expect(find.text('连接详情  ›'), findsOneWidget);
+  });
+
+  testWidgets('保存配对信息不等于远端服务在线', (tester) async {
+    await pumpWorkspace(
+      tester,
+      connectionStatus: const {
+        'paired': true,
+        'connected': false,
+        'device_name': '测试电脑',
+        'running_tasks': 0,
+      },
+    );
+
+    expect(find.text('未连接'), findsOneWidget);
+    expect(find.text('已连接'), findsNothing);
     expect(find.text('连接详情  ›'), findsOneWidget);
   });
 

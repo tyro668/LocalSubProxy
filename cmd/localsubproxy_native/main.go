@@ -63,7 +63,7 @@ func result(data any, err error) *C.char {
 }
 
 func coreConfig(dir string, id localIdentity) connector.Config {
-	return connector.Config{ServerURL: id.GatewayURL, DeviceID: id.DeviceID, DeviceToken: id.DeviceToken,
+	return connector.Config{ServerURL: id.GatewayURL, RemoteURL: id.RemoteURL, DeviceID: id.DeviceID, DeviceToken: id.DeviceToken,
 		JournalKey: id.JournalKey, JournalFile: filepath.Join(dir, "journal.enc"), AdapterFile: filepath.Join(dir, "adapters.enc")}
 }
 

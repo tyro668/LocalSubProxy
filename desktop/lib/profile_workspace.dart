@@ -6,7 +6,7 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'native_api.dart';
 
-const _headerHeight = 52.0;
+const _headerHeight = 44.0;
 const _purple = Color(0xFF4D25D8);
 const _border = Color(0xFFDFE3ED);
 const _ink = Color(0xFF202637);
@@ -734,21 +734,11 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             const SizedBox(width: 12),
             Expanded(flex: 5, child: _tableCell(_providerLabel(adapter))),
             SizedBox(
-              width: 72,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  IconButton.ghost(
-                    density: ButtonDensity.icon,
-                    icon: const Icon(LucideIcons.pencil, size: 17),
-                    onPressed: () => openEditor(adapter),
-                  ),
-                  IconButton.ghost(
-                    density: ButtonDensity.icon,
-                    icon: const Icon(LucideIcons.ellipsisVertical, size: 18),
-                    onPressed: () => options(adapter),
-                  ),
-                ],
+              width: 40,
+              child: IconButton.ghost(
+                density: ButtonDensity.icon,
+                icon: const Icon(LucideIcons.ellipsisVertical, size: 18),
+                onPressed: () => options(adapter),
               ),
             ),
           ],
@@ -759,6 +749,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
 
   Widget _leftFooter() {
     final paired = widget.status?['paired'] == true;
+    final connected = widget.status?['connected'] == true;
     final device =
         '${widget.status?['device_name'] ?? widget.status?['device_id'] ?? '本机设备'}';
     final count = widget.status?['running_tasks'] ?? 0;
@@ -771,10 +762,10 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       ),
       child: Row(
         children: [
-          _statusDot(paired),
+          _statusDot(connected),
           const SizedBox(width: 9),
           Text(
-            paired ? '已连接' : '未连接',
+            connected ? '已连接' : '未连接',
             style: const TextStyle(
               color: _ink,
               fontSize: 13,
@@ -836,9 +827,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 ),
               ),
               PrimaryButton(
-                size: ButtonSize.small,
                 onPressed: addScheme,
-                leading: const Icon(LucideIcons.plus, size: 15),
+                leading: const Icon(LucideIcons.plus, size: 16),
                 child: const Text('添加方案'),
               ),
             ],
@@ -855,7 +845,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             Expanded(flex: 4, child: _tableCell('方案名称', bold: true)),
             const SizedBox(width: 12),
             Expanded(flex: 5, child: _tableCell('服务', bold: true)),
-            SizedBox(width: 72, child: _tableCell('操作', bold: true)),
+            SizedBox(width: 40, child: _tableCell('操作', bold: true)),
           ],
         ),
       ),
@@ -1252,18 +1242,16 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               if (!editorOpen && highlighted != null) ...[
                 const Spacer(),
                 PrimaryButton(
-                  size: ButtonSize.small,
                   onPressed: () => openEditor(highlighted!),
-                  leading: const Icon(LucideIcons.pencil, size: 15),
+                  leading: const Icon(LucideIcons.pencil, size: 16),
                   child: const Text('编辑'),
                 ),
               ],
               if (editorOpen) ...[
                 const SizedBox(width: 16),
                 OutlineButton(
-                  size: ButtonSize.small,
                   onPressed: working ? null : test,
-                  leading: const Icon(LucideIcons.play, size: 14),
+                  leading: const Icon(LucideIcons.play, size: 16),
                   child: const Text('测试连接'),
                 ),
                 const SizedBox(width: 8),
@@ -1279,13 +1267,11 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 ),
                 const SizedBox(width: 8),
                 OutlineButton(
-                  size: ButtonSize.small,
                   onPressed: working ? null : closeEditor,
                   child: const Text('取消'),
                 ),
                 const SizedBox(width: 8),
                 PrimaryButton(
-                  size: ButtonSize.small,
                   onPressed: working ? null : save,
                   child: Text(working ? '处理中…' : '保存'),
                 ),
