@@ -1,0 +1,48 @@
+# mock/：协议 v2 的服务端模拟实现
+
+本目录补上了原仓库缺少的业务服务（即原文档里 `sophorn-mock-server` 的角色），同时提供一个已修复三项 P0 问题的 **v2 参考网关**和**参考连接器**。协议说明见 [docs/protocol-v2.md](../docs/protocol-v2.md)。
+
+| 包 | 作用 |
+|---|---|
+| `v2proto/` | 消息信封、错误码、EdDSA JWT、签名输入的构造 |
+| `store/` | `Store` 接口及 SQLite 实现，支持 AES-GCM 静态加密和按保留期清理 |
+| `gateway/` | 多租户 v2 网关：RFC 8628 配对、与设备密钥绑定的短期令牌、WebSocket 会话、OpenAI 兼容接口 |
+| `saas/` | Mock 业务服务：登录、`/link` 配对页、设备列表、聊天页（转发网关的 SSE 流） |
+| `connector/` | 参考设备端：生成密钥、配对、建立连接、验证签名、调用本机 OpenAI 兼容模型 |
+| `fakemodel/` | 一个假的 OpenAI 兼容模型，支持流式输出 |
+| `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
+| `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
+
+## 一条命令看完整流程
+
+```bash
+go run ./mock/cmd/lspmock demo
+```
+
+演示依次覆盖：配对、握手、流式回答、中途取消、上游报错与模型不存在、同租户其他用户被隔离、数据库中查不到明文提示词、吊销设备。
+
+## 分进程运行（可接真实的 LM Studio 或 Ollama）
+
+```bash
+go build -o bin/lspmock ./mock/cmd/lspmock
+export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key，网关与 SaaS 使用同一个
+export LSP_TENANT_KEY=$LSP_TENANT_KEY_ACME
+export LSP_DATA_KEY=$(openssl rand -hex 32)          # 可选：开启提示词和输出的静态加密
+export LSP_SIGNING_SEED=$(openssl rand -hex 32)      # 网关签名私钥的种子；不设置的话，网关重启后设备需要重新配对
+
+bin/lspmock fakemodel &                               # 用真实 LM Studio 时可跳过这一步
+bin/lspmock gateway -db gateway.db -tenants acme:LSP_TENANT_KEY_ACME &
+bin/lspmock saas -tenant acme -users alice:alice-pw,bob:bob-pw &
+bin/lspmock connector -saas http://127.0.0.1:3000 -model-url http://127.0.0.1:11500 -models qwen3-8b
+```
+
+连接器启动后会打印配对码。用浏览器打开 http://127.0.0.1:3000 ，以 `alice / alice-pw` 登录，在“连接新设备”页面输入配对码。之后首页会显示设备在线，可以直接流式对话，点“停止”即可取消当前任务。
+
+- 接 LM Studio：`-model-url http://127.0.0.1:1234 -models <模型名>`
+- 接 Ollama：`-model-url http://127.0.0.1:11434 -models llama3.2`（使用 Ollama 自带的 `/v1` 接口）
+
+## 正式部署前须知
+
+- 网关和 SaaS 前面需要加 HTTPS 反向代理；`/v2/connect` 要允许 WebSocket 升级，SSE 路径要关闭缓冲。
+- mock SaaS 的用户名和密码直接写在命令行参数里，仅供演示。
+- 会话保存在网关进程的内存中，部署多个网关实例时需要做粘性路由。
