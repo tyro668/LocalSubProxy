@@ -4,6 +4,7 @@
 #
 #   scripts/mock-interop.sh            # node python go
 #   scripts/mock-interop.sh node       # just one
+#   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go   # SDK variants
 set -euo pipefail
 cd "$(dirname "$0")/.."
 impls=("${@:-node python go}")
@@ -20,9 +21,11 @@ go build -o "$tmp/lsp2-conformance" ./cmd/lsp2-conformance
 start() { # impl port
   local impl=$1 port=$2
   case $impl in
-    node)
+    node|node-sqlite)
+      (cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build)
       (cd mock/node && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
-      node mock/node/gateway.mjs --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json >"$tmp/$impl.log" 2>&1 & ;;
+      db=(); [ "$impl" = node-sqlite ] && db=(--db "$tmp/node.db")
+      node mock/node/gateway.mjs --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json "${db[@]}" >"$tmp/$impl.log" 2>&1 & ;;
     python)
       [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && mock/python/.venv/bin/pip install -q -r mock/python/requirements.txt; }
       (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json) >"$tmp/$impl.log" 2>&1 & ;;
@@ -30,6 +33,11 @@ start() { # impl port
       go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
       "$tmp/localsubproxy" server -listen "127.0.0.1:$port" -db "$tmp/go.db" -tenants acme:LSP_TENANT_KEY_ACME \
         -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui >"$tmp/$impl.log" 2>&1 & ;;
+    express)
+      (cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build)
+      (cd examples/express && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
+      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port \
+        node examples/express/server.mjs >"$tmp/$impl.log" 2>&1 & ;;
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
   pids+=($!)

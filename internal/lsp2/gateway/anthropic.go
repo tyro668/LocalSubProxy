@@ -244,6 +244,9 @@ func (g *Gateway) messages(w http.ResponseWriter, r *http.Request) {
 		anthropicError(aw, 405, lsp2.ErrBadRequest, "POST required")
 		return
 	}
+	if _, _, ok := g.tenantAuth(aw, r); !ok {
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 48<<20+1))
 	if err != nil || len(body) > 48<<20 {
 		anthropicError(aw, 413, lsp2.ErrPayloadTooLarge, "request body too large")

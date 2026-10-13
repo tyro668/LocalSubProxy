@@ -1,0 +1,203 @@
+/**
+ * lsp2-server: let your SaaS use models that run on your users' own machines.
+ *
+ * Business code only does two things:
+ *   1. pairing: show a pair link / QR, then approve the user code the user reads off the desktop app;
+ *   2. LLM calls: standard OpenAI (/v1/chat/completions, /v1/models) or Anthropic (/v1/messages)
+ *      requests, either over HTTP with the official client libraries or with the in-process client.
+ * The WebSocket session, JOSE, resume, flow control and E2EE pass-through stay inside the SDK.
+ */
+import http from 'node:http';
+import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
+import type { AddressInfo } from 'node:net';
+// @ts-ignore engine is plain JS
+import { Gateway } from './engine/gateway.js';
+// @ts-ignore
+import * as L from './engine/lsp2.js';
+import { MemoryStore, SqliteStore, type Store } from './store.js';
+import { InProcessClient } from './client.js';
+
+export { MemoryStore, SqliteStore, InProcessClient };
+export type { Store, Device, DeviceAuth, TaskRecord, TaskEvent, Idempotency, SqlDatabase } from './store.js';
+export * as anthropic from './anthropic.js';
+export type * from './types.js';
+import type { TenantConfig, PairingInfo, DeviceInfo, ApproveResult, PendingPairing } from './types.js';
+
+export interface LSP2ServerOptions {
+  /** Tenants (SaaS products) served by this gateway. Usually one. */
+  tenants: TenantConfig[];
+  /** Public https origin of the gateway (iss of every token). Empty = dev mode (derived from Host). */
+  issuer?: string;
+  /** Persistence; defaults to MemoryStore. Use `new SqliteStore('lsp2.db')` to survive restarts. */
+  store?: Store;
+  /** 32-byte Ed25519 seed. Default: loaded from the store, generated on first start. */
+  signingSeed?: Buffer;
+  /** Per-device concurrency cap (default 16). */
+  maxConcurrency?: number;
+  /** Serve the reference chat page from this directory (mock/web) at / and /chat. */
+  chatUIDir?: string;
+  log?: (...a: unknown[]) => void;
+  /** Advanced engine timings (ms): tokenTTL (s), codeTTL (s), resumeWindow, taskTimeout, attachGrace, slowConsumer. */
+  tuning?: Record<string, number>;
+}
+
+type Next = (err?: unknown) => void;
+const qrcode = createRequire(import.meta.url)('../vendor/qrcode.cjs');
+
+export class LSP2Server {
+  /** The protocol engine (advanced use). */
+  readonly engine: any;
+  readonly store: Store;
+  private server?: http.Server;
+
+  constructor(opts: LSP2ServerOptions) {
+    this.store = opts.store ?? new MemoryStore();
+    this.engine = new Gateway({ issuer: opts.issuer ?? '', store: this.store, seed: opts.signingSeed, maxConc: opts.maxConcurrency ?? 16,
+      webDir: opts.chatUIDir ?? '', log: opts.log ?? console.error, ...(opts.tuning ?? {}) });
+    for (const t of opts.tenants) this.engine.registerTenant(t.id, t.apiKey, t.profile ?? {});
+  }
+
+  // ---------------- HTTP mounting ----------------
+
+  /** Plain node:http request listener. Unknown paths get a 404. */
+  readonly handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
+    this.engine.handle(req, res).catch((e: unknown) => this.fail(res, e));
+  };
+
+  /** Express / Connect middleware; unknown paths fall through to next(). Mount at the root. */
+  middleware() {
+    return (req: http.IncomingMessage, res: http.ServerResponse, next: Next) => {
+      this.engine.handle(req, res, next).catch((e: unknown) => { if (res.headersSent) res.end(); else next(e); });
+    };
+  }
+
+  /**
+   * Fastify plugin: `await app.register(lsp.fastifyPlugin)`. Registers the
+   * protocol routes and the WebSocket upgrade on app.server.
+   */
+  readonly fastifyPlugin = Object.assign(async (app: any) => {
+    app.addContentTypeParser('*', { parseAs: 'buffer' }, (_r: unknown, body: Buffer, done: (e: null, b: Buffer) => void) => done(null, body));
+    app.removeContentTypeParser?.(['application/json', 'text/plain']);
+    app.addContentTypeParser(['application/json', 'text/plain'], { parseAs: 'buffer' }, (_r: unknown, body: Buffer, done: (e: null, b: Buffer) => void) => done(null, body));
+    const route = (req: any, reply: any) => {
+      reply.hijack();
+      const raw = req.raw;
+      raw.body = req.body ?? Buffer.alloc(0);
+      this.handler(raw, reply.raw);
+    };
+    for (const p of PATHS) app.route({ method: ['GET', 'POST', 'HEAD', 'OPTIONS'], url: p, handler: route });
+    app.addHook('onReady', async () => { this.attach(app.server); });
+  }, { [Symbol.for('skip-override')]: true });
+
+  /** Route WebSocket upgrades for /v2/connect on an existing server (express/fastify/http). */
+  attach(server: http.Server): this {
+    server.on('upgrade', (req, sock, head) => {
+      if (!req.url?.startsWith('/v2/connect')) return;
+      this.engine.upgrade(req, sock, head).catch(() => sock.destroy());
+    });
+    return this;
+  }
+
+  /** Standalone server: listen on port/host with the protocol endpoints only. */
+  async listen(port: number, host = '127.0.0.1'): Promise<AddressInfo> {
+    const addr = await this.engine.listen(port, host);
+    this.server = this.engine.server;
+    return addr;
+  }
+
+  async close(): Promise<void> {
+    for (const ds of this.engine.devs.values()) ds.drop?.('UNAVAILABLE', 'gateway shutting down');
+    if (this.server) await new Promise<void>((ok) => this.server!.close(() => ok()));
+    this.server?.closeAllConnections?.();
+    this.store.close?.();
+  }
+
+  private fail(res: http.ServerResponse, e: unknown) {
+    this.engine.cfg.log('lsp2 handler error', e);
+    if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'application/problem+json' }); res.end('{"title":"INTERNAL","status":500}'); } else res.end();
+  }
+
+  // ---------------- keys ----------------
+
+  readonly keys = {
+    /** Key id (RFC 7638 thumbprint) of the gateway signing key. */
+    kid: (): string => this.engine.kid,
+    /** Public JWK of the gateway signing key. */
+    publicJWK: (): Record<string, string> => L.publicJWK(this.engine.pub),
+    /** JWKS document served at /.well-known/jwks.json. */
+    jwks: () => ({ keys: [L.publicJWK(this.engine.pub)] }),
+  };
+
+  /** Generate a new 32-byte Ed25519 seed (store it in your secret manager). */
+  static generateSigningSeed(): Buffer { return crypto.randomBytes(32); }
+  /** Generate a tenant API key (keep it server-side only). */
+  static generateTenantKey(): string { return 'lsp2_' + crypto.randomBytes(24).toString('base64url'); }
+
+  // ---------------- pairing ----------------
+
+  readonly pairing = {
+    /** §19.4 deep link for the desktop app. issuer defaults to the configured one. */
+    link: (tenant: string, issuer?: string): string => {
+      const iss = issuer ?? this.engine.cfg.issuer;
+      if (!iss) throw new Error('pairing.link needs an issuer (configure LSP2ServerOptions.issuer or pass one)');
+      return `lsp2://pair?v=2&gateway=${encodeURIComponent(L.origin(iss))}&tenant=${encodeURIComponent(tenant)}`;
+    },
+    /** Pair link plus its QR code as an SVG string and a PNG-free data: URL (GIF). */
+    create: (tenant: string, issuer?: string): PairingInfo => {
+      const link = this.pairing.link(tenant, issuer);
+      const q = qrcode(0, 'M'); q.addData(link); q.make();
+      return { link, qrSVG: q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }), qrDataURL: q.createDataURL(4, 2) };
+    },
+    /** Look up a pending pairing by the user code shown on the desktop (to confirm the device name before approving). */
+    lookup: (tenant: string, userCode: string): PendingPairing | null => {
+      const d = this.store.deviceAuthByUserCode(tenant, normCode(userCode));
+      if (!d) return null;
+      return { userCode: d.userCode, deviceName: d.name, jkt: L.thumbprint(d.pub), status: d.status, expiresAt: new Date(d.expires) };
+    },
+    /** Approve the user code for endUser; the desktop app finishes pairing on its next poll. */
+    approve: (tenant: string, endUser: string, userCode: string, opts: { jkt?: string } = {}): ApproveResult =>
+      this.decide(tenant, endUser, userCode, false, opts.jkt),
+    /** Deny the user code. */
+    deny: (tenant: string, endUser: string, userCode: string): ApproveResult => this.decide(tenant, endUser, userCode, true),
+    /** Devices paired to endUser, with live status. */
+    listDevices: (tenant: string, endUser: string): DeviceInfo[] => this.store.listDevices(tenant, endUser).map((d) => {
+      const s = this.engine.online(d.id);
+      return { deviceId: d.id, name: d.name, status: d.status, createdAt: d.created, jkt: L.thumbprint(d.pub), online: !!s,
+        models: s ? [...s.models] : [], modelCapabilities: s ? { ...s.modelCaps } : {} };
+    }),
+    /** Revoke a device: its session ends immediately and refresh is refused. */
+    revokeDevice: (tenant: string, endUser: string, deviceId: string): boolean => this.engine.revokeDevice(tenant, endUser, deviceId),
+  };
+
+  private decide(tenant: string, endUser: string, userCode: string, deny: boolean, jkt?: string): ApproveResult {
+    if (!this.engine.tenants.has(tenant)) throw new PairingError('unknown tenant', 'BAD_REQUEST');
+    if (!endUser || endUser.length > 128) throw new PairingError('endUser required (<= 128 chars)', 'BAD_REQUEST');
+    const d = this.store.deviceAuthByUserCode(tenant, normCode(userCode));
+    if (!d || d.status !== 'pending' || Date.now() > d.expires) throw new PairingError('code invalid, expired or already used', 'NOT_FOUND');
+    if (jkt && jkt !== L.thumbprint(d.pub)) throw new PairingError('device key thumbprint does not match', 'FORBIDDEN');
+    this.engine.decide(d, tenant, endUser, deny);
+    return { status: d.status as 'approved' | 'denied', deviceId: d.deviceID, deviceName: d.name, jkt: L.thumbprint(d.pub) };
+  }
+
+  // ---------------- in-process client ----------------
+
+  /** Typed client that calls the gateway in-process (no HTTP hop) as endUser of tenant. */
+  client(tenant: string, endUser: string): InProcessClient { return new InProcessClient(this, tenant, endUser); }
+}
+
+export class PairingError extends Error {
+  constructor(message: string, readonly code: 'BAD_REQUEST' | 'NOT_FOUND' | 'FORBIDDEN') { super(message); }
+}
+
+function normCode(s: string): string {
+  const c = String(s || '').trim().replaceAll('-', '').replaceAll(' ', '').toUpperCase();
+  return c.length === 8 ? c.slice(0, 4) + '-' + c.slice(4) : '';
+}
+
+/** Paths the SDK serves (for frameworks that need explicit routes). */
+export const PATHS = ['/healthz', '/.well-known/jwks.json', '/.well-known/lsp2-gateway', '/v2/device/authorize', '/v2/token', '/v2/connect',
+  '/v2/tenant/device-approvals', '/v2/tenant/devices', '/v2/tenant/devices/:id/revoke', '/v2/tenant/tasks/:id/events',
+  '/v1/models', '/v1/chat/completions', '/v1/messages'];
+
+export function createLSP2Server(opts: LSP2ServerOptions): LSP2Server { return new LSP2Server(opts); }

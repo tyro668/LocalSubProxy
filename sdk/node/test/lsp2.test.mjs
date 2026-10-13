@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import * as L from '../lsp2.mjs';
+import * as L from '../dist/engine/lsp2.js';
 
 const key = L.signingKey(Buffer.alloc(32, 7));
 
