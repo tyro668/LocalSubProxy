@@ -37,6 +37,17 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。构建环境与联调见 [实现与集成设计](design/实现与集成设计.md)；服务端接口见 [远端服务接入协议](design/远端服务接入协议.md)；原始架构方案见 [详细设计方案](design/SaaS本地大模型连接器详细设计方案.html)。
 
-## 协议 v2 与服务端模拟实现（实验性）
+## 协议 v2（默认）与兼容模式
 
-`mock/` 目录提供了业务服务的模拟实现、多租户 v2 参考网关和参考连接器，主要改进包括：每台设备有独立的 Ed25519 身份、通过 RFC 8628 设备授权完成配对、使用 SQLite 存储并支持静态加密。运行 `go run ./mock/cmd/lspmock demo` 即可看到完整流程。协议说明见 [docs/protocol-v2.md](docs/protocol-v2.md)，运行方法见 [mock/README.md](mock/README.md)。现有桌面端仍在使用 `connector.v1`。
+从这个版本开始，网关、命令行连接器和桌面内核默认使用协议 v2（lsp2）：
+- 每台设备有独立的 Ed25519 身份和短期令牌；
+- 网关用 Ed25519 签名下发任务；
+- 支持多租户和按用户的访问控制；
+- 采用 RFC 8628 配对：桌面端显示配对码，在已登录的远端服务页面确认；
+- 网关使用 SQLite 存储，支持静态加密和保留期清理。
+
+协议说明见 [docs/protocol-v2.md](docs/protocol-v2.md)，业务服务的参考实现与演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。
+
+旧版 `connector.v1` 仍然保留：网关加 `-protocol v1`，桌面端设置 `LOCALSUBPROXY_PROTOCOL=v1`。已用 v1 配对的设备升级后需要重新配对一次，详见协议文档第 10 节。
+
+> 注意：上文“使用流程”中输入 8 位数字验证码的步骤属于 v1。v2 的流程是：桌面端显示 `XXXX-XXXX` 配对码，在远端服务页面输入确认后自动完成连接。

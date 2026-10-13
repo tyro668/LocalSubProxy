@@ -1,6 +1,12 @@
 # LocalSubProxy 协议 v2（lsp2）：一页看懂
 
-> 状态：**参考实现位于 `mock/`**（`mock/v2proto`、`mock/gateway`、`mock/connector`、`mock/saas`）。现有桌面客户端与 `internal/server` 仍使用 `connector.v1`，尚未迁移（见文末“迁移”）。标注 **[规范]** 的内容只写在文档里，还没有代码实现。
+> 状态：**v2 是默认协议**。实现位置：
+> - 协议、网关、存储、设备端分别在 `internal/lsp2`、`internal/lsp2/gateway`、`internal/lsp2/store`、`internal/lsp2/client`。
+> - `localsubproxy server` 默认启动 v2 网关。
+> - 桌面内核 `internal/connector` 与 `cmd/localsubproxy_native` 默认走 v2。
+> - `mock/` 只保留业务服务模拟、假模型和演示。
+>
+> v1（`connector.v1`）保留为显式开启的兼容模式，见文末“迁移”。标注 **[规范]** 的内容只有文档，还没有代码实现。
 
 ## 1. 三个角色，两条连接
 
@@ -32,7 +38,7 @@ flowchart LR
 | ② 连接 | 连接器 → 网关 | `GET /v2/connect`（WebSocket，子协议 `lsp2`） | 用短期令牌连上来，发 `hello`，收到 `welcome` |
 | ③ 跑任务 | 网关 ⇄ 连接器 | `task.run` → `task.delta`… → `task.done`/`task.error` | 网关签名后下发，本机流式回传 |
 
-## 3. 消息一览（共 10 种）
+## 3. 消息一览（共 12 种）
 
 所有 WebSocket 帧都使用同一个信封：
 
@@ -188,18 +194,41 @@ OAuth 接口（`/v2/token`）使用 RFC 8628 / RFC 6749 的标准错误：`autho
 
 ## 9. [规范] 尚未实现
 
+- **v1 任务 API 的 v2 等价物**：包括 `/v1/llm-tasks`、`Idempotency-Key`、文本附件、按 `Last-Event-ID` 重放事件。
+- **桌面端的执行租约与本地 journal 对账**：v2 路径没有使用 v1 的 `UNKNOWN`/对账机制，断线时任务直接以 `DEVICE_OFFLINE` 失败。
+- **系统钥匙串**：设备私钥用本机密钥加密保存在文件里，还没有接入 macOS Keychain 或 Windows DPAPI。
+- **桌面端并发**：v2 下固定为 1，与 v1 一致。
+
 - **断线续传**：现在设备一断开，任务就失败（`DEVICE_OFFLINE`，可重试）。规划是连接器在 `hello` 里带上 `resume:[{task_id, last_seq}]`，网关补齐缺失部分后继续推送。
 - **流控**：规划是由 `welcome` 或 `task.run` 授予 `credits`，再通过 `task.ack{task_id, ack_seq, credits}` 补充。目前依靠 WebSocket 自身的背压，加上网关为每个任务预留的 1024 帧缓冲，溢出时直接断开会话。
-- **会话内令牌轮换**（`session.token`）：目前令牌只在建立连接时校验，吊销靠主动关闭会话来生效。
 - **工具调用、多模态、Responses API**：目前消息内容只支持字符串。
 - **多实例网关**：会话保存在单个进程的内存里，多实例部署需要按 `device_id` 做粘性路由，或者引入消息总线。
 - **端到端加密**（SaaS 用设备公钥加密 messages，网关看不到明文）：未实现。
 
 ## 10. 从 v1 迁移
 
-v1（`connector.v1`，即 `internal/server` 加现有桌面端）**原样保留，没有改动**，旧客户端可以继续用。迁移步骤：
+### 10.1 兼容开关
 
-1. 部署 v2 网关。它可以和 v1 网关并行运行，路径不冲突（v2 都在 `/v2/*` 下）。
-2. SaaS 新增 `/.well-known/lsp-connector` 和 `/link` 页面，配对改为调用 `/v2/tenant/device-approvals`。业务调用仍然是 `/v1/chat/completions`，但鉴权从全局 remote token 改为**租户 Key + `X-End-User`**。
-3. 桌面端内核改用 `mock/connector` 里的逻辑（配对、WebSocket、验签）。v1 的设备 token 无法迁移，**每台设备需要重新配对一次**。
-4. 本机的模型配置（`adapters.enc`）与 v2 无关，可以保留。
+| 组件 | 默认 | 回到 v1 |
+|---|---|---|
+| 网关 `localsubproxy server` | v2（`-db`、`-tenants`，环境变量 `LSP_SIGNING_SEED` 必填） | `-protocol v1`（原有 `-data/-device-id/-require-binding` 参数不变） |
+| 命令行连接器 `localsubproxy connector` | v2（`-remote-url`、`-identity`） | `-protocol v1`（原有 `-server-url` + `LOCALSUBPROXY_DEVICE_TOKEN`） |
+| 桌面内核 `LSP_Start` | v2（`pair_start / pair_status / pair_cancel`） | `LSP_Start {"protocol":"v1"}` 或环境变量 `LOCALSUBPROXY_PROTOCOL=v1`，之后可用 `prepare_connection / claim` |
+
+### 10.2 已配对的旧设备
+
+- 升级后，如果 `identity.json` 里只有 v1 凭据，**v2 模式下不会再用它连接**。旧凭据保留在磁盘上，界面提示需要重新配对；以 v1 模式启动仍可继续使用。
+- v1 的静态设备 token 无法转换成 v2 身份，**每台设备需要重新配对一次**。重新配对会生成新的 Ed25519 私钥，保存在 `device_key.enc` 中（用安装时生成的本机密钥做 AES-GCM 加密）。`identity.json` 只记录 `protocol:"v2"` 和 `v2_device_id`。
+- 本机模型方案（`adapters.enc`）和 journal 不受影响。
+- 断开连接时会删除 `device_key.enc`。
+
+### 10.3 服务端迁移步骤
+
+1. 部署 v2 网关。它可以和 v1 网关并行，v2 的路径都在 `/v2/*` 下。
+2. SaaS 提供 `/.well-known/lsp-connector` 和 `/link` 页面（参考 `mock/saas`），配对改为调用 `/v2/tenant/device-approvals`。
+3. 业务调用仍是 `/v1/chat/completions`，鉴权从全局 remote token 改为**租户 Key + `X-End-User`**。
+4. v1 的任务 API（`/v1/llm-tasks`、附件、`Idempotency-Key`、事件重放）在 v2 网关里**没有等价实现**。依赖这些功能的集成暂时需要留在 v1，见第 9 节。
+
+### 10.4 v2 中模型 ID 的格式
+
+桌面端以 `<adapter_id>/<model_id>` 声明模型，所以对外完整 ID 是 `dev_xxx/<adapter_id>/<model_id>`，也可以只写 `<adapter_id>/<model_id>`。Codex 订阅方案在 v2 中也通过 `chat/completions` 调用，内核会在本地把它转换成 `agent.run`。

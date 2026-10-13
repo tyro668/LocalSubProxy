@@ -1,14 +1,12 @@
 # mock/：协议 v2 的服务端模拟实现
 
+> 网关、存储和设备端已移到 `internal/lsp2/*`，作为正式代码使用。本目录只保留业务服务模拟（`saas/`）、假模型、演示和 `lspmock` 命令行。
+
 本目录补上了原仓库缺少的业务服务（即原文档里 `sophorn-mock-server` 的角色），同时提供一个已修复三项 P0 问题的 **v2 参考网关**和**参考连接器**。协议说明见 [docs/protocol-v2.md](../docs/protocol-v2.md)。
 
 | 包 | 作用 |
 |---|---|
-| `v2proto/` | 消息信封、错误码、EdDSA JWT、签名输入的构造 |
-| `store/` | `Store` 接口及 SQLite 实现，支持 AES-GCM 静态加密和按保留期清理 |
-| `gateway/` | 多租户 v2 网关：RFC 8628 配对、与设备密钥绑定的短期令牌、WebSocket 会话、OpenAI 兼容接口 |
 | `saas/` | Mock 业务服务：登录、`/link` 配对页、设备列表、聊天页（转发网关的 SSE 流） |
-| `connector/` | 参考设备端：生成密钥、配对、建立连接、验证签名、调用本机 OpenAI 兼容模型 |
 | `fakemodel/` | 一个假的 OpenAI 兼容模型，支持流式输出 |
 | `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
 | `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
