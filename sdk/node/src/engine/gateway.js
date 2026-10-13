@@ -340,7 +340,13 @@ export class Gateway {
     const dev = this.store.getDevice(claims.sub);
     if (!dev || dev.status !== 'active' || dev.tenant !== claims.tenant || claims.cnf?.jkt !== L.thumbprint(dev.pub))
       return reject(403, 'FORBIDDEN', 'device revoked or token not bound to device key');
-    this.wss.handleUpgrade(req, sock, head, (ws) => this.session(ws, dev, tok, claims, iss));
+    this.wss.handleUpgrade(req, sock, head, (ws) => {
+      // A frame over maxPayload (or any protocol error) surfaces as an 'error'
+      // event; ws then closes with 1009/1002. Without a listener Node would
+      // crash the whole gateway (found by conformance Z6g).
+      ws.on('error', () => { try { ws.terminate(); } catch { /* already closed */ } });
+      this.session(ws, dev, tok, claims, iss);
+    });
   }
 
   session(ws, dev, tok, claims, iss) {
@@ -358,6 +364,7 @@ export class Gateway {
         if (!this.useJTI(pc.jti, Date.now() + 180_000)) throw new Error('replay');
       } catch { return early('UNAUTHENTICATED', 'invalid key proof'); }
       let caps = intersect(Array.isArray(hello.capabilities) ? hello.capabilities : [], L.CAPABILITIES);
+      if (hello.flow != null && caps.includes('flow') && !validFlow(hello.flow)) return early('BAD_REQUEST', `flow windows must be >= max_frame_bytes (${L.MAX_FRAME_BYTES}) and conn_window >= task_window`);
       if (hello.e2ee_key && caps.includes('e2ee')) {
         try { L.verifyE2EEKey(dev.pub, dev.id, hello.e2ee_key); } catch { return early('BAD_REQUEST', 'invalid e2ee key statement'); }
         dev.e2eeKey = hello.e2ee_key;
@@ -556,7 +563,7 @@ export class Gateway {
     if (r.lmbp_e2ee) {
       if (msgs.length || tools.length) return err(400, 'BAD_REQUEST', 'lmbp_e2ee requests must not carry cleartext messages or tools');
     } else {
-      if (!msgs.length || msgs.length > 500) return err(400, 'BAD_REQUEST', '1-500 messages required');
+      if (!msgs.length || msgs.length > L.MAX_MESSAGES) return err(400, 'BAD_REQUEST', `1-${L.MAX_MESSAGES} messages required`);
       for (const m of msgs) {
         if (!m || !['system', 'user', 'assistant', 'tool', 'developer'].includes(m.role)) return err(400, 'BAD_REQUEST', 'unsupported role ' + m?.role);
         if (m.role === 'tool' && !m.tool_call_id) return err(400, 'BAD_REQUEST', 'tool messages need tool_call_id');
@@ -570,7 +577,7 @@ export class Gateway {
     if (r.lmbp_e2ee) {
       if (!ds.caps.includes('e2ee')) return err(400, 'CAPABILITY_UNSUPPORTED', 'device does not support end-to-end encryption');
       const jwe = String(r.lmbp_e2ee);
-      if (jwe.split('.').length !== 5 || jwe.length > L.MAX_TASK_BLOB_BYTES) return err(400, 'BAD_REQUEST', 'lmbp_e2ee must be a compact JWE');
+      if (jwe.split('.').length !== 5 || Buffer.byteLength(jwe) > L.MAX_TASK_BLOB_BYTES) return err(400, 'BAD_REQUEST', 'lmbp_e2ee must be a compact JWE');
       const id = L.randomID('blob_');
       const data = Buffer.from(jwe);
       blobs = [{ ref: { id, size: data.length, sha256: L.b64(L.sha256(data)), media_type: 'application/jose' }, data }];
@@ -595,6 +602,12 @@ export class Gateway {
     if (blobs.length) run.blobs = blobs.map((b) => b.ref);
 
     const taskID = L.randomID('task_');
+    { // limits stage 2/3 (spec §10): the signed task.run frame MUST fit max_frame_bytes
+      const iat = L.now();
+      const trial = L.signJWS(this.priv, L.TYP.task, this.kid, { ...run, task_id: taskID, iat, exp: iat + 60, nonce: L.randomID('n_') });
+      const size = L.taskRunFrameSize(trial, taskID);
+      if (size > L.MAX_FRAME_BYTES) return err(413, 'PAYLOAD_TOO_LARGE', `request too large: the signed task.run frame would be ${size} bytes, over max_frame_bytes ${L.MAX_FRAME_BYTES}; send large content as images/attachments`);
+    }
     if (idemKey) this.store.putIdempotency(a.t.id, a.user, idemKey, { tenant: a.t.id, owner: a.user, taskID, bodyHash });
     this.store.putTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] });
     const abort = new AbortController();
@@ -957,7 +970,7 @@ function normCode(s) {
   return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4) : '';
 }
 const intersect = (a, b) => a.filter((x, i) => b.includes(x) && a.indexOf(x) === i);
-const validFlow = (f) => f && Number.isInteger(f.task_window) && Number.isInteger(f.conn_window) && f.task_window > 0 && f.conn_window > 0;
+const validFlow = (f) => f && Number.isSafeInteger(f.task_window) && Number.isSafeInteger(f.conn_window) && f.task_window >= L.MAX_FRAME_BYTES && f.conn_window >= f.task_window && f.conn_window <= 2 ** 31;
 function normMessage(m) {
   const o = { role: m.role, content: m.content === undefined ? '' : m.content };
   for (const k of ['name', 'tool_calls', 'tool_call_id']) if (m[k] !== undefined && m[k] !== '' && m[k] !== null) o[k] = m[k];

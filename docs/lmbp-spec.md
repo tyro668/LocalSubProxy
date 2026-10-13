@@ -422,12 +422,14 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 ## 10. 超时与限制
 
+以下每项只有一个规范值；三个阶段都按它检查：API 入参（请求体、条数）、签名载荷（JWS）、编码后的帧。共享边界用例见 conformance `Z6*`。
+
 | 项目 | 值 | 级别 |
 |---|---|---|
 | hello 截止时间 | 连接后 15 秒 | MUST |
 | 读超时（无任何数据） | 60 秒 | SHOULD |
 | 心跳间隔 | 20 秒（以 `welcome.heartbeat_seconds` 为准） | SHOULD |
-| 单帧大小 | ≤ 256 KiB（以 `welcome.max_frame_bytes` 为准，且 ≥ 64 KiB） | MUST |
+| 单帧大小 `max_frame_bytes` | 262144 字节（256 KiB）。按**编码后整帧的 UTF-8 字节数**计（不是字符数），双向适用；超限的设备帧由网关以 1009 关闭连接，设备 MUST 以同一上限读取网关帧 | MUST |
 | 访问令牌 TTL | ≤ 15 分钟（推荐），≤ 60 分钟（上限） | SHOULD / MUST |
 | 令牌过期后的宽限 | 30 秒 | MUST |
 | 证明 JWT 时钟偏差 | ±60 秒 | MUST |
@@ -438,11 +440,12 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | 任务总时长 | 10 分钟（推荐） | SHOULD |
 | `max_concurrency` | 1–16 | MUST |
 | 模型列表 | ≤ 500 项 | MUST |
-| `messages` | 1–200 条 | MUST |
+| `messages` | 1–200 条；201 条起 400 `BAD_REQUEST` | MUST |
+| 已签名 `task.run` | JWS ≤ 262144 字节，且编码后的 `task.run` 帧 ≤ `max_frame_bytes`；超限时网关在存储/排队前返回 413 `PAYLOAD_TOO_LARGE`（大内容改用图片/附件，走 `blob.chunk`） | MUST |
 | chat 请求体 | ≤ 1 MiB | SHOULD |
 
 | 续传窗口 | 30 秒（`welcome.resume_window_seconds`） | SHOULD |
-| 流控窗口默认值 | 每任务 1 MiB、每连接 4 MiB；MUST ≥ 64 KiB | SHOULD / MUST |
+| 流控窗口 | 默认每任务 1 MiB、每连接 4 MiB；hello 提供的 `task_window` MUST ≥ `max_frame_bytes`，`conn_window` MUST ≥ `task_window`，否则网关拒绝 hello（不发 welcome） | SHOULD / MUST |
 | 单个附件 / 单任务附件 | ≤ 20 MiB / ≤ 32 MiB | MUST |
 | 内联 data: URI 阈值 | 16 KiB，超过即转为 blob | SHOULD |
 | E2EE 请求有效期 | `iat` 起 300 秒 | MUST |

@@ -64,7 +64,7 @@ for impl in "${impls[@]}"; do
   if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme >"$tmp/$impl.conf" 2>&1; then
     echo "   conformance: $(tail -1 "$tmp/$impl.conf")"
   else
-    echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; fail=1
+    echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; echo "   --- $impl gateway log (tail)"; tail -30 "$tmp/$impl.log"; fail=1
   fi
   if LMBP_OFFICIAL_CLIENTS=${LMBP_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LMBP_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LMBP_TENANT=acme LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME \
       go test -count=1 ./mock/external -run TestExternalGateway >"$tmp/$impl.e2e" 2>&1; then

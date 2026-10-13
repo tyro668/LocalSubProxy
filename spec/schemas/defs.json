@@ -13,7 +13,7 @@
     "compactJws": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$",
-      "maxLength": 65536,
+      "maxLength": 262144,
       "description": "RFC 7515 compact serialization, base64url without padding."
     },
     "numericDate": {

@@ -240,8 +240,8 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if len(req.Messages) == 0 || len(req.Messages) > 500 {
-			apiError(w, 400, lmbp.ErrBadRequest, "1-500 messages required")
+		if len(req.Messages) == 0 || len(req.Messages) > lmbp.MaxMessages {
+			apiError(w, 400, lmbp.ErrBadRequest, fmt.Sprintf("1-%d messages required", lmbp.MaxMessages))
 			return
 		}
 		for _, m := range req.Messages {
@@ -316,6 +316,18 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID := lmbp.RandomID("task_")
+	// Stage 2/3 of the limits (spec §10): the signed task.run, encoded as a
+	// frame, MUST fit max_frame_bytes. Checked with same-length values before
+	// anything is stored or queued.
+	{
+		trial := run
+		n := time.Now()
+		trial.TaskID, trial.Iat, trial.Exp, trial.Nonce = taskID, n.Unix(), n.Add(time.Minute).Unix(), lmbp.RandomID("n_")
+		if size := lmbp.TaskRunFrameSize(lmbp.SignTaskRun(g.cfg.SigningKey, g.kid, trial), taskID); size > lmbp.MaxFrameBytes {
+			apiError(w, 413, lmbp.ErrPayloadTooLarge, fmt.Sprintf("request too large: the signed task.run frame would be %d bytes, over max_frame_bytes %d; send large content as images/attachments", size, lmbp.MaxFrameBytes))
+			return
+		}
+	}
 	if idemKey != "" {
 		err := g.cfg.Store.PutIdempotency(r.Context(), store.Idempotency{TenantID: t.ID, OwnerID: user, Key: idemKey, TaskID: taskID, BodyHash: bodyHash, CreatedAt: time.Now()})
 		if err == store.ErrExists { // lost a race with a concurrent identical request

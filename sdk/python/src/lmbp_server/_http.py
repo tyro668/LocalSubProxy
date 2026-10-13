@@ -173,11 +173,16 @@ class WebSocketResponse:
             self.closed = True
             return WSMessage(WSMsgType.CLOSE, m.get("code"))
         if m.get("text") is not None:
-            if len(m["text"]) > self.max_msg_size:
+            # the limit is in UTF-8 bytes, as on the wire (audit finding 6)
+            if len(m["text"].encode()) > self.max_msg_size:
                 await self.close(code=1009, message=b"message too big")
                 return WSMessage(WSMsgType.ERROR)
             return WSMessage(WSMsgType.TEXT, m["text"])
-        return WSMessage(WSMsgType.BINARY, m.get("bytes"))
+        b = m.get("bytes") or b""
+        if len(b) > self.max_msg_size:
+            await self.close(code=1009, message=b"message too big")
+            return WSMessage(WSMsgType.ERROR)
+        return WSMessage(WSMsgType.BINARY, b)
 
     async def send_str(self, s: str) -> None:
         if self.closed or self._req is None:

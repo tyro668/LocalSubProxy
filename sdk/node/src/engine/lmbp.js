@@ -7,7 +7,11 @@ export const SUBPROTOCOL = 'lmbp';
 export const CAPABILITIES = ['session.token', 'models.update', 'resume', 'flow', 'tools', 'multimodal', 'e2ee'];
 export const SCOPES = ['lmbp.chat', 'lmbp.tools', 'lmbp.vision', 'lmbp.audio'];
 export const TENANT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Normative limits (spec §10). Frame sizes are UTF-8 bytes of the encoded frame.
 export const MAX_FRAME_BYTES = 256 << 10;
+export const MAX_MESSAGES = 200;
+// Encoded size of the task.run frame carrying jws (worst-case seq).
+export const taskRunFrameSize = (jws, taskID) => Buffer.byteLength(JSON.stringify({ v: VERSION, type: 'task.run', task_id: taskID, seq: 2 ** 53, jws }));
 export const BLOB_CHUNK_BYTES = 96 << 10;
 export const MAX_BLOB_BYTES = 20 << 20;
 export const MAX_TASK_BLOB_BYTES = 32 << 20;

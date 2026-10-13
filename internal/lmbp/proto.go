@@ -77,7 +77,12 @@ const (
 
 // Protocol defaults (docs/lmbp-spec.md §10).
 const (
-	DefaultMaxFrameBytes = 256 << 10
+	DefaultMaxFrameBytes = 256 << 10 // = MaxFrameBytes; the welcome value
+	// MaxFrameBytes is the normative frame limit in UTF-8 bytes of the
+	// encoded WebSocket text frame, both directions (spec §10). Flow windows
+	// MUST be >= MaxFrameBytes so any admissible frame fits a window.
+	MaxFrameBytes        = 256 << 10
+	MaxMessages          = 200 // messages per request (spec §10)
 	DefaultTaskWindow    = 1 << 20
 	DefaultConnWindow    = 4 << 20
 	DefaultResumeSeconds = 30
@@ -703,4 +708,17 @@ func VerifyTaskRunAt(pub ed25519.PublicKey, envTaskID, jws string, now time.Time
 		return run, errors.New("task.run expired")
 	}
 	return run, err
+}
+
+// TaskRunFrameSize is the encoded size in bytes of the task.run frame that
+// carries jws (with a worst-case seq), for the max_frame_bytes check.
+func TaskRunFrameSize(jws, taskID string) int {
+	b, _ := json.Marshal(Envelope{V: Version, Type: TypeTaskRun, TaskID: taskID, Seq: 1 << 53, JWS: jws})
+	return len(b)
+}
+
+// ValidFlow reports whether offered receive windows are acceptable: both
+// windows >= MaxFrameBytes (so every admissible frame fits) and conn >= task.
+func ValidFlow(f *Flow) bool {
+	return f != nil && f.TaskWindow >= MaxFrameBytes && f.ConnWindow >= f.TaskWindow && f.ConnWindow <= 1<<31
 }

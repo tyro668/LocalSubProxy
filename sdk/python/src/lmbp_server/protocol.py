@@ -20,7 +20,9 @@ SUBPROTOCOL = "lmbp"
 CAPABILITIES = ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"]
 SCOPES = ["lmbp.chat", "lmbp.tools", "lmbp.vision", "lmbp.audio"]
 TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# Normative limits (spec §10). Frame sizes are UTF-8 bytes of the encoded frame.
 MAX_FRAME_BYTES = 256 << 10
+MAX_MESSAGES = 200
 BLOB_CHUNK_BYTES = 96 << 10
 MAX_BLOB_BYTES = 20 << 20
 MAX_TASK_BLOB_BYTES = 32 << 20
@@ -426,3 +428,8 @@ class Inbound:
         t = self.tasks.pop(tid, None)
         if t is not None:
             self.conn_used -= t["used"]
+
+
+def task_run_frame_size(jws: str, task_id: str) -> int:
+    """Encoded size in bytes of the task.run frame carrying jws (worst-case seq)."""
+    return len(dumps({"v": VERSION, "type": "task.run", "task_id": task_id, "seq": 2**53, "jws": jws}).encode())

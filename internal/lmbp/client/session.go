@@ -260,7 +260,7 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	defer scancel()
 	stop := context.AfterFunc(sctx, func() { conn.Close() })
 	defer stop()
-	conn.SetReadLimit(4 << 20)
+	conn.SetReadLimit(lmbp.MaxFrameBytes) // normative frame limit (spec §10)
 
 	caps := append([]string(nil), c.cfg.Capabilities...)
 	if c.xpriv == nil {

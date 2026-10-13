@@ -24,6 +24,115 @@ func (r *runner) runAudit(ctx context.Context, dev *extDev, full func(string) st
 	r.auditIdempotency(ctx, dev, full(mTools))
 	r.auditResumeBounds(ctx, dev, full(mTools))
 	r.auditAnthropicInterleave(ctx, dev, full(mTools))
+	r.auditLimits(ctx, dev, full(mTools))
+}
+
+// Z6: normative limits (spec §10), boundary cases on both sides, identical
+// in every implementation (audit findings 6 and 9).
+func (r *runner) auditLimits(ctx context.Context, dev *extDev, model string) {
+	msgs := func(n int, content string) []any {
+		out := make([]any, n)
+		for i := range out {
+			out[i] = map[string]any{"role": "user", "content": content}
+		}
+		return out
+	}
+	// accepted: the device gets task.run (answer it); rejected: status/code
+	try := func(body map[string]any) (int, string, int) {
+		cc, cancel := context.WithTimeout(ctx, r.cfg.Timeout)
+		defer cancel()
+		type res struct {
+			st int
+			b  []byte
+		}
+		ch := make(chan res, 1)
+		go func() { st, _, b := r.chatRaw(cc, body, nil); ch <- res{st, b} }()
+		frameLen := 0
+		for frameLen == 0 {
+			select {
+			case x := <-ch:
+				return x.st, errCode(x.b), 0
+			case f := <-dev.frames:
+				if f.Type == lmbp.TypeTaskRun { // skip pings and other control frames
+					b, _ := json.Marshal(f)
+					frameLen = len(b)
+					_ = dev.send(lmbp.TypeTaskDone, f.TaskID, 1, lmbp.TaskDone{FinishReason: "stop"})
+				}
+			}
+		}
+		x := <-ch
+		return x.st, errCode(x.b), frameLen
+	}
+	base := func(m []any) map[string]any { return map[string]any{"model": model, "messages": m} }
+	st, code, _ := try(base(msgs(200, "m")))
+	r.check("Z6a", "200 messages (the maximum) are accepted", want(st == 200, "status %d %s", st, code))
+	st, code, _ = try(base(msgs(201, "m")))
+	r.check("Z6b", "201 messages are rejected with 400 BAD_REQUEST before reaching the device", want(st == 400 && code == lmbp.ErrBadRequest, "status %d %s", st, code))
+	st, code, fl := try(base(msgs(1, strings.Repeat("a", 150_000))))
+	r.check("Z6c", "a request whose task.run frame fits max_frame_bytes (262144) is accepted", want(st == 200 && fl <= 262144, "status %d %s frame %d", st, code, fl))
+	st, code, fl = try(base(msgs(1, strings.Repeat("a", 200_000))))
+	r.check("Z6d", "a request whose signed task.run frame would exceed max_frame_bytes is rejected with 413 PAYLOAD_TOO_LARGE and never sent",
+		want(st == 413 && code == lmbp.ErrPayloadTooLarge && fl == 0, "status %d %s frame sent %d bytes", st, code, fl))
+	st, code, fl = try(base(msgs(1, strings.Repeat("中", 100_000))))
+	r.check("Z6e", "100,000 CJK characters (300,000 UTF-8 bytes) exceed the frame limit in bytes: 413, not sent",
+		want(st == 413 && code == lmbp.ErrPayloadTooLarge && fl == 0, "status %d %s frame sent %d bytes", st, code, fl))
+}
+
+// auditFrameLimits: Z6f-i run on fresh sessions (they close connections).
+// Returns the session to continue with.
+func (r *runner) auditFrameLimits(ctx context.Context, key ed25519.PrivateKey, at string, hello lmbp.Hello, model string, dev *extDev) *extDev {
+	// device data frame just under / over max_frame_bytes in UTF-8 bytes
+	sendBig := func(d *extDev, n int) (int, []byte, error) {
+		ch := make(chan []byte, 1)
+		go func() {
+			_, _, b := r.chatRaw(ctx, map[string]any{"model": model, "stream": true, "messages": []any{map[string]any{"role": "user", "content": "big"}}}, nil)
+			ch <- b
+		}()
+		f, _, err := d.await(lmbp.TypeTaskRun, nil)
+		if err != nil {
+			return 0, nil, err
+		}
+		delta, _ := json.Marshal(lmbp.Envelope{V: lmbp.Version, Type: lmbp.TypeTaskDelta, TaskID: f.TaskID, Seq: 1, Data: json.RawMessage(fmt.Sprintf(`{"text":%q}`, strings.Repeat("中", n)))})
+		d.wmu.Lock()
+		_ = d.conn.WriteMessage(websocket.TextMessage, delta)
+		d.wmu.Unlock()
+		_ = d.send(lmbp.TypeTaskDone, f.TaskID, 2, lmbp.TaskDone{FinishReason: "stop"})
+		return len(delta), <-ch, nil
+	}
+	n, b, err := sendBig(dev, 80_000)
+	r.check("Z6f", "a device frame of 80,000 CJK characters (< 262144 UTF-8 bytes) is accepted and relayed",
+		want(err == nil && n < 262144 && strings.Count(string(b), "中") == 80_000, "err %v frame %d bytes, relayed %d chars", err, n, strings.Count(string(b), "中")))
+	n, b, err = sendBig(dev, 100_000)
+	closed := false
+	tm := time.After(r.cfg.Timeout)
+wait:
+	for {
+		select {
+		case _, ok := <-dev.frames:
+			if !ok {
+				closed = true
+				break wait
+			}
+		case <-tm:
+			break wait
+		}
+	}
+	r.check("Z6g", "a device frame of 100,000 CJK characters (300,000+ UTF-8 bytes > max_frame_bytes) closes the session and is not relayed",
+		want(err == nil && n > 262144 && closed && strings.Count(string(b), "中") == 0, "err %v frame %d bytes closed %v relayed %d chars", err, n, closed, strings.Count(string(b), "中")))
+	// hello flow windows below max_frame_bytes are refused
+	hello.Resume = nil
+	hello.Flow = &lmbp.Flow{TaskWindow: 65536, ConnWindow: 65536}
+	hello.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
+	d2, _, err := r.dialExt(at, hello)
+	r.check("Z6h", "hello offering flow windows smaller than max_frame_bytes (65536 < 262144) gets no welcome", want(err != nil, "welcome received"))
+	if d2 != nil {
+		d2.conn.Close()
+	}
+	hello.Flow = &lmbp.Flow{TaskWindow: 262144, ConnWindow: 262144}
+	hello.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
+	d3, _, err := r.dialExt(at, hello)
+	r.check("Z6i", "hello offering flow windows equal to max_frame_bytes is welcomed", err)
+	return d3
 }
 
 // anthropicLifecycle checks the strict Messages streaming lifecycle:

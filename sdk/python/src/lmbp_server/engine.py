@@ -106,7 +106,8 @@ def intersect(a, b):
 
 
 def valid_flow(f):
-    return isinstance(f, dict) and L.is_int(f.get("task_window")) and L.is_int(f.get("conn_window")) and f["task_window"] > 0 and f["conn_window"] > 0
+    return (isinstance(f, dict) and L.is_int(f.get("task_window")) and L.is_int(f.get("conn_window"))
+            and f["task_window"] >= L.MAX_FRAME_BYTES and f["task_window"] <= f["conn_window"] <= 2**31)
 
 
 def norm_message(m):
@@ -876,6 +877,8 @@ class Gateway:
         except (ValueError, TypeError, KeyError):
             return await early("UNAUTHENTICATED", "invalid key proof")
         caps = intersect(hello.get("capabilities") or [], L.CAPABILITIES)
+        if hello.get("flow") is not None and "flow" in caps and not valid_flow(hello["flow"]):
+            return await early("BAD_REQUEST", f"flow windows must be >= max_frame_bytes ({L.MAX_FRAME_BYTES}) and conn_window >= task_window")
         if hello.get("e2ee_key") and "e2ee" in caps:
             try:
                 L.verify_e2ee_key(dev["pub"], dev["id"], hello["e2ee_key"])
@@ -1185,8 +1188,8 @@ class Gateway:
             if msgs or tools:
                 return err(400, "BAD_REQUEST", "lmbp_e2ee requests must not carry cleartext messages or tools")
         else:
-            if not msgs or len(msgs) > 500:
-                return err(400, "BAD_REQUEST", "1-500 messages required")
+            if not msgs or len(msgs) > L.MAX_MESSAGES:
+                return err(400, "BAD_REQUEST", f"1-{L.MAX_MESSAGES} messages required")
             for m in msgs:
                 if not isinstance(m, dict) or m.get("role") not in ("system", "user", "assistant", "tool", "developer"):
                     return err(400, "BAD_REQUEST", f"unsupported role {m.get('role') if isinstance(m, dict) else None}")
@@ -1202,7 +1205,7 @@ class Gateway:
             if "e2ee" not in ds.caps:
                 return err(400, "CAPABILITY_UNSUPPORTED", "device does not support end-to-end encryption")
             jwe = str(r["lmbp_e2ee"])
-            if jwe.count(".") != 4 or len(jwe) > L.MAX_TASK_BLOB_BYTES:
+            if jwe.count(".") != 4 or len(jwe.encode()) > L.MAX_TASK_BLOB_BYTES:
                 return err(400, "BAD_REQUEST", "lmbp_e2ee must be a compact JWE")
             bid = L.random_id("blob_")
             data = jwe.encode()
@@ -1238,6 +1241,12 @@ class Gateway:
             run["blobs"] = [b["ref"] for b in blobs]
 
         task_id = L.random_id("task_")
+        # limits stage 2/3 (spec §10): the signed task.run frame MUST fit max_frame_bytes
+        iat0 = L.now()
+        trial = L.sign_jws(self.key, L.TYP_TASK, self.kid, {**run, "task_id": task_id, "iat": iat0, "exp": iat0 + 60, "nonce": L.random_id("n_")})
+        size = L.task_run_frame_size(trial, task_id)
+        if size > L.MAX_FRAME_BYTES:
+            return err(413, "PAYLOAD_TOO_LARGE", f"request too large: the signed task.run frame would be {size} bytes, over max_frame_bytes {L.MAX_FRAME_BYTES}; send large content as images/attachments")
         if idem_key:
             self.store.put_idempotency(t["id"], user, idem_key, {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash})
         self.store.put_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []})

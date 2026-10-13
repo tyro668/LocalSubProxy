@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -238,6 +239,10 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		_ = g.cfg.Store.SetDeviceE2EEKey(r.Context(), dev.ID, hello.E2EEKey)
 	} else if contains(caps, lmbp.CapE2EE) {
 		caps = removeS(caps, lmbp.CapE2EE) // no key, no E2EE
+	}
+	if hello.Flow != nil && contains(caps, lmbp.CapFlow) && !lmbp.ValidFlow(hello.Flow) {
+		early(lmbp.ErrBadRequest, fmt.Sprintf("flow windows must be >= max_frame_bytes (%d) and conn_window >= task_window", lmbp.MaxFrameBytes))
+		return
 	}
 	conc := hello.MaxConcurrency
 	if conc < 1 {

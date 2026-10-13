@@ -28,7 +28,7 @@ import (
 
 const (
 	userCodeChars  = "BCDFGHJKLMNPQRSTVWXZ" // RFC 8628 §6.1 recommendation
-	maxFrame       = 256 << 10
+	maxFrame       = lmbp.MaxFrameBytes
 	deviceGrant    = "urn:ietf:params:oauth:grant-type:device_code"
 	jwtBearerGrant = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 )
