@@ -2,7 +2,6 @@
   "name": "lsp2-server",
   "version": "0.1.0",
   "description": "LSP2 server SDK: pair users' desktop apps and call their local models through OpenAI- and Anthropic-compatible APIs",
-  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

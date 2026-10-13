@@ -1,12 +1,12 @@
 # Node.js LSP2 模拟网关
 
-`gateway.mjs` 是协议 v2（[docs/protocol-v2.md](../../docs/protocol-v2.md)）网关的 Node.js 实现，可替代 Go 参考网关给连接器、SaaS 后端或其他语言实现做互通测试。只依赖 `ws`；密码学全部使用 Node 内置 `crypto`（Ed25519、SHA-256）。
+`gateway.mjs` 是协议 v2（[docs/protocol-v2.md](../../docs/protocol-v2.md)）网关的 Node.js 命令行外壳：协议实现全部在服务端 SDK [`sdk/node`](../../sdk/node/README.md)（包名 `lsp2-server`）里，这里只解析参数、注册租户并调用 `new LSP2Server(...).listen()`。可替代 Go 参考网关给连接器、SaaS 后端或其他语言实现做互通测试。
 
 ## 运行
 
 ```bash
 cd mock/node
-npm ci
+npm ci                      # 通过 file:../../sdk/node 引用 SDK，会自动构建
 export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key（≥ 32 字符）
 export LSP2_SIGNING_SEED=$(openssl rand -hex 32)     # 可选：固定网关签名密钥
 node gateway.mjs --listen 127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
@@ -21,6 +21,7 @@ node gateway.mjs --listen 127.0.0.1:8080 --tenant-profiles ../tenant-profiles.ex
 | `--tenant id:ENV` | 注册租户，API Key 从环境变量读取（可重复） |
 | `--tenant-profiles F` / `LSP2_TENANT_PROFILES` | 租户 JSON 文件，格式见 `../tenant-profiles.example.json` |
 | `LSP2_SIGNING_SEED` | 32 字节十六进制 Ed25519 种子；不设置则每次启动随机生成 |
+| `--db FILE` / `LSP2_DB` | 用 SQLite（better-sqlite3）持久化配对、设备、任务与签名密钥；默认内存 |
 | `--max-concurrency` | 每设备并发上限，默认 16 |
 | `--web-dir` / `LSP2_WEB_DIR` | 聊天页目录，默认 `../web`；在 `/` 与 `/chat` 提供，见 [../web/README.md](../web/README.md) |
 | `--no-chat-ui` | 不提供聊天页 |
@@ -35,12 +36,12 @@ docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mo
 
 连接 Go 连接器：`localsubproxy connector -pair-link 'lsp2://pair?v=2&gateway=http://127.0.0.1:8080&tenant=acme' ...`，然后用租户 Key 调用 `POST /v2/tenant/device-approvals` 批准显示的配对码（或直接打开本网关自带的聊天页 http://127.0.0.1:8080/chat ，见 [../web/README.md](../web/README.md)）。
 
-单元测试：`npm test`（JWS、origin、发送/接收端流控状态机）。
+单元测试：`npm test`（聊天页与 CSP）；协议单元测试在 `sdk/node`（`cd sdk/node && npm test`）。
 
 ## 代码结构
 
-- `lsp2.mjs`：base64url、EdDSA JWS/JWT、proof、RFC 7638 指纹、origin 规范化、`Outbox` / `Inbound`（§8、§15 的可靠流控状态机）。
-- `gateway.mjs`：HTTP 路由、配对与令牌、元数据、WebSocket 会话（`DState`）、任务枢纽（`Task`：缓冲、扇出、ack 节奏、取消、超时、慢消费者）、OpenAI 兼容层、CLI。
+- `gateway.mjs`：CLI（参数、租户文件、`SqliteStore`），约 60 行。
+- 协议引擎、Store、配对 API、OpenAI/Anthropic 兼容层：见 [`sdk/node`](../../sdk/node/README.md)。
 
 ## 功能（与 Go 参考网关 `internal/lsp2/gateway` 等价）
 
@@ -56,15 +57,16 @@ docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mo
 | tools / 多模态 | `tools` / `tool_choice` 进入签名的 `task.run`；按模型能力拒绝（`CAPABILITY_UNSUPPORTED`）；> 16 KiB 的 `data:` 图片与 `input_audio` 改为 `blob.chunk`（96 KiB/块，签名的 size + sha256） |
 | E2EE | 校验并发布设备的 X25519 密钥声明；`lsp2_e2ee` JWE 原样作为 `application/jose` blob 转发，网关不解密、不保存明文；SSE 透传 `lsp2_e2ee {seq,type,data}` |
 | OpenAI 兼容 | `GET /v1/models`（含每模型能力）、`POST /v1/chat/completions`（SSE：`id: 0` 角色前导，事件 id = 数据帧 seq，`data: [DONE]`；非流式聚合 tool_calls）；`Idempotency-Key`（不同请求体 422）、`Last-Event-ID`、`GET /v2/tenant/tasks/{id}/events` 重新挂接；客户端断开 → `task.cancel` |
+| Anthropic 兼容 | `POST /v1/messages`（`x-api-key` 或 Bearer；非流式与 SSE 命名事件 `message_start`…`message_stop`；text / image / tool_use / tool_result 转换；断线重连时 `Idempotency-Key` + `Last-Event-ID` 续传）；带 `anthropic-version` 头时 `/v1/models` 返回 Anthropic 列表格式；错误为 `{type:"error",error:{type,message,lsp2_code}}`。见规范 §6.7 |
 | 错误 | `/v2/*` 返回 RFC 9457 `application/problem+json`（`type/title/status/detail/code`）；`/v1/*` 返回 OpenAI 错误对象；OAuth 端点返回 `{"error": ...}`。被拒绝的 `user_code` 再次批准返回 403 `CONSENT_DENIED` |
 
-状态全部在内存中（模拟用途）：重启后设备需重新配对，任务事件不落盘。
+默认状态在内存中：重启后设备需重新配对；加 `--db` 后配对与任务事件落到 SQLite，重启后设备可直接重连。
 
 ## 验证
 
 ```bash
-# 在仓库根目录：对 Node、Python 和 Go 参考网关分别跑 lsp2-conformance（63 项）和 Go 连接器端到端测试
-scripts/mock-interop.sh node python go
+# 在仓库根目录：对 Node、Python 和 Go 参考网关分别跑 lsp2-conformance（73 项，含 Anthropic `/v1/messages` A1–A10）和 Go 连接器端到端测试
+scripts/mock-interop.sh node node-sqlite python python-sqlite go sdk-go
 ```
 
 端到端测试（`mock/external`）用真实的桌面连接器通过 `lsp2://pair` 链接配对（校验签名元数据、本地拒绝、SaaS 拒绝），再跑流式对话、tools、40 KiB 图片、E2EE、本地审计日志和吊销。

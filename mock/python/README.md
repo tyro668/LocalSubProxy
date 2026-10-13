@@ -1,6 +1,6 @@
 # Python LSP2 模拟网关
 
-`gateway.py` 是协议 v2（[docs/protocol-v2.md](../../docs/protocol-v2.md)）网关的 Python 实现（asyncio + aiohttp，Ed25519 用 `cryptography`），可替代 Go 参考网关做互通测试。需要 Python ≥ 3.10。
+`gateway.py` 是协议 v2（[docs/protocol-v2.md](../../docs/protocol-v2.md)）网关的 Python 命令行外壳：协议实现全部在服务端 SDK [`sdk/python`](../../sdk/python/README.md)（包名 `lsp2-server`，ASGI）里，这里只解析参数并用 uvicorn 运行 `LSP2Server(...).asgi()`。需要 Python ≥ 3.10。
 
 ## 运行
 
@@ -14,7 +14,7 @@ export LSP2_SIGNING_SEED=$(openssl rand -hex 32)     # 可选：固定网关签�
 .venv/bin/python gateway.py --listen 127.0.0.1:8080 --tenant-profiles ../tenant-profiles.example.json
 ```
 
-参数与 Node 版相同：`--listen`、`--issuer`、`--tenant id:ENV`（可重复）、`--tenant-profiles`、`--signing-key-env`（默认读 `LSP2_SIGNING_SEED`）、`--max-concurrency`、`--web-dir`（聊天页目录，默认 `../web`，见 [../web/README.md](../web/README.md)）、`--no-chat-ui`；对应环境变量 `LSP2_LISTEN`、`LSP2_ISSUER`、`LSP2_TENANT_PROFILES`。
+参数与 Node 版相同：`--listen`、`--issuer`、`--tenant id:ENV`（可重复）、`--tenant-profiles`、`--signing-key-env`（默认读 `LSP2_SIGNING_SEED`）、`--db`（SQLite 持久化，默认内存）、`--max-concurrency`、`--web-dir`（聊天页目录，默认 `../web`，见 [../web/README.md](../web/README.md)）、`--no-chat-ui`；对应环境变量 `LSP2_LISTEN`、`LSP2_ISSUER`、`LSP2_TENANT_PROFILES`。
 
 Docker：
 
@@ -24,12 +24,12 @@ docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mo
   --issuer http://127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
 ```
 
-单元测试：`.venv/bin/python -m unittest test_lsp2 test_web`。
+单元测试：`.venv/bin/python -m pytest test_web.py`（聊天页与 CSP）；协议单元测试在 `sdk/python`（`cd sdk/python && .venv/bin/pytest`）。
 
 ## 实现要点
 
-- `lsp2.py`：base64url、EdDSA JWS/JWT、proof、指纹、origin、`Outbox` / `Inbound`。
-- `gateway.py`：每个 WebSocket 连接只有一个写协程，所有帧（控制帧和流控数据帧）按入队顺序发出，保证 seq 顺序；服务器以 `handler_cancellation=True` 运行，客户端断开 SSE 时处理协程被取消，从而向设备发送 `task.cancel`。
+- `gateway.py`：CLI（参数、租户文件、`SQLiteStore`），用 uvicorn 运行（`--ws websockets`，以便握手阶段返回 401/403 Problem Details）。
+- 协议引擎（每个 WebSocket 连接一个写协程保证 seq 顺序；客户端断开即取消处理协程并发出 `task.cancel`）、Store、配对 API、兼容层：见 [`sdk/python`](../../sdk/python/README.md)。
 
 ## 功能（与 Go 参考网关 `internal/lsp2/gateway` 等价）
 
@@ -45,15 +45,16 @@ docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mo
 | tools / 多模态 | `tools` / `tool_choice` 进入签名的 `task.run`；按模型能力拒绝（`CAPABILITY_UNSUPPORTED`）；> 16 KiB 的 `data:` 图片与 `input_audio` 改为 `blob.chunk`（96 KiB/块，签名的 size + sha256） |
 | E2EE | 校验并发布设备的 X25519 密钥声明；`lsp2_e2ee` JWE 原样作为 `application/jose` blob 转发，网关不解密、不保存明文；SSE 透传 `lsp2_e2ee {seq,type,data}` |
 | OpenAI 兼容 | `GET /v1/models`（含每模型能力）、`POST /v1/chat/completions`（SSE：`id: 0` 角色前导，事件 id = 数据帧 seq，`data: [DONE]`；非流式聚合 tool_calls）；`Idempotency-Key`（不同请求体 422）、`Last-Event-ID`、`GET /v2/tenant/tasks/{id}/events` 重新挂接；客户端断开 → `task.cancel` |
+| Anthropic 兼容 | `POST /v1/messages`（`x-api-key` 或 Bearer；非流式与 SSE 命名事件 `message_start`…`message_stop`；text / image / tool_use / tool_result 转换；断线重连时 `Idempotency-Key` + `Last-Event-ID` 续传）；带 `anthropic-version` 头时 `/v1/models` 返回 Anthropic 列表格式；错误为 `{type:"error",error:{type,message,lsp2_code}}`。见规范 §6.7 |
 | 错误 | `/v2/*` 返回 RFC 9457 `application/problem+json`（`type/title/status/detail/code`）；`/v1/*` 返回 OpenAI 错误对象；OAuth 端点返回 `{"error": ...}`。被拒绝的 `user_code` 再次批准返回 403 `CONSENT_DENIED` |
 
-状态全部在内存中（模拟用途）：重启后设备需重新配对，任务事件不落盘。
+默认状态在内存中：重启后设备需重新配对；加 `--db` 后落到 SQLite。
 
 ## 验证
 
 ```bash
-# 在仓库根目录：对 Node、Python 和 Go 参考网关分别跑 lsp2-conformance（63 项）和 Go 连接器端到端测试
-scripts/mock-interop.sh node python go
+# 在仓库根目录：对 Node、Python 和 Go 参考网关分别跑 lsp2-conformance（73 项，含 Anthropic `/v1/messages` A1–A10）和 Go 连接器端到端测试
+scripts/mock-interop.sh node node-sqlite python python-sqlite go sdk-go
 ```
 
 端到端测试（`mock/external`）用真实的桌面连接器通过 `lsp2://pair` 链接配对（校验签名元数据、本地拒绝、SaaS 拒绝），再跑流式对话、tools、40 KiB 图片、E2EE、本地审计日志和吊销。
