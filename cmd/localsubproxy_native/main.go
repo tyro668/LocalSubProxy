@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"localsubproxy/internal/audit"
 	"localsubproxy/internal/connector"
 	"localsubproxy/internal/durable"
 	"localsubproxy/internal/lsp2/client"
@@ -67,12 +68,14 @@ func saveDevice(dir string, id localIdentity, v client.Identity) error {
 
 var runtime struct {
 	sync.Mutex
-	core   *connector.Connector
-	cancel context.CancelFunc
-	done   chan struct{}
-	dir    string
-	local  localIdentity
-	login  *connector.CodexLogin
+	core      *connector.Connector
+	cancel    context.CancelFunc
+	done      chan struct{}
+	dir       string
+	local     localIdentity
+	login     *connector.CodexLogin
+	audit     *audit.Log // per-connection request log (audit.db)
+	auditStop context.CancelFunc
 	// lsp2 pairing in progress
 	pairing    *client.Pairing
 	pairReq    *client.PairRequest // verified, awaiting the user's consent decision
@@ -97,7 +100,7 @@ func newCore(dir string, id localIdentity) (*connector.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return connector.New(connector.Config{Identity: v, RemoteURL: id.RemoteURL, DataKey: id.DataKey, AdapterFile: filepath.Join(dir, "adapters.enc")})
+	return connector.New(connector.Config{Identity: v, RemoteURL: id.RemoteURL, DataKey: id.DataKey, AdapterFile: filepath.Join(dir, "adapters.enc"), Audit: runtime.audit})
 }
 
 func pairedLocked() bool { return runtime.local.DeviceID != "" }
@@ -156,6 +159,15 @@ func LSP_Start(raw *C.char) *C.char {
 		if err := durable.WriteJSON(identityFile, id); err != nil {
 			return result(nil, err)
 		}
+	}
+	if runtime.audit == nil {
+		al, err := audit.Open(filepath.Join(dir, "audit.db"))
+		if err != nil {
+			return result(nil, err)
+		}
+		actx, acancel := context.WithCancel(context.Background())
+		go al.RunRetention(actx, audit.DefaultRetention, time.Hour)
+		runtime.audit, runtime.auditStop = al, acancel
 	}
 	core, err := newCore(dir, id)
 	if err != nil {
@@ -230,6 +242,10 @@ func LSP_Call(raw *C.char) *C.char {
 		Path      string                  `json:"path"`
 		RemoteURL string                  `json:"remote_url"`
 		Link      string                  `json:"link"` // lsp2://pair deep link
+		Filter    audit.Filter            `json:"filter"`
+		GroupBy   []string                `json:"group_by"`
+		LocalTime bool                    `json:"local_time"`
+		Days      int                     `json:"days"`
 	}
 	if err := json.Unmarshal([]byte(C.GoString(raw)), &request); err != nil {
 		return result(nil, err)
@@ -256,6 +272,24 @@ func LSP_Call(raw *C.char) *C.char {
 	switch request.Action {
 	case "status":
 		return result(statusLocked(), nil)
+	case "audit_list":
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rows, err := runtime.core.AuditList(ctx, request.Filter)
+		return result(map[string]any{"records": rows}, err)
+	case "usage_stats":
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		b, err := runtime.core.UsageStats(ctx, request.Filter, request.GroupBy, request.LocalTime)
+		return result(map[string]any{"buckets": b, "group_by": request.GroupBy}, err)
+	case "audit_purge":
+		if request.Days < 0 {
+			return result(nil, errors.New("days must be >= 0"))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		n, err := runtime.audit.Purge(ctx, time.Now().Add(-time.Duration(request.Days)*24*time.Hour))
+		return result(map[string]any{"removed": n}, err)
 	case "list_adapters":
 		return result(map[string]any{"adapters": runtime.core.ListAdapters()}, nil)
 	case "create_adapter":

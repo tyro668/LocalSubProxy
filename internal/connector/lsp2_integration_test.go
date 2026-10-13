@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"localsubproxy/internal/audit"
 	"localsubproxy/internal/connector"
 	"localsubproxy/internal/lsp2/client"
 	"localsubproxy/internal/lsp2/gateway"
@@ -66,7 +67,12 @@ func TestDesktopCoreEndToEnd(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	c, err := connector.New(connector.Config{Identity: &id, RemoteURL: remote.URL, DataKey: dataKey, AdapterFile: filepath.Join(dir, "adapters.enc")})
+	al, err := audit.Open(filepath.Join(dir, "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	c, err := connector.New(connector.Config{Identity: &id, RemoteURL: remote.URL, DataKey: dataKey, AdapterFile: filepath.Join(dir, "adapters.enc"), Audit: al})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +119,22 @@ func TestDesktopCoreEndToEnd(t *testing.T) {
 	}
 	if !done || !strings.Contains(text.String(), "ping") {
 		t.Fatalf("stream done=%v text=%q", done, text.String())
+	}
+
+	// The task is in the local audit log, attributed to the SaaS, without content.
+	var recs []audit.Record
+	for i := 0; i < 50 && len(recs) == 0; i++ {
+		recs, _ = c.AuditList(ctx, audit.Filter{})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(recs) != 1 || recs[0].Tenant != "acme" || recs[0].Gateway != gws.URL || recs[0].ConnectionID != id.DeviceID || recs[0].Model != "lm/m1" || recs[0].Status != audit.StatusOK {
+		t.Fatalf("audit %+v", recs)
+	}
+	if b, _ := json.Marshal(recs); strings.Contains(string(b), "ping") {
+		t.Fatal("audit log contains prompt content")
+	}
+	if st, err := c.UsageStats(ctx, audit.Filter{}, []string{audit.BySaaS, audit.ByModel}, false); err != nil || len(st) != 1 || st[0].Requests != 1 {
+		t.Fatalf("stats %+v %v", st, err)
 	}
 
 	// Adapter edits are re-announced on the live session (models.update).

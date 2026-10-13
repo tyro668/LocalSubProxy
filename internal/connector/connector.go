@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"localsubproxy/internal/audit"
 	"localsubproxy/internal/durable"
 	"localsubproxy/internal/lsp2"
 	"localsubproxy/internal/lsp2/client"
@@ -37,6 +38,8 @@ type Config struct {
 	// MaxConcurrency is the number of tasks the device accepts in parallel
 	// (advertised in hello; default 4). Adapters may lower it per adapter.
 	MaxConcurrency int
+	// Audit, if set, receives one record per served task (no prompt content).
+	Audit *audit.Log
 }
 
 type AdapterConfig struct {
@@ -316,8 +319,57 @@ func (x *Connector) ModelCapabilities() map[string][]string {
 	return out
 }
 
-// Execute runs one verified (and, for E2EE tasks, already decrypted) task.
+// Execute runs one verified (and, for E2EE tasks, already decrypted) task and
+// records it in the local audit log.
 func (x *Connector) Execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp2.TaskDelta) error) (*lsp2.TaskDone, *lsp2.ErrorBody) {
+	if x.cfg.Audit == nil {
+		return x.execute(ctx, run, emit)
+	}
+	start := time.Now()
+	var first time.Time
+	done, fail := x.execute(ctx, run, func(d lsp2.TaskDelta) error {
+		if first.IsZero() {
+			first = time.Now()
+		}
+		return emit(d)
+	})
+	x.recordAudit(run, start, first, done, fail)
+	return done, fail
+}
+
+func (x *Connector) recordAudit(run lsp2.TaskRun, start, first time.Time, done *lsp2.TaskDone, fail *lsp2.ErrorBody) {
+	r := audit.Record{At: start, TaskID: run.TaskID, Model: run.Model, Status: audit.StatusOK, LatencyMS: time.Since(start).Milliseconds(),
+		E2EE: run.E2EE != nil, Tools: len(run.Tools) > 0}
+	r.Adapter, _, _ = strings.Cut(run.Model, "/")
+	if id := x.cfg.Identity; id != nil {
+		r.ConnectionID, r.Gateway, r.Tenant, r.SaaSName = id.DeviceID, id.Issuer, id.Tenant, id.SaaSName
+	}
+	if !first.IsZero() {
+		r.TTFTMS = first.Sub(start).Milliseconds()
+	}
+	for _, m := range run.Messages {
+		for _, p := range m.Content.Parts {
+			if p.ImageURL != nil {
+				r.Images++
+			}
+		}
+	}
+	if fail != nil {
+		r.Status, r.ErrorCode = audit.StatusError, fail.Code
+		if fail.Code == lsp2.ErrCancelled {
+			r.Status = audit.StatusCancelled
+		}
+	} else if done != nil && done.Usage != nil {
+		r.PromptTokens, r.CompletionTokens, r.UsageReported = done.Usage.PromptTokens, done.Usage.CompletionTokens, true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := x.cfg.Audit.Record(ctx, r); err != nil {
+		log.Printf("audit: %v", err)
+	}
+}
+
+func (x *Connector) execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp2.TaskDelta) error) (*lsp2.TaskDone, *lsp2.ErrorBody) {
 	adapterID, modelID, ok := strings.Cut(run.Model, "/")
 	x.mu.Lock()
 	a, exists := x.adapters[adapterID]

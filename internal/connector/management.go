@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"localsubproxy/internal/audit"
 	"localsubproxy/internal/durable"
 )
 
@@ -255,4 +256,22 @@ func (x *Connector) refreshHeartbeat() {
 	x.probeAll(ctx)
 	cancel()
 	x.notifyModels()
+}
+
+var errNoAudit = errors.New("audit log not configured")
+
+// AuditList returns recent per-request audit rows (no prompt content).
+func (x *Connector) AuditList(ctx context.Context, f audit.Filter) ([]audit.Record, error) {
+	if x.cfg.Audit == nil {
+		return nil, errNoAudit
+	}
+	return x.cfg.Audit.List(ctx, f)
+}
+
+// UsageStats aggregates token usage by saas, model, day, hour, status or connection.
+func (x *Connector) UsageStats(ctx context.Context, f audit.Filter, groupBy []string, local bool) ([]audit.Bucket, error) {
+	if x.cfg.Audit == nil {
+		return nil, errNoAudit
+	}
+	return x.cfg.Audit.Stats(ctx, f, groupBy, local)
 }

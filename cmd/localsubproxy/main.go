@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,8 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
+	"localsubproxy/internal/audit"
 	"localsubproxy/internal/connector"
 	"localsubproxy/internal/lsp2/client"
 	"localsubproxy/internal/lsp2/gateway"
@@ -67,6 +70,8 @@ func main() {
 		caps := f.String("capabilities", "", "comma separated model capability flags for the initial adapter (tools,vision,audio)")
 		conc := f.Int("max-concurrency", 4, "tasks served in parallel")
 		adapterFile := f.String("adapter-file", filepath.Join(localDir, "adapters.enc"), "encrypted adapter configuration")
+		auditDB := f.String("audit-db", filepath.Join(localDir, "audit.db"), "local per-request audit log (empty disables)")
+		auditKeep := f.Duration("audit-retention", audit.DefaultRetention, "delete audit rows older than this")
 		_ = f.Parse(os.Args[2:])
 		cfg := connector.Config{DataKey: os.Getenv("LOCALSUBPROXY_DATA_KEY"), AdapterFile: *adapterFile, MaxConcurrency: *conc}
 		if *adapter != "" {
@@ -78,10 +83,23 @@ func main() {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
+		if *auditDB != "" {
+			_ = os.MkdirAll(filepath.Dir(*auditDB), 0o700)
+			al, aerr := audit.Open(*auditDB)
+			if aerr != nil {
+				err = aerr
+				break
+			}
+			defer al.Close()
+			go al.RunRetention(ctx, *auditKeep, time.Hour)
+			cfg.Audit = al
+		}
 		err = runConnector(ctx, *remoteURL, *pairLink, *yes, *identity, cfg)
 		if errors.Is(err, context.Canceled) {
 			err = nil
 		}
+	case "usage", "audit":
+		err = auditCmd(os.Args[1], os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -103,7 +121,7 @@ func split(s string) []string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: localsubproxy server [flags] | connector [flags] | codex-models [flags]")
+	fmt.Fprintln(os.Stderr, "usage: localsubproxy server [flags] | connector [flags] | codex-models [flags] | usage [flags] | audit [flags]")
 }
 
 // runConnector pairs (first run) and then serves tasks over lsp2 using the same core as the desktop app.
@@ -170,4 +188,58 @@ func confirm(prompt string) bool {
 	_, _ = fmt.Scanln(&ans)
 	ans = strings.ToLower(strings.TrimSpace(ans))
 	return ans == "y" || ans == "yes"
+}
+
+// auditCmd prints the local audit log ("audit") or aggregated token usage ("usage").
+func auditCmd(name string, args []string) error {
+	configDir, _ := os.UserConfigDir()
+	f := flag.NewFlagSet(name, flag.ExitOnError)
+	db := f.String("audit-db", filepath.Join(configDir, "localsubproxy", "audit.db"), "audit database")
+	since := f.Duration("since", 7*24*time.Hour, "only rows newer than this")
+	saas := f.String("saas", "", "filter by SaaS (tenant) id")
+	model := f.String("model", "", "filter by model")
+	group := f.String("group", "saas,model,day", "usage: comma list of saas,model,day,hour,status,connection")
+	local := f.Bool("local-time", false, "usage: bucket days/hours in local time instead of UTC")
+	limit := f.Int("limit", 50, "audit: max rows")
+	asJSON := f.Bool("json", false, "print JSON")
+	purge := f.Duration("purge-older-than", 0, "audit: delete rows older than this and exit")
+	_ = f.Parse(args)
+	l, err := audit.Open(*db)
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	ctx := context.Background()
+	flt := audit.Filter{Tenant: *saas, Model: *model, Since: time.Now().Add(-*since), Limit: *limit}
+	if name == "audit" && *purge > 0 {
+		n, err := l.Purge(ctx, time.Now().Add(-*purge))
+		fmt.Printf("removed %d rows\n", n)
+		return err
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if name == "audit" {
+		rows, err := l.List(ctx, flt)
+		if err != nil || *asJSON {
+			_ = enc.Encode(rows)
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(w, "TIME\tSAAS\tMODEL\tSTATUS\tERROR\tPROMPT\tCOMPL\tLATENCY")
+		for _, r := range rows {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%dms\n", r.At.Local().Format("2006-01-02 15:04:05"), r.Tenant, r.Model, r.Status, r.ErrorCode, r.PromptTokens, r.CompletionTokens, r.LatencyMS)
+		}
+		return w.Flush()
+	}
+	b, err := l.Stats(ctx, flt, split(*group), *local)
+	if err != nil || *asJSON {
+		_ = enc.Encode(b)
+		return err
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "SAAS\tMODEL\tDAY/HOUR\tREQUESTS\tERRORS\tPROMPT\tCOMPLETION\tTOTAL\tAVG LATENCY")
+	for _, x := range b {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%.0fms\n", x.SaaS, x.Model, x.Day+x.Hour, x.Requests, x.Errors, x.PromptTokens, x.CompletionTokens, x.TotalTokens, x.AvgLatencyMS)
+	}
+	return w.Flush()
 }

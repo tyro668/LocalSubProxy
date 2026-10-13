@@ -139,4 +139,3 @@ func Discover(ctx context.Context, hc *http.Client, remoteURL string) (Discovery
 	}
 	return d, nil
 }
-
