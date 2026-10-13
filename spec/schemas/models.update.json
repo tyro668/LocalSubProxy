@@ -20,6 +20,12 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 16
+    },
+    "model_capabilities": {
+      "$ref": "defs.json#/$defs/modelCapabilities"
+    },
+    "e2ee_key": {
+      "$ref": "defs.json#/$defs/compactJws"
     }
   }
 }

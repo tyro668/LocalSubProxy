@@ -11,4 +11,4 @@ echo "== AsyncAPI 3.0";                     (cd tools && npm install --silent &&
 echo "== Go reference vs vectors/schemas";  (cd .. && go test ./internal/lsp2/ ./internal/lsp2/conformance/)
 echo "== Python skeleton";                  (cd examples/python && "$VENV/bin/python" test_vectors.py | tail -1)
 echo "== Node skeleton";                    (cd examples/node && npm install --silent && node test_vectors.mjs | tail -1)
-if command -v cargo >/dev/null; then echo "== Rust skeleton"; (cd examples/rust && cargo test --quiet --test vectors 2>&1 | grep "test result"); fi
+if command -v cargo >/dev/null; then echo "== Rust skeleton"; (cd examples/rust && cargo test --quiet --test vectors --test ext 2>&1 | grep "test result"); fi

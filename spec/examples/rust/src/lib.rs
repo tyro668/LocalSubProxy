@@ -1,5 +1,6 @@
 //! lsp2 critical-path primitives for a Rust gateway (reference skeleton).
 //! Executed against spec/testvectors/vectors.json by `cargo test`.
+pub mod ext;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};

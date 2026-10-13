@@ -69,6 +69,9 @@ type vectors struct {
 	Negative    []vecNeg            `json:"negative"`
 	ValidFrames []vecFrame          `json:"valid_frames"`
 	BadFrames   []vecFrame          `json:"invalid_frames"`
+	E2EE        *vecE2EE            `json:"e2ee"`
+	Flow        []vecFlow           `json:"flow"`
+	Resume      []vecResume         `json:"resume"`
 }
 
 func vkey(label string) (ed25519.PrivateKey, vecKey) {
@@ -108,9 +111,25 @@ func generate() vectors {
 	pSess := ProofClaims{Iss: devID, Aud: ProofSessionToken, Iat: vecIat, Jti: "p_0192f5e0-7c1a-7cc0-9b4a-000000000006", Ath: Ath(atJWS.Compact)}
 	temp := 0.7
 	run := TaskRun{TaskID: "task_0192f5e0-7c1a-7cc0-9b4a-000000000007", Iat: vecIat, DeviceID: devID, Model: "lm/qwen3-8b",
-		Messages:  []Message{{Role: "system", Content: "你是助手"}, {Role: "user", Content: "Hello, 世界 👋 \"quoted\" \\ </script>"}},
+		Messages:  []Message{{Role: "system", Content: Text("你是助手")}, {Role: "user", Content: Text("Hello, 世界 👋 \"quoted\" \\ </script>")}},
 		MaxTokens: 256, Temperature: &temp, Exp: vecIat + 60, Nonce: "n_9f86d081884c7d659a2feaa0c55ad015"}
 	runJWS := mkJWS("task_run", "task_run", "gateway", gk, TypTask, kid, run, map[string]any{"typ": TypTask, "envelope_task_id": run.TaskID})
+	idx0 := 0
+	mmRun := TaskRun{TaskID: "task_0192f5e0-7c1a-7cc0-9b4a-000000000008", Iat: vecIat, DeviceID: devID, Model: "lm/qwen3-8b",
+		Messages: []Message{
+			{Role: "user", Content: Content{Parts: []ContentPart{{Type: "text", Text: "这张图里是什么？天气如何？"}, {Type: "image_url", ImageURL: &ImageURL{URL: BlobScheme + "b1"}}}}},
+			{Role: "assistant", Content: Content{Null: true}, ToolCalls: []ToolCall{{ID: "call_1", Type: "function", Function: FunctionCall{Name: "get_weather", Arguments: `{"city":"上海"}`}}}},
+			{Role: "tool", ToolCallID: "call_1", Content: Text("晴，22°C")}},
+		Tools:      []Tool{{Type: "function", Function: FunctionDef{Name: "get_weather", Description: "查询天气", Parameters: json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`)}}},
+		ToolChoice: json.RawMessage(`"auto"`),
+		Blobs:      []BlobRef{{ID: "b1", Size: 4, SHA256: B64(sha256Sum([]byte("\x89PNG"))), MediaType: "image/png"}},
+		Exp:        vecIat + 60, Nonce: "n_9f86d081884c7d659a2feaa0c55ad016"}
+	mmJWS := mkJWS("task_run_tools_multimodal", "task_run", "gateway", gk, TypTask, kid, mmRun, map[string]any{"typ": TypTask, "envelope_task_id": mmRun.TaskID})
+	e2Run := TaskRun{TaskID: "task_0192f5e0-7c1a-7cc0-9b4a-000000000009", Iat: vecIat, DeviceID: devID, Model: "lm/qwen3-8b",
+		Blobs: []BlobRef{{ID: "b_e2ee", Size: 512, SHA256: "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU", MediaType: E2EEMediaType}},
+		E2EE:  &E2EERef{Blob: "b_e2ee"}, Exp: vecIat + 60, Nonce: "n_9f86d081884c7d659a2feaa0c55ad017"}
+	e2JWS := mkJWS("task_run_e2ee", "task_run", "gateway", gk, TypTask, kid, e2Run, map[string]any{"typ": TypTask, "envelope_task_id": e2Run.TaskID})
+	_ = idx0
 	v := vectors{
 		Description: "lsp2 conformance vectors. Keys are derived as SHA-256(label) used as Ed25519 seed. 'now' is the verification time (NumericDate). Implementations MUST verify every jws entry with the listed key/expectations and MUST reject every negative entry. Signers are not required to reproduce payload bytes exactly, but Ed25519 over signing_input with the given key MUST yield signature_b64url (Ed25519 is deterministic).",
 		Now:         vecIat + 10,
@@ -124,9 +143,15 @@ func generate() vectors {
 			mkJWS("proof_token_grant", "proof", "device", dk, TypProof, "", pTok, map[string]any{"aud": ProofToken, "iss": "", "credential": deviceCode}),
 			mkJWS("proof_hello", "proof", "device", dk, TypProof, "", pHello, map[string]any{"aud": ProofHello, "iss": devID, "credential": atJWS.Compact}),
 			mkJWS("proof_session_token", "proof", "device", dk, TypProof, "", pSess, map[string]any{"aud": ProofSessionToken, "iss": devID, "credential": atJWS.Compact}),
-			runJWS,
+			runJWS, mmJWS, e2JWS,
 		},
 	}
+	dseed, _ := UnB64(dv.Seed)
+	e2, err := genE2EE(devID, dseed, dv.JKT)
+	if err != nil {
+		panic(err)
+	}
+	v.E2EE, v.Flow, v.Resume = e2, genFlow(), genResume()
 	atPayload, _ := json.Marshal(at)
 	tampered := strings.Split(atJWS.Compact, ".")
 	evil := at
@@ -167,9 +192,30 @@ func generate() vectors {
 		map[string]any{"v": 2, "type": "session.token", "id": "t1", "data": map[string]any{"token_expires_at": vecIat + 1200}},
 		map[string]any{"v": 2, "type": "models.update", "data": map[string]any{"models": []string{"lm/qwen3-8b", "codex/gpt-5"}, "max_concurrency": 1}},
 		map[string]any{"v": 2, "type": "error", "id": "h1", "data": map[string]any{"code": "UNAUTHENTICATED", "message": "invalid key proof"}},
+		map[string]any{"v": 2, "type": "hello", "id": "h2", "data": map[string]any{"device_id": devID, "client": "example/1.0", "models": []string{"lm/qwen3-8b"},
+			"model_capabilities": map[string]any{"lm/qwen3-8b": []string{ModelCapTools, ModelCapVision}}, "max_concurrency": 4, "capabilities": Capabilities,
+			"flow": map[string]any{"task_window": DefaultTaskWindow, "conn_window": DefaultConnWindow}, "e2ee_key": e2.KeyStatement.Compact,
+			"resume": map[string]any{"token": "rt_0192f5e0-7c1a-7cc0-9b4a-0000000000a1", "tasks": []any{map[string]any{"task_id": run.TaskID, "recv_seq": 3}}},
+			"proof":  v.JWS[3].Compact}},
+		map[string]any{"v": 2, "type": "welcome", "id": "h2", "data": map[string]any{"session_id": "sess_02", "heartbeat_seconds": 20, "max_frame_bytes": DefaultMaxFrameBytes, "token_expires_at": vecIat + 600,
+			"capabilities": Capabilities, "max_concurrency": 4, "flow": map[string]any{"task_window": DefaultTaskWindow, "conn_window": DefaultConnWindow},
+			"resume_token": "rt_0192f5e0-7c1a-7cc0-9b4a-0000000000a2", "resume_window_seconds": DefaultResumeSeconds,
+			"resume": map[string]any{"resumed": true, "tasks": []any{map[string]any{"task_id": run.TaskID, "recv_seq": 1}}}}},
+		map[string]any{"v": 2, "type": "task.run", "task_id": mmRun.TaskID, "seq": 1, "jws": mmJWS.Compact},
+		map[string]any{"v": 2, "type": "blob.chunk", "task_id": mmRun.TaskID, "seq": 2, "data": map[string]any{"blob_id": "b1", "offset": 0, "data": B64([]byte("\x89PNG")), "last": true}},
+		map[string]any{"v": 2, "type": "task.ack", "task_id": run.TaskID, "data": map[string]any{"seq": 2}},
+		map[string]any{"v": 2, "type": "task.delta", "task_id": mmRun.TaskID, "seq": 1, "data": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "call_1", "type": "function", "function": map[string]any{"name": "get_weather", "arguments": "{\"city\":\"上海\"}"}}}}},
+		map[string]any{"v": 2, "type": "task.done", "task_id": mmRun.TaskID, "seq": 2, "data": map[string]any{"finish_reason": "tool_calls"}},
+		map[string]any{"v": 2, "type": "task.delta", "task_id": e2Run.TaskID, "seq": 1, "data": map[string]any{"e2ee": e2.Chunks[0].Sealed}},
+		map[string]any{"v": 2, "type": "task.done", "task_id": e2Run.TaskID, "seq": 3, "data": map[string]any{"finish_reason": "stop", "usage": map[string]any{"prompt_tokens": 9, "completion_tokens": 2}, "e2ee": e2.Chunks[2].Sealed}},
+		map[string]any{"v": 2, "type": "models.update", "data": map[string]any{"models": []string{"lm/qwen3-8b"}, "model_capabilities": map[string]any{"lm/qwen3-8b": []string{ModelCapTools}}, "max_concurrency": 2, "e2ee_key": e2.KeyStatement.Compact}},
+		map[string]any{"v": 2, "type": "error", "data": map[string]any{"code": ErrFlowControl, "message": "flow-control window exceeded"}},
 		map[string]any{"v": 2, "type": "x.vendor.future", "id": "f1", "data": map[string]any{"anything": true}, "unknown_member": 1},
 	}
-	names := []string{"hello", "welcome", "task.run", "task.delta", "task.done", "task.error", "task.cancel", "ping", "pong", "session.token(request)", "session.token(response)", "models.update", "error", "unknown type (receivers ignore or answer error, never crash)"}
+	names := []string{"hello", "welcome", "task.run", "task.delta", "task.done", "task.error", "task.cancel", "ping", "pong", "session.token(request)", "session.token(response)", "models.update", "error",
+		"hello(resume, flow, model_capabilities, e2ee_key)", "welcome(flow, resume)", "task.run(seq 1, references blob b1)", "blob.chunk(seq 2)", "task.ack",
+		"task.delta(tool_calls)", "task.done(tool_calls)", "task.delta(e2ee)", "task.done(e2ee)", "models.update(model_capabilities, e2ee_key)", "error(FLOW_CONTROL)",
+		"unknown type (receivers ignore or answer error, never crash)"}
 	for i, f := range frames {
 		b, _ := json.Marshal(f)
 		v.ValidFrames = append(v.ValidFrames, vecFrame{Name: names[i], Frame: b})
@@ -182,6 +228,12 @@ func generate() vectors {
 		{"seq_zero", "seq starts at 1", `{"v":2,"type":"task.delta","task_id":"t1","seq":0,"data":{"text":"a"}}`},
 		{"hello_without_proof", "hello requires proof", `{"v":2,"type":"hello","id":"h1","data":{"device_id":"d","client":"c","models":[],"max_concurrency":1}}`},
 		{"bad_error_code", "error codes are UPPER_SNAKE", `{"v":2,"type":"error","data":{"code":"oops","message":"x"}}`},
+		{"ack_without_seq", "task.ack requires data.seq", `{"v":2,"type":"task.ack","task_id":"t1","data":{}}`},
+		{"blob_chunk_bad_base64url", "blob.chunk data is unpadded base64url", `{"v":2,"type":"blob.chunk","task_id":"t1","seq":1,"data":{"blob_id":"b1","offset":0,"data":"iVBO+w=="}}`},
+		{"flow_window_too_small", "windows MUST be >= 65536 (max_frame_bytes floor)", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":65536,"token_expires_at":1,"capabilities":[],"flow":{"task_window":100,"conn_window":100}}}`},
+		{"delta_text_and_e2ee", "a sealed delta carries no cleartext text/tool_calls", `{"v":2,"type":"task.delta","task_id":"t1","seq":1,"data":{"text":"leak","e2ee":"AAAA"}}`},
+		{"resume_negative_recv_seq", "recv_seq >= 0", `{"v":2,"type":"hello","id":"h1","data":{"device_id":"d","client":"c","models":[],"max_concurrency":1,"proof":"a.b.c","resume":{"token":"r","tasks":[{"task_id":"t","recv_seq":-1}]}}}`},
+		{"bad_model_capability", "model capabilities are tools|vision|audio", `{"v":2,"type":"models.update","data":{"models":["m"],"model_capabilities":{"m":["telepathy"]}}}`},
 		{"concurrency_out_of_range", "max_concurrency is 1..16", `{"v":2,"type":"models.update","data":{"models":[],"max_concurrency":100}}`},
 	}
 	for _, b := range bad {
@@ -270,4 +322,7 @@ func TestVectors(t *testing.T) {
 			t.Fatalf("negative vector %s accepted", n.Name)
 		}
 	}
+	checkExt(t, v)
 }
+
+func sha256Sum(b []byte) []byte { h := sha256.Sum256(b); return h[:] }

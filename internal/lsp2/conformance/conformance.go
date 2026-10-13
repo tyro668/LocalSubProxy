@@ -214,8 +214,10 @@ func (r *runner) run(ctx context.Context) error {
 	r.check("P5", "token request with a proof from a different key is rejected (invalid_grant)", want(m["error"] == "invalid_grant", "got %v", m))
 	st, _, _, _ = r.tenant(http.MethodPost, "/v2/tenant/device-approvals", map[string]any{"user_code": "BBBB-BBBB"})
 	r.check("P6", "approving an unknown user_code fails with 404", want(st == 404, "status %d", st))
-	st, ap, _, err := r.tenant(http.MethodPost, "/v2/tenant/device-approvals", map[string]any{"user_code": strings.ToLower(strings.ReplaceAll(uc, "-", ""))})
-	if !r.check("P7", "tenant back end approves the code (case/separator-insensitive)", want(err == nil && st == 200 && ap["status"] == "approved", "status %d body %v", st, ap)) {
+	st, _, _, _ = r.tenant(http.MethodPost, "/v2/tenant/device-approvals", map[string]any{"user_code": uc, "jkt": lsp2.Thumbprint(other.Public().(ed25519.PublicKey))})
+	r.check("P8", "approval carrying a jkt that does not match the device key is refused with 409 (E2EE pin, §17.2)", want(st == 409, "status %d", st))
+	st, ap, _, err := r.tenant(http.MethodPost, "/v2/tenant/device-approvals", map[string]any{"user_code": strings.ToLower(strings.ReplaceAll(uc, "-", "")), "jkt": lsp2.Thumbprint(pub)})
+	if !r.check("P7", "tenant back end approves the code (case/separator-insensitive, matching jkt)", want(err == nil && st == 200 && ap["status"] == "approved" && ap["jkt"] == lsp2.Thumbprint(pub), "status %d body %v", st, ap)) {
 		return errStop
 	}
 	var tr map[string]any
@@ -404,6 +406,19 @@ loop:
 		}
 	}
 	r.check("K1", "session.token with a fresh token + proof is acknowledged with token_expires_at", want(st == 200 && got, "no acknowledgement"))
+	// negotiated extensions on a fresh connection (§14–§17)
+	if newTok != "" {
+		at = newTok
+	}
+	conn.Close()
+	for range frames {
+	}
+	conn2, frames2 := r.runExt(ctx, key, at)
+	if conn2 == nil {
+		return errStop
+	}
+	defer conn2.Close()
+	frames = frames2
 	// revoke
 	st, _, _, _ = r.tenant(http.MethodPost, "/v2/tenant/devices/"+url.PathEscape(r.devID)+"/revoke", nil)
 	closed := false

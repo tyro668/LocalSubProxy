@@ -108,5 +108,72 @@ try:
 except ImportError:
     print("SKIP schema checks (pip install jsonschema)")
 
+# ---- extensions: E2EE, flow control, resume ----
+import lsp2_ext as x  # noqa: E402
+
+E = V["e2ee"]
+try:
+    xp, kid = x.verify_key_statement(pub("device"), E["key_statement"]["pinned_jkt"], E["key_statement"]["device_id"], E["key_statement"]["compact"], NOW)
+    check("e2ee key statement verifies against pinned jkt", lsp2.b64u(xp) == E["key_statement"]["expect_x25519_public_b64url"] and kid == E["key_statement"]["expect_kid"])
+except Exception as e:  # noqa: BLE001
+    check("e2ee key statement verifies against pinned jkt", False, repr(e))
+xpriv = lsp2.unb64u(E["device_x25519"]["private_b64url"])
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey  # noqa: E402
+check("e2ee X25519 public + RFC 7638 kid", lsp2.b64u(X25519PrivateKey.from_private_bytes(xpriv).public_key().public_bytes_raw()) == E["device_x25519"]["public_b64url"]
+      and x.x25519_thumbprint(lsp2.unb64u(E["device_x25519"]["public_b64url"])) == E["device_x25519"]["kid"])
+J = E["jwe"]
+check("e2ee Concat KDF (RFC 7518 §4.6.2) reproduces cek", lsp2.b64u(x.concat_kdf(lsp2.unb64u(J["shared_secret_b64url"]))) == J["cek_b64url"])
+mine = x.seal_jwe(lsp2.unb64u(E["device_x25519"]["public_b64url"]), J["recipient_kid"], J["plaintext_utf8"].encode(), lsp2.unb64u(J["ephemeral_private_b64url"]), lsp2.unb64u(J["iv_b64url"]))
+check("e2ee seal_jwe with vector ephemeral key/IV: ciphertext and tag match", mine.split(".")[2:] == J["compact"].split(".")[2:] or mine == J["compact"], mine)
+try:
+    h, pt = x.open_jwe(xpriv, J["compact"])
+    check("e2ee open_jwe(reference JWE)", pt.decode() == J["plaintext_utf8"] and h["cty"] == x.CTY_REQUEST)
+except Exception as e:  # noqa: BLE001
+    check("e2ee open_jwe(reference JWE)", False, repr(e))
+h, pt = x.open_jwe(xpriv, mine)
+check("e2ee seal→open round trip", pt.decode() == J["plaintext_utf8"])
+for c in E["chunks"]:
+    k = lsp2.unb64u(c["response_key_b64url"])
+    check(f"e2ee chunk seq {c['seq']} {c['type']}: seal matches", x.seal_chunk(k, c["rid"], c["type"], c["seq"], c["plaintext_utf8"].encode()) == c["sealed_b64url"])
+    check(f"e2ee chunk seq {c['seq']}: nonce/aad", x.chunk_nonce(c["seq"]).hex() == c["nonce_hex"] and x.chunk_aad(c["rid"], c["type"], c["seq"]).decode() == c["aad"])
+k0 = lsp2.unb64u(E["chunks"][0]["response_key_b64url"])
+for n in E["negative"]:
+    try:
+        if n["kind"] == "jwe":
+            x.open_jwe(xpriv, n["compact"])
+        elif n["kind"] == "chunk":
+            x.open_chunk(k0, n["rid"], n["type"], n["seq"], n["sealed_b64url"])
+        else:
+            x.verify_key_statement(pub("device"), n["pinned_jkt"], n["device_id"], n["compact"], NOW)
+        check(f"e2ee negative {n['name']}: rejected", False, "accepted")
+    except Exception:  # noqa: BLE001
+        check(f"e2ee negative {n['name']}: rejected", True)
+for f in V["flow"]:
+    ok = True
+    if f["role"] == "sender":
+        sent = {}
+        for st in f["steps"]:
+            if st["op"] == "send":
+                tu = sum(sz for _, sz in sent.get(st["task"], []))
+                cu = sum(sz for l in sent.values() for _, sz in l)
+                can = x.can_send(f["task_window"], f["conn_window"], tu, cu, st["size"])
+                ok &= can == (st["expect"] == "send")
+                if can:
+                    l = sent.setdefault(st["task"], [])
+                    l.append(((l[-1][0] if l else 0) + 1, st["size"]))
+            else:
+                sent[st["task"]] = [e for e in sent.get(st["task"], []) if e[0] > st["seq"]]
+    else:
+        inb = x.Inbound(f["task_window"], f["conn_window"])
+        for st in f["steps"]:
+            if st["op"] == "recv":
+                ok &= inb.accept(st["task"], st["seq"], st["size"]) == st["expect"]
+            else:
+                inb.acked(st["task"], st["seq"])
+    check(f"flow {f['name']}", ok)
+for r in V["resume"]:
+    unacked = [s for s in r["sent"] if s > r["acked"]]
+    check(f"resume {r['name']}", x.retransmit(unacked, r["peer_recv_seq"]) == r["retransmit"])
+
 print(f"\n{fails} failed")
 sys.exit(1 if fails else 0)

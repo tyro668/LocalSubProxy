@@ -42,6 +42,39 @@
     "proof": {
       "$ref": "defs.json#/$defs/compactJws",
       "description": "Proof JWT, typ lsp2-proof+jwt, aud lsp2:hello, ath=SHA-256(access token)."
+    },
+    "model_capabilities": {
+      "$ref": "defs.json#/$defs/modelCapabilities"
+    },
+    "flow": {
+      "$ref": "defs.json#/$defs/flow",
+      "description": "Receive windows the device grants the gateway (capability flow)."
+    },
+    "e2ee_key": {
+      "$ref": "defs.json#/$defs/compactJws",
+      "description": "E2EE key statement, typ lsp2-e2ee-key+jwt (capability e2ee, §17)."
+    },
+    "resume": {
+      "type": "object",
+      "required": [
+        "token",
+        "tasks"
+      ],
+      "description": "Resume a previous session (capability resume, §14).",
+      "properties": {
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tasks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "defs.json#/$defs/resumeTask"
+          }
+        }
+      }
     }
   }
 }

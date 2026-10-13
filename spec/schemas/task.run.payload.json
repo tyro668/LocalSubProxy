@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://localsubproxy.dev/spec/lsp2/task.run.payload.json",
   "title": "task.run.payload",
-  "description": "JWS payload of task.run (gateway→device)",
+  "description": "JWS payload of task.run (gateway→device). Either messages (cleartext) or e2ee (sealed request) MUST be present.",
   "type": "object",
   "required": [
     "task_id",
@@ -10,8 +10,7 @@
     "exp",
     "nonce",
     "device_id",
-    "model",
-    "messages"
+    "model"
   ],
   "properties": {
     "task_id": {
@@ -50,6 +49,59 @@
       "type": "number",
       "minimum": 0,
       "maximum": 2
+    },
+    "tools": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "$ref": "defs.json#/$defs/tool"
+      }
+    },
+    "tool_choice": {
+      "oneOf": [
+        {
+          "enum": [
+            "none",
+            "auto",
+            "required"
+          ]
+        },
+        {
+          "type": "object"
+        }
+      ]
+    },
+    "blobs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "defs.json#/$defs/blobRef"
+      },
+      "description": "Blobs delivered by the blob.chunk data frames that follow this task.run (§16.3)."
+    },
+    "e2ee": {
+      "type": "object",
+      "required": [
+        "blob"
+      ],
+      "properties": {
+        "blob": {
+          "$ref": "defs.json#/$defs/id",
+          "description": "Blob (media type application/jose) holding the JWE sealed request."
+        }
+      }
     }
-  }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "messages"
+      ]
+    },
+    {
+      "required": [
+        "e2ee"
+      ]
+    }
+  ]
 }

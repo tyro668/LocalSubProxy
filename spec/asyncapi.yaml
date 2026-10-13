@@ -8,6 +8,10 @@ info:
 
     Every WebSocket *text* message is one JSON object (RFC 8259, UTF-8) matching
     `schemas/envelope.json`. Binary messages MUST NOT be sent; a receiver MUST close with 1003.
+
+    Data frames (blob.chunk, task.run, task.delta, task.done, task.error) carry a per-task,
+    per-direction `seq` starting at 1 and are acknowledged with task.ack (capabilities
+    `resume` and `flow`, docs/protocol-v2.md §14–§15). Control frames carry no seq.
 servers:
   production:
     host: gateway.example.com
@@ -65,6 +69,12 @@ channels:
         $ref: '#/components/messages/pongFromGateway'
       errorFromGateway:
         $ref: '#/components/messages/errorFromGateway'
+      blobChunk:
+        $ref: '#/components/messages/blobChunk'
+      taskAckFromGateway:
+        $ref: '#/components/messages/taskAckFromGateway'
+      taskAckToGateway:
+        $ref: '#/components/messages/taskAckToGateway'
 operations:
   sendHello:
     action: send
@@ -156,6 +166,24 @@ operations:
       $ref: '#/channels/device'
     messages:
       - $ref: '#/channels/device/messages/errorFromGateway'
+  receiveBlobChunk:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/blobChunk'
+  receiveTaskAckFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskAckFromGateway'
+  sendTaskAckToGateway:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskAckToGateway'
 components:
   securitySchemes:
     accessToken:
@@ -168,7 +196,7 @@ components:
       name: 'hello'
       title: hello
       contentType: application/json
-      summary: "Device→gateway, first frame. Requires id."
+      summary: "Device→gateway, first frame. Requires id. May carry flow (windows granted to the gateway), resume {token, tasks[{task_id, recv_seq}]}, model_capabilities and e2ee_key (key statement JWS)."
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -180,7 +208,7 @@ components:
       name: 'welcome'
       title: welcome
       contentType: application/json
-      summary: "Gateway→device answer to hello (same id)."
+      summary: "Gateway→device answer to hello (same id). Carries negotiated capabilities, flow, resume_token, resume_window_seconds and, on resume, resume {resumed, tasks}."
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -192,7 +220,7 @@ components:
       name: 'task.run'
       title: task.run
       contentType: application/json
-      summary: "Gateway→device. No data; the payload is the compact JWS in `jws` (typ lsp2-task+jws, schema task.run.payload.json)."
+      summary: "Gateway→device data frame (seq). No data; the payload is the compact JWS in `jws` (typ lsp2-task+jws, schema task.run.payload.json) and may reference blobs, tools and an e2ee sealed request."
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -216,7 +244,7 @@ components:
       name: 'task.delta'
       title: task.delta
       contentType: application/json
-      summary: "Device→gateway, seq 1..n."
+      summary: "Device→gateway data frame: text and/or tool_calls, or e2ee (sealed delta)."
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -341,3 +369,39 @@ components:
             properties:
               type:
                 const: 'error'
+    blobChunk:
+      name: 'blob.chunk'
+      title: blob.chunk
+      contentType: application/json
+      summary: "Gateway→device data frame: a chunk of a blob referenced by the preceding task.run (capability multimodal / e2ee)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'blob.chunk'
+    taskAckFromGateway:
+      name: 'task.ack'
+      title: task.ack
+      contentType: application/json
+      summary: "Gateway→device control frame: acknowledges device data frames ≤ data.seq; frees flow-control window."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.ack'
+    taskAckToGateway:
+      name: 'task.ack'
+      title: task.ack
+      contentType: application/json
+      summary: "Device→gateway control frame: acknowledges gateway data frames ≤ data.seq."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.ack'

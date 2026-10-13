@@ -2,15 +2,63 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://localsubproxy.dev/spec/lsp2/task.delta.json",
   "title": "task.delta",
-  "description": "device→gateway",
+  "description": "device→gateway. Exactly one of: text, tool_calls (both MAY appear together), or e2ee (sealed {text?,tool_calls?}).",
   "type": "object",
-  "required": [
-    "text"
-  ],
+  "minProperties": 1,
   "properties": {
     "text": {
       "type": "string",
       "maxLength": 1048576
+    },
+    "tool_calls": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "$ref": "defs.json#/$defs/toolCall"
+      }
+    },
+    "e2ee": {
+      "$ref": "defs.json#/$defs/b64url",
+      "description": "AES-256-GCM ciphertext||tag of the cleartext delta (§17.5)."
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "text"
+      ]
+    },
+    {
+      "required": [
+        "tool_calls"
+      ]
+    },
+    {
+      "required": [
+        "e2ee"
+      ]
+    }
+  ],
+  "if": {
+    "required": [
+      "e2ee"
+    ]
+  },
+  "then": {
+    "not": {
+      "anyOf": [
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "tool_calls"
+          ]
+        }
+      ]
     }
   }
 }

@@ -32,6 +32,43 @@
       "items": {
         "$ref": "defs.json#/$defs/capability"
       }
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "flow": {
+      "$ref": "defs.json#/$defs/flow",
+      "description": "Receive windows the gateway grants the device."
+    },
+    "resume_token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "resume_window_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600
+    },
+    "resume": {
+      "type": "object",
+      "required": [
+        "resumed",
+        "tasks"
+      ],
+      "properties": {
+        "resumed": {
+          "type": "boolean"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "defs.json#/$defs/resumeTask"
+          }
+        }
+      }
     }
   }
 }

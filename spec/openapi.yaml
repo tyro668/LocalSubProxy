@@ -136,6 +136,7 @@ paths:
               required: [user_code]
               properties:
                 user_code: { type: string, description: 'Case-insensitive; separators and whitespace are ignored.' }
+                jkt: { type: string, description: 'RFC 7638 thumbprint of the device identity key as shown on the device / carried in verification_uri_complete. When present the gateway MUST reject a mismatch with 409; the tenant SHOULD pin it as the E2EE trust anchor (§17.2).' }
                 deny: { type: boolean, default: false }
       responses:
         '200':
@@ -149,9 +150,11 @@ paths:
                   status: { enum: [approved, denied] }
                   device_id: { type: string }
                   device_name: { type: string }
+                  jkt: { type: string }
         '400': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
         '429': { $ref: '#/components/responses/Problem' }
   /v2/tenant/devices:
     get:
@@ -227,6 +230,7 @@ paths:
                         id: { type: string, examples: [dev_0192f5e0/lm/qwen3-8b] }
                         object: { const: model }
                         owned_by: { type: string }
+                        capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/modelCapability' } }
         '401': { $ref: '#/components/responses/OpenAIError' }
   /v1/chat/completions:
     post:
@@ -237,6 +241,8 @@ paths:
         - tenantKey: []
       parameters:
         - $ref: '#/components/parameters/EndUser'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/LastEventID'
       requestBody:
         required: true
         content:
@@ -247,7 +253,11 @@ paths:
           description: |
             `stream=false`: one `chat.completion` object.
             `stream=true`: `text/event-stream` (WHATWG HTML §9.2). Each event is
-            `data: <chat.completion.chunk JSON>`; the stream ends with `data: [DONE]`.
+            `id: <seq>` + `data: <chat.completion.chunk JSON>`; the stream ends with `data: [DONE]`.
+            The `id` lets a client re-attach after a disconnect (same Idempotency-Key + Last-Event-ID,
+            or GET /v2/tenant/tasks/{task_id}/events) and receive exactly the events after that id (§14.4).
+            For lsp2_e2ee requests each chunk carries `lsp2_e2ee: {seq, type, data}` (sealed) instead of
+            delta content; `finish_reason` and `usage` remain cleartext (§17.5).
             On a mid-stream failure the server sends `data: {"error":{...}}` and closes without `[DONE]`.
             Comment lines (`: keep-alive`) may appear at any time.
           headers:
@@ -261,10 +271,35 @@ paths:
         '400': { $ref: '#/components/responses/OpenAIError' }
         '401': { $ref: '#/components/responses/OpenAIError' }
         '404': { $ref: '#/components/responses/OpenAIError' }
+        '413': { $ref: '#/components/responses/OpenAIError' }
+        '422': { $ref: '#/components/responses/OpenAIError' }
         '429': { $ref: '#/components/responses/OpenAIError' }
         '502': { $ref: '#/components/responses/OpenAIError' }
         '503': { $ref: '#/components/responses/OpenAIError' }
         '504': { $ref: '#/components/responses/OpenAIError' }
+  /v2/tenant/tasks/{task_id}/events:
+    get:
+      tags: [openai]
+      summary: Re-attach to a task's SSE stream (resume after a client disconnect)
+      operationId: taskEvents
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+        - $ref: '#/components/parameters/LastEventID'
+        - in: path
+          name: task_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Events with id > Last-Event-ID (or all events), then `[DONE]` or the error event. Finished tasks are replayed from storage.
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-sse-data-schema: { $ref: '#/components/schemas/ChatCompletionChunk' }
+        '401': { $ref: '#/components/responses/OpenAIError' }
+        '404': { $ref: '#/components/responses/OpenAIError' }
 components:
   securitySchemes:
     tenantKey:
@@ -283,6 +318,18 @@ components:
       required: true
       description: Stable, opaque id of the end user as authenticated by the tenant (1–128 chars). The gateway trusts it because the tenant key is server-side only.
       schema: { type: string, minLength: 1, maxLength: 128 }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      description: 'Client-chosen key (1–255 chars, draft-ietf-httpapi-idempotency-key-header). A retry with the same key and body re-attaches to the existing task instead of running it again; the same key with a different body fails with 422 IDEMPOTENCY_KEY_REUSED. With a key, a client disconnect does not cancel the task for 30 s.'
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    LastEventID:
+      in: header
+      name: Last-Event-ID
+      required: false
+      description: SSE id of the last event the client processed (WHATWG HTML §9.2.4); only later events are sent.
+      schema: { type: string, pattern: '^[0-9]+$' }
   responses:
     OAuthError:
       description: RFC 6749 §5.2 / RFC 8628 §3.5 error.
@@ -390,6 +437,12 @@ components:
         created_at: { type: string, format: date-time, description: RFC 3339 UTC }
         online: { type: boolean }
         models: { type: array, items: { type: string } }
+        public_key: { $ref: '#/components/schemas/JWK' }
+        jkt: { type: string, description: RFC 7638 thumbprint of the device identity key }
+        e2ee_key: { type: string, description: 'Latest E2EE key statement (JWS, typ lsp2-e2ee-key+jwt). Tenants MUST verify it against the jkt they pinned at pairing, never against this response alone.' }
+        model_capabilities: { $ref: 'schemas/defs.json#/$defs/modelCapabilities' }
+        capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/capability' } }
+        max_concurrency: { type: integer }
     Problem:
       type: object
       required: [type, title, status]
@@ -402,8 +455,16 @@ components:
         code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
     ChatRequest:
       type: object
-      required: [model, messages]
+      required: [model]
       additionalProperties: true
+      description: Either messages (cleartext) or lsp2_e2ee (sealed) MUST be present, not both.
+      oneOf:
+        - required: [messages]
+          not: { required: [lsp2_e2ee] }
+        - required: [lsp2_e2ee]
+          properties:
+            messages: false
+            tools: false
       properties:
         model: { type: string, description: '`<device_id>/<model>` or a bare model name served by exactly one of the caller''s devices' }
         messages:
@@ -411,9 +472,18 @@ components:
           minItems: 1
           maxItems: 200
           items: { $ref: 'schemas/defs.json#/$defs/message' }
+        tools:
+          type: array
+          maxItems: 128
+          items: { $ref: 'schemas/defs.json#/$defs/tool' }
+          description: Requires the model capability `tools` (else 400 CAPABILITY_UNSUPPORTED).
+        tool_choice: { oneOf: [ { enum: [none, auto, required] }, { type: object } ] }
         stream: { type: boolean, default: false }
         max_tokens: { type: integer, minimum: 1 }
         temperature: { type: number, minimum: 0, maximum: 2 }
+        lsp2_e2ee:
+          type: string
+          description: 'JWE compact serialization (alg ECDH-ES, crv X25519, enc A256GCM, cty lsp2-request+json) of an E2EE request {rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key} sealed to the device key from its verified key statement (§17).'
     ChatCompletion:
       type: object
       required: [id, object, created, model, choices]
@@ -450,5 +520,14 @@ components:
                 properties:
                   role: { type: string }
                   content: { type: string }
+                  tool_calls: { type: array, items: { $ref: 'schemas/defs.json#/$defs/toolCall' } }
               finish_reason: { type: [string, 'null'] }
         usage: { $ref: 'schemas/defs.json#/$defs/usage' }
+        lsp2_e2ee:
+          type: object
+          required: [seq, type, data]
+          description: Sealed result frame; open with the request's response_key (nonce 0^32||BE64(seq), AAD "lsp2-e2ee/v1|rid|type|seq").
+          properties:
+            seq: { type: integer, minimum: 1 }
+            type: { enum: [task.delta, task.done] }
+            data: { type: string, description: base64url ciphertext||tag }

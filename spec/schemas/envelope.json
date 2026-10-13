@@ -372,6 +372,65 @@
           "jws": false
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "blob.chunk"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "seq",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "blob.chunk"
+          },
+          "jws": false,
+          "data": {
+            "$ref": "blob.chunk.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.ack"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.ack"
+          },
+          "jws": false,
+          "data": {
+            "$ref": "task.ack.json"
+          }
+        }
+      }
     }
   ]
 }
