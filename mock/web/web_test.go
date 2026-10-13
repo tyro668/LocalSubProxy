@@ -31,9 +31,9 @@ func TestWrapServesUIAndPassesAPI(t *testing.T) {
 	}
 }
 
-// The Node and Python gateways serve the same files with the same CSP.
+// The Node and Python SDK engines serve the same files with the same CSP.
 func TestSiblingImplementationsShareCSP(t *testing.T) {
-	for _, f := range []string{"../node/gateway.mjs", "../python/gateway.py"} {
+	for _, f := range []string{"../../sdk/node/src/engine/gateway.js", "../../sdk/python/src/lsp2_server/engine.py"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
