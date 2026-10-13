@@ -2,7 +2,7 @@ import asyncio
 import json
 import unittest
 
-import lsp2 as L
+from lsp2_server import protocol as L
 
 KEY = L.SigningKey(bytes([7]) * 32)
 

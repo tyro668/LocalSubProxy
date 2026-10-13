@@ -26,9 +26,10 @@ start() { # impl port
       (cd mock/node && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
       db=(); [ "$impl" = node-sqlite ] && db=(--db "$tmp/node.db")
       node mock/node/gateway.mjs --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json "${db[@]}" >"$tmp/$impl.log" 2>&1 & ;;
-    python)
-      [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && mock/python/.venv/bin/pip install -q -r mock/python/requirements.txt; }
-      (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json) >"$tmp/$impl.log" 2>&1 & ;;
+    python|python-sqlite)
+      [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && (cd mock/python && .venv/bin/pip install -q -r requirements.txt); }
+      db=(); [ "$impl" = python-sqlite ] && db=(--db "$tmp/python.db")
+      (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json "${db[@]}") >"$tmp/$impl.log" 2>&1 & ;;
     go)
       go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
       "$tmp/localsubproxy" server -listen "127.0.0.1:$port" -db "$tmp/go.db" -tenants acme:LSP_TENANT_KEY_ACME \
@@ -38,6 +39,10 @@ start() { # impl port
       (cd examples/express && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
       TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port \
         node examples/express/server.mjs >"$tmp/$impl.log" 2>&1 & ;;
+    fastapi)
+      [ -x examples/fastapi/.venv/bin/python ] || { python3 -m venv examples/fastapi/.venv && (cd examples/fastapi && .venv/bin/pip install -q -r requirements.txt); }
+      (cd examples/fastapi && TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=../../mock/tenant-profiles.example.json PORT=$port \
+        exec .venv/bin/uvicorn app:app --host 127.0.0.1 --port "$port" --ws websockets --log-level warning) >"$tmp/$impl.log" 2>&1 & ;;
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
   pids+=($!)
