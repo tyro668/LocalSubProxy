@@ -1,7 +1,7 @@
 // Package v2proto defines the LocalSubProxy protocol v2 ("lsp2") wire types,
 // error codes and the Ed25519 helpers shared by the mock gateway and connector.
 // See docs/protocol-v2.md.
-package v2proto
+package lsp2
 
 import (
 	"crypto/ed25519"
@@ -34,7 +34,24 @@ const (
 	TypePing       = "ping"
 	TypePong       = "pong"
 	TypeError      = "error"
+	// TypeSessionToken (device→gateway, answered with the same type) swaps in a
+	// fresh access token mid-connection; TypeModelsUpdate re-announces models.
+	TypeSessionToken = "session.token"
+	TypeModelsUpdate = "models.update"
 )
+
+// SessionToken carries a refreshed token plus a key proof over its jti.
+type SessionToken struct {
+	AccessToken string `json:"access_token,omitempty"`
+	TS          int64  `json:"ts,omitempty"`
+	Proof       string `json:"proof,omitempty"`
+	ExpiresAt   int64  `json:"token_expires_at,omitempty"`
+}
+
+type ModelsUpdate struct {
+	Models         []string `json:"models"`
+	MaxConcurrency int      `json:"max_concurrency,omitempty"`
+}
 
 // Envelope is the single frame shape on the wire. Data is kept raw so the
 // gateway signature (Sig) covers exactly the bytes that were transmitted.

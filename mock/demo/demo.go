@@ -21,11 +21,11 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/mock/connector"
+	"localsubproxy/internal/lsp2/client"
+	"localsubproxy/internal/lsp2/gateway"
+	"localsubproxy/internal/lsp2/store"
 	"localsubproxy/mock/fakemodel"
-	"localsubproxy/mock/gateway"
 	"localsubproxy/mock/saas"
-	"localsubproxy/mock/store"
 )
 
 type Result struct {
@@ -38,6 +38,7 @@ type Result struct {
 	BobRevokeStatus int
 	PromptInDB      bool
 	RevokedRefresh  bool
+	TokenRefreshes  int64
 }
 
 func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
@@ -55,7 +56,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 		return nil, err
 	}
 	defer st.Close()
-	gw, err := gateway.New(gateway.Config{Store: st, Logger: quiet})
+	gw, err := gateway.New(gateway.Config{Store: st, Logger: quiet, TokenTTL: 3 * time.Second, PingInterval: 500 * time.Millisecond})
 	if err != nil {
 		return nil, err
 	}
@@ -94,16 +95,12 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 		return nil, err
 	}
 
-	codeCh := make(chan string, 1)
-	conn := connector.New(connector.Config{SaaSURL: acme.URL, IdentityFile: filepath.Join(dir, "identity.json"), DeviceName: "Alice-MacBook",
-		ModelURL: model.URL, Models: []string{"qwen3-8b", "broken"}, MaxConcurrency: 2, Logger: quiet,
-		OnUserCode: func(code, link string) {
-			say("② 桌面连接器显示配对码 %s（打开 %s 输入）", code, link)
-			codeCh <- code
-		}})
-	pairErr := make(chan error, 1)
-	go func() { pairErr <- conn.Pair(ctx) }()
-	code := <-codeCh
+	pairing, err := client.StartPairing(ctx, nil, acme.URL, "Alice-MacBook")
+	if err != nil {
+		return nil, err
+	}
+	code := pairing.UserCode
+	say("② 桌面连接器显示配对码 %s（打开 %s 输入）", code, pairing.LinkURL)
 	req, _ := http.NewRequest("POST", acme.URL+"/link", strings.NewReader(url.Values{"user_code": {code}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
@@ -115,8 +112,16 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	_ = json.NewDecoder(r.Body).Decode(&appr)
 	r.Body.Close()
 	say("③ alice 在已登录页面输入配对码 → %v", appr)
-	if err := <-pairErr; err != nil {
+	id, err := pairing.Wait(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("pair: %w", err)
+	}
+	if err := client.SaveIdentityFile(filepath.Join(dir, "identity.json"), id); err != nil {
+		return nil, err
+	}
+	conn, err := client.New(client.Config{Executor: &client.OpenAIExecutor{BaseURL: model.URL, ModelList: []string{"qwen3-8b", "broken"}}, MaxConcurrency: 2, Logger: quiet}, id)
+	if err != nil {
+		return nil, err
 	}
 	res.DeviceID = conn.DeviceID()
 	say("④ 设备换到短期令牌，身份已保存（私钥只在本机）：device_id=%s", res.DeviceID)
@@ -236,10 +241,18 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	}
 	say("⑩ 隔离：同租户的 bob 看到 %d 个模型，尝试吊销 alice 的设备 → HTTP %d", res.BobModels, res.BobRevokeStatus)
 
+	for i := 0; i < 50 && gw.TokenRefreshes() < 1; i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	res.TokenRefreshes = gw.TokenRefreshes()
+	_, md := get(alice, "/api/models")
+	ml, _ := md["data"].([]any)
+	say("⑪ 会话内令牌续期（令牌有效期设为 3 秒演示）：已续期 %d 次，设备仍在线（可见模型 %d 个）", res.TokenRefreshes, len(ml))
+
 	raw, _ := os.ReadFile(dbPath)
 	wal, _ := os.ReadFile(dbPath + "-wal")
 	res.PromptInDB = bytes.Contains(append(raw, wal...), []byte("帮我写一句问候"))
-	say("⑪ 静态加密：数据库文件中能否找到明文提示词？%v", res.PromptInDB)
+	say("⑫ 静态加密：数据库文件中能否找到明文提示词？%v", res.PromptInDB)
 
 	rv, _ = http.NewRequest("POST", acme.URL+"/api/devices/revoke", strings.NewReader("device_id="+res.DeviceID))
 	rv.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -253,6 +266,6 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 		d := devs[0].(map[string]any)
 		res.RevokedRefresh = d["status"] == "revoked" && d["online"] == false
 	}
-	say("⑫ alice 吊销设备 → 状态 revoked、会话被关闭、设备离线：%v", res.RevokedRefresh)
+	say("⑬ alice 吊销设备 → 状态 revoked、会话被关闭、设备离线：%v", res.RevokedRefresh)
 	return res, nil
 }

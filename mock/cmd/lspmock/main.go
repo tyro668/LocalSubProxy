@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/mock/connector"
+	"localsubproxy/internal/lsp2"
+	"localsubproxy/internal/lsp2/client"
+	"localsubproxy/internal/lsp2/gateway"
+	"localsubproxy/internal/lsp2/store"
 	"localsubproxy/mock/demo"
 	"localsubproxy/mock/fakemodel"
-	"localsubproxy/mock/gateway"
 	"localsubproxy/mock/saas"
-	"localsubproxy/mock/store"
-	"localsubproxy/mock/v2proto"
 )
 
 func main() {
@@ -85,7 +85,7 @@ func main() {
 			}
 		}
 		go g.RunRetention(ctx, time.Hour)
-		log.Printf("lsp2 gateway on http://%s (gateway key %s)", *listen, v2proto.B64(g.PublicKey()))
+		log.Printf("lsp2 gateway on http://%s (gateway key %s)", *listen, lsp2.B64(g.PublicKey()))
 		err = serve(ctx, *listen, g.Handler())
 	case "saas":
 		f := flag.NewFlagSet("saas", flag.ExitOnError)
@@ -116,19 +116,27 @@ func main() {
 		models := f.String("models", "qwen3-8b", "allowlisted model IDs")
 		conc := f.Int("concurrency", 2, "")
 		f.Parse(os.Args[2:])
-		c := connector.New(connector.Config{SaaSURL: *saasURL, IdentityFile: *id, DeviceName: *name, ModelURL: *modelURL, Models: strings.Split(*models, ","), MaxConcurrency: *conc,
-			OnUserCode: func(code, link string) {
-				fmt.Printf("\n  配对码: %s\n  请在浏览器打开 %s 并确认\n\n", code, link)
-			}})
-		ok, e := c.Load()
+		ident, ok, e := client.LoadIdentityFile(*id)
 		if e != nil {
 			log.Fatal(e)
 		}
 		if !ok {
-			if e := c.Pair(ctx); e != nil {
+			p, e := client.StartPairing(ctx, nil, *saasURL, *name)
+			if e != nil {
 				log.Fatal(e)
 			}
-			log.Printf("paired as %s", c.DeviceID())
+			fmt.Printf("\n  配对码: %s\n  请在浏览器打开 %s 并确认\n\n", p.UserCode, p.LinkURL)
+			if ident, e = p.Wait(ctx); e != nil {
+				log.Fatal(e)
+			}
+			if e := client.SaveIdentityFile(*id, ident); e != nil {
+				log.Fatal(e)
+			}
+			log.Printf("paired as %s", ident.DeviceID)
+		}
+		c, e := client.New(client.Config{Executor: &client.OpenAIExecutor{BaseURL: *modelURL, ModelList: strings.Split(*models, ",")}, MaxConcurrency: *conc}, ident)
+		if e != nil {
+			log.Fatal(e)
 		}
 		err = c.Run(ctx, nil)
 	default:

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/mock/store"
-	"localsubproxy/mock/v2proto"
+	"localsubproxy/internal/lsp2"
+	"localsubproxy/internal/lsp2/store"
 )
 
 // models lists "device_id/model" plus bare model names for the caller's own
@@ -21,13 +21,13 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	}
 	ds, err := g.cfg.Store.ListDevices(r.Context(), t.ID, user)
 	if err != nil {
-		apiError(w, 500, v2proto.ErrInternal, "storage error")
+		apiError(w, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
 	data := []map[string]any{}
 	for _, d := range ds {
 		if s := g.online(d.ID); s != nil && d.Status == "active" {
-			for _, m := range s.models {
+			for _, m := range s.modelList() {
 				data = append(data, map[string]any{"id": d.ID + "/" + m, "object": "model", "owned_by": d.Name})
 			}
 		}
@@ -36,11 +36,11 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 }
 
 type chatRequest struct {
-	Model       string            `json:"model"`
-	Messages    []v2proto.Message `json:"messages"`
-	Stream      bool              `json:"stream"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	Temperature *float64          `json:"temperature,omitempty"`
+	Model       string         `json:"model"`
+	Messages    []lsp2.Message `json:"messages"`
+	Stream      bool           `json:"stream"`
+	MaxTokens   int            `json:"max_tokens,omitempty"`
+	Temperature *float64       `json:"temperature,omitempty"`
 	// Unknown OpenAI fields are ignored rather than rejected.
 }
 
@@ -48,7 +48,7 @@ type chatRequest struct {
 func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*session, string, string, int) {
 	ds, err := g.cfg.Store.ListDevices(ctx, tenant, user)
 	if err != nil {
-		return nil, "", v2proto.ErrInternal, 500
+		return nil, "", lsp2.ErrInternal, 500
 	}
 	want, bare := model, true
 	devID := ""
@@ -61,12 +61,12 @@ func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*ses
 			continue
 		}
 		known = known || !bare
-		if s := g.online(d.ID); s != nil && contains(s.models, want) {
+		if s := g.online(d.ID); s != nil && contains(s.modelList(), want) {
 			return s, want, "", 0
 		}
 	}
 	if known {
-		return nil, "", v2proto.ErrDeviceOffline, 503
+		return nil, "", lsp2.ErrDeviceOffline, 503
 	}
 	if len(ds) > 0 && bare {
 		online := false
@@ -74,15 +74,15 @@ func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*ses
 			online = online || g.online(d.ID) != nil
 		}
 		if !online {
-			return nil, "", v2proto.ErrDeviceOffline, 503
+			return nil, "", lsp2.ErrDeviceOffline, 503
 		}
 	}
-	return nil, "", v2proto.ErrModelNotFound, 404
+	return nil, "", lsp2.ErrModelNotFound, 404
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		apiError(w, 405, v2proto.ErrBadRequest, "POST required")
+		apiError(w, 405, lsp2.ErrBadRequest, "POST required")
 		return
 	}
 	t, user, ok := g.tenantAuth(w, r)
@@ -91,52 +91,52 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	var req chatRequest
 	if err := decode(r, &req, 1<<20); err != nil || req.Model == "" || len(req.Messages) == 0 || len(req.Messages) > 200 {
-		apiError(w, 400, v2proto.ErrBadRequest, "model and 1-200 messages required")
+		apiError(w, 400, lsp2.ErrBadRequest, "model and 1-200 messages required")
 		return
 	}
 	for _, m := range req.Messages {
 		if m.Role != "system" && m.Role != "user" && m.Role != "assistant" {
-			apiError(w, 400, v2proto.ErrBadRequest, "unsupported role "+m.Role)
+			apiError(w, 400, lsp2.ErrBadRequest, "unsupported role "+m.Role)
 			return
 		}
 	}
 	s, model, code, status := g.resolve(r.Context(), t.ID, user, req.Model)
 	if s == nil {
-		apiError(w, status, code, map[string]string{v2proto.ErrDeviceOffline: "your device is offline", v2proto.ErrModelNotFound: "model not found on your devices"}[code])
+		apiError(w, status, code, map[string]string{lsp2.ErrDeviceOffline: "your device is offline", lsp2.ErrModelNotFound: "model not found on your devices"}[code])
 		return
 	}
-	taskID := v2proto.RandomID("task_")
-	ch := make(chan v2proto.Envelope, 1024)
+	taskID := lsp2.RandomID("task_")
+	ch := make(chan lsp2.Envelope, 1024)
 	s.mu.Lock()
 	if len(s.runs) >= s.maxConc {
 		s.mu.Unlock()
 		w.Header().Set("Retry-After", "2")
-		apiError(w, 429, v2proto.ErrDeviceBusy, "device is at max concurrency")
+		apiError(w, 429, lsp2.ErrDeviceBusy, "device is at max concurrency")
 		return
 	}
 	s.runs[taskID] = ch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.runs, taskID); s.mu.Unlock() }()
 
-	run := v2proto.TaskRun{DeviceID: s.deviceID, Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Temperature: req.Temperature,
-		Exp: time.Now().Add(time.Minute).Unix(), Nonce: v2proto.RandomID("n_")}
+	run := lsp2.TaskRun{DeviceID: s.deviceID, Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Temperature: req.Temperature,
+		Exp: time.Now().Add(time.Minute).Unix(), Nonce: lsp2.RandomID("n_")}
 	data, _ := json.Marshal(run)
 	ctx := context.WithoutCancel(r.Context())
 	now := time.Now()
 	if err := g.cfg.Store.CreateTask(ctx, store.Task{ID: taskID, TenantID: t.ID, OwnerID: user, DeviceID: s.deviceID, Model: model, State: "RUNNING", Request: data, CreatedAt: now, UpdatedAt: now}); err != nil {
-		apiError(w, 500, v2proto.ErrInternal, "storage error")
+		apiError(w, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
-	sig := v2proto.B64(edSign(g, v2proto.TaskRunSigningInput(taskID, data)))
-	if err := s.send(v2proto.Envelope{V: v2proto.Version, Type: v2proto.TypeTaskRun, TaskID: taskID, Data: data, Sig: sig}); err != nil {
+	sig := lsp2.B64(edSign(g, lsp2.TaskRunSigningInput(taskID, data)))
+	if err := s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeTaskRun, TaskID: taskID, Data: data, Sig: sig}); err != nil {
 		_ = g.cfg.Store.SetTaskState(ctx, taskID, "FAILED")
-		apiError(w, 503, v2proto.ErrDeviceOffline, "device disconnected")
+		apiError(w, 503, lsp2.ErrDeviceOffline, "device disconnected")
 		return
 	}
 	w.Header().Set("X-Task-Id", taskID)
 
 	created := now.Unix()
-	chunk := func(delta map[string]any, finish any, usage *v2proto.Usage) []byte {
+	chunk := func(delta map[string]any, finish any, usage *lsp2.Usage) []byte {
 		m := map[string]any{"id": "chatcmpl-" + taskID, "object": "chat.completion.chunk", "created": created, "model": req.Model,
 			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
 		if usage != nil {
@@ -162,7 +162,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	defer timeout.Stop()
 	keep := time.NewTicker(15 * time.Second)
 	defer keep.Stop()
-	fail := func(state string, eb v2proto.ErrorBody, status int) {
+	fail := func(state string, eb lsp2.ErrorBody, status int) {
 		_ = g.cfg.Store.SetTaskState(ctx, taskID, state)
 		if req.Stream {
 			b, _ := json.Marshal(map[string]any{"error": map[string]any{"message": eb.Message, "type": "lsp2_error", "code": eb.Code}})
@@ -176,7 +176,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	cancel := func(reason string) {
 		b, _ := json.Marshal(map[string]string{"reason": reason})
-		_ = s.send(v2proto.Envelope{V: v2proto.Version, Type: v2proto.TypeTaskCancel, TaskID: taskID, Data: b})
+		_ = s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeTaskCancel, TaskID: taskID, Data: b})
 	}
 	for {
 		select {
@@ -186,10 +186,10 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-timeout.C:
 			cancel("timeout")
-			fail("FAILED", v2proto.ErrorBody{Code: v2proto.ErrTimeout, Message: "task timed out"}, 504)
+			fail("FAILED", lsp2.ErrorBody{Code: lsp2.ErrTimeout, Message: "task timed out"}, 504)
 			return
 		case <-s.closed:
-			fail("FAILED", v2proto.ErrorBody{Code: v2proto.ErrDeviceOffline, Message: "device disconnected mid-task", Retryable: true}, 503)
+			fail("FAILED", lsp2.ErrorBody{Code: lsp2.ErrDeviceOffline, Message: "device disconnected mid-task", Retryable: true}, 503)
 			return
 		case <-keep.C:
 			if req.Stream {
@@ -201,14 +201,14 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		case e := <-ch:
 			if e.Seq != lastSeq+1 {
 				cancel("protocol_error")
-				fail("FAILED", v2proto.ErrorBody{Code: v2proto.ErrInternal, Message: "sequence gap from device"}, 502)
+				fail("FAILED", lsp2.ErrorBody{Code: lsp2.ErrInternal, Message: "sequence gap from device"}, 502)
 				return
 			}
 			lastSeq = e.Seq
 			_ = g.cfg.Store.AppendEvent(ctx, store.Event{TaskID: taskID, Seq: e.Seq, Kind: e.Type, Data: e.Data, At: time.Now()})
 			switch e.Type {
-			case v2proto.TypeTaskDelta:
-				var d v2proto.TaskDelta
+			case lsp2.TypeTaskDelta:
+				var d lsp2.TaskDelta
 				_ = json.Unmarshal(e.Data, &d)
 				if req.Stream {
 					fmt.Fprintf(w, "data: %s\n\n", chunk(map[string]any{"content": d.Text}, nil, nil))
@@ -218,8 +218,8 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 				} else {
 					text.WriteString(d.Text)
 				}
-			case v2proto.TypeTaskDone:
-				var d v2proto.TaskDone
+			case lsp2.TypeTaskDone:
+				var d lsp2.TaskDone
 				_ = json.Unmarshal(e.Data, &d)
 				if d.FinishReason == "" {
 					d.FinishReason = "stop"
@@ -239,11 +239,11 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 				}
 				writeJSON(w, 200, resp)
 				return
-			case v2proto.TypeTaskError:
-				var eb v2proto.ErrorBody
+			case lsp2.TypeTaskError:
+				var eb lsp2.ErrorBody
 				_ = json.Unmarshal(e.Data, &eb)
 				state := "FAILED"
-				if eb.Code == v2proto.ErrCancelled {
+				if eb.Code == lsp2.ErrCancelled {
 					state = "CANCELLED"
 				}
 				fail(state, eb, 502)

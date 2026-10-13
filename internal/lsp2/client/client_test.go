@@ -1,0 +1,28 @@
+package client
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"localsubproxy/internal/lsp2"
+)
+
+// A task.run not signed by the pinned gateway key must never execute.
+func TestRejectsForgedTaskRun(t *testing.T) {
+	gwPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	_, dev, _ := ed25519.GenerateKey(rand.Reader)
+	_, attacker, _ := ed25519.GenerateKey(rand.Reader)
+	c, err := New(Config{Executor: &OpenAIExecutor{ModelList: []string{"m"}}}, Identity{GatewayURL: "http://127.0.0.1:1", DeviceID: "dev_1", PrivateKey: lsp2.B64(dev), GatewayKey: lsp2.B64(gwPub)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(lsp2.TaskRun{DeviceID: "dev_1", Model: "m", Exp: time.Now().Add(time.Minute).Unix(), Nonce: "n"})
+	sig := lsp2.B64(ed25519.Sign(attacker, lsp2.TaskRunSigningInput("task_1", data)))
+	c.onRun(lsp2.Envelope{Type: lsp2.TypeTaskRun, TaskID: "task_1", Data: data, Sig: sig})
+	if c.Running() != 0 {
+		t.Fatal("forged task started")
+	}
+}

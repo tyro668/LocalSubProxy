@@ -21,7 +21,7 @@ func TestEndToEnd(t *testing.T) {
 	if r.CancelState != "CANCELLED" || r.UpstreamErrCode != "UPSTREAM_ERROR" || r.NotFoundCode != "MODEL_NOT_FOUND" {
 		t.Fatalf("unexpected %+v", r)
 	}
-	if r.BobModels != 0 || r.BobRevokeStatus != 404 || r.PromptInDB || !r.RevokedRefresh {
+	if r.BobModels != 0 || r.BobRevokeStatus != 404 || r.PromptInDB || !r.RevokedRefresh || r.TokenRefreshes < 1 {
 		t.Fatalf("isolation/encryption/revoke %+v", r)
 	}
 }

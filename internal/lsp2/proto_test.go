@@ -1,4 +1,4 @@
-package v2proto
+package lsp2
 
 import (
 	"crypto/ed25519"
