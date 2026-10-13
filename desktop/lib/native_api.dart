@@ -65,12 +65,55 @@ class NativeApi {
   Map<String, dynamic> status() =>
       (_invoke(_call, {'action': 'status'}) as Map).cast<String, dynamic>();
 
-  // lsp2: RFC 8628 pairing. The kernel shows a user code that the
-  // user confirms on the signed-in remote service page; it then polls itself.
-  Map<String, dynamic> pairStart(String remoteUrl) =>
-      (_invoke(_call, {'action': 'pair_start', 'remote_url': remoteUrl})
+  // lsp2 pairing, step 1: resolve the SaaS (https origin or lsp2://pair
+  // link) and verify the gateway's signed metadata. Returns
+  // {state: consent, consent: {saas: {...}, gateway, tenant, ...}}.
+  Map<String, dynamic> pairPrepare(String urlOrLink) =>
+      (_invoke(_call, {
+                'action': 'pair_prepare',
+                if (urlOrLink.startsWith('lsp2://'))
+                  'link': urlOrLink
+                else
+                  'remote_url': urlOrLink,
+              })
               as Map)
           .cast<String, dynamic>();
+
+  // Step 2a: the user approved the consent screen. Returns the RFC 8628
+  // user code that the user confirms on the signed-in SaaS page.
+  Map<String, dynamic> pairApprove() =>
+      (_invoke(_call, {'action': 'pair_approve'}) as Map)
+          .cast<String, dynamic>();
+
+  // Step 2b: the user declined (CONSENT_DENIED); nothing is sent.
+  void pairDeny() => _invoke(_call, {'action': 'pair_deny'});
+
+  // Local audit log and token usage (no prompt content is stored).
+  List<Map<String, dynamic>> usageStats(List<String> groupBy, int days) {
+    final since = DateTime.now()
+        .toUtc()
+        .subtract(Duration(days: days))
+        .toIso8601String();
+    final r = _invoke(_call, {
+      'action': 'usage_stats',
+      'group_by': groupBy,
+      'filter': {'since': since},
+      'local_time': true,
+    }) as Map;
+    return ((r['buckets'] as List?) ?? [])
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .toList();
+  }
+
+  List<Map<String, dynamic>> auditList(int limit) {
+    final r = _invoke(_call, {
+      'action': 'audit_list',
+      'filter': {'limit': limit},
+    }) as Map;
+    return ((r['records'] as List?) ?? [])
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .toList();
+  }
 
   Map<String, dynamic> pairStatus() =>
       (_invoke(_call, {'action': 'pair_status'}) as Map)
@@ -82,8 +125,21 @@ class NativeApi {
 
 // These closures are created outside widget State. Isolate.run otherwise can
 // retain a State (including its Timer), which cannot cross isolate boundaries.
-Future<Map<String, dynamic>> pairStartAsync(String url) =>
-    Isolate.run(() => NativeApi.instance.pairStart(url));
+Future<Map<String, dynamic>> pairPrepareAsync(String urlOrLink) =>
+    Isolate.run(() => NativeApi.instance.pairPrepare(urlOrLink));
+
+Future<Map<String, dynamic>> pairApproveAsync() =>
+    Isolate.run(() => NativeApi.instance.pairApprove());
+
+Future<void> pairDenyAsync() => Isolate.run(() => NativeApi.instance.pairDeny());
+
+Future<List<Map<String, dynamic>>> usageStatsAsync(
+  List<String> groupBy,
+  int days,
+) => Isolate.run(() => NativeApi.instance.usageStats(groupBy, days));
+
+Future<List<Map<String, dynamic>>> auditListAsync(int limit) =>
+    Isolate.run(() => NativeApi.instance.auditList(limit));
 
 Future<Map<String, dynamic>> pairStatusAsync() =>
     Isolate.run(() => NativeApi.instance.pairStatus());

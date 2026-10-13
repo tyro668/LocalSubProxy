@@ -78,6 +78,10 @@ class _HomePageState extends State<HomePage> {
   // remote service page.
   String? pairUserCode;
   String? pairLinkUrl;
+  // Verified SaaS identity awaiting the user's explicit approve/deny.
+  Map<String, dynamic>? consent;
+  // Local token usage (last 7 days, by SaaS and model).
+  List<Map<String, dynamic>> usage = [];
   VoidCallback? _connectionRefresh;
 
   NativeApi get api => NativeApi.instance;
@@ -221,13 +225,11 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => busy = true);
     try {
-      final p = await pairStartAsync(url);
+      final p = await pairPrepareAsync(url);
       if (mounted) {
         setState(() {
-          awaitingCode = true;
           pendingRemoteURL = url;
-          pairUserCode = p['user_code'] as String?;
-          pairLinkUrl = p['link_url'] as String?;
+          consent = (p['consent'] as Map?)?.cast<String, dynamic>();
         });
       }
     } catch (e) {
@@ -235,6 +237,45 @@ class _HomePageState extends State<HomePage> {
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+
+  Future<void> approveConsent() async {
+    setState(() => busy = true);
+    try {
+      final p = await pairApproveAsync();
+      if (mounted) {
+        setState(() {
+          consent = null;
+          awaitingCode = true;
+          pairUserCode = p['user_code'] as String?;
+          pairLinkUrl = p['link_url'] as String?;
+        });
+      }
+    } catch (e) {
+      if (mounted) show('配对失败：$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> denyConsent() async {
+    try {
+      await pairDenyAsync();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        consent = null;
+        pendingRemoteURL = null;
+      });
+      show('已拒绝该服务的配对请求（CONSENT_DENIED）');
+    }
+  }
+
+  Future<void> loadUsage() async {
+    try {
+      final u = await usageStatsAsync(['saas', 'model'], 7);
+      if (mounted) setState(() => usage = u);
+    } catch (_) {}
   }
 
   Future<void> pollPairing() async {
@@ -251,7 +292,7 @@ class _HomePageState extends State<HomePage> {
         });
         await refresh(force: true);
         show('配对成功，正在连接远端服务');
-      } else if (st['state'] == 'failed') {
+      } else if (st['state'] == 'failed' || st['state'] == 'denied') {
         setState(() {
           awaitingCode = false;
           pairUserCode = null;
@@ -394,6 +435,10 @@ class _HomePageState extends State<HomePage> {
           ),
           if (paired) ...[
             const Gap(14),
+            if ((status?['saas_name'] ?? '') != '')
+              _StatRow('服务', '${status?['saas_name']}'),
+            if ((status?['issuer'] ?? '') != '')
+              _StatRow('网关', '${status?['issuer']}'),
             _StatRow(
               '设备',
               '${status?['device_name'] ?? status?['device_id'] ?? ''}',
@@ -401,6 +446,45 @@ class _HomePageState extends State<HomePage> {
             _StatRow('地址', '${status?['remote_url'] ?? ''}'),
             _StatRow('传输', _transportLabel(status?['transport'])),
             _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
+            const Gap(14),
+            Row(
+              children: [
+                Expanded(child: const Text('近 7 天用量').small().medium()),
+                GhostButton(
+                  size: ButtonSize.small,
+                  onPressed: loadUsage,
+                  child: const Text('刷新用量'),
+                ),
+              ],
+            ),
+            if (usage.isEmpty)
+              const Text('暂无记录（不记录对话内容）').small().muted()
+            else
+              for (final b in usage)
+                _StatRow(
+                  '${b['saas_name'] ?? b['saas'] ?? ''} · ${b['model'] ?? ''}',
+                  '${b['requests']} 次 · ${b['total_tokens']} tokens'
+                      '${(b['errors'] ?? 0) > 0 ? ' · ${b['errors']} 失败' : ''}',
+                ),
+          ] else if (consent != null) ...[
+            const Gap(12),
+            _ConsentView(consent: consent!),
+            const Gap(16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                OutlineButton(
+                  onPressed: busy ? null : denyConsent,
+                  child: const Text('拒绝'),
+                ),
+                const Gap(8),
+                PrimaryButton(
+                  onPressed: busy ? null : approveConsent,
+                  leading: const Icon(LucideIcons.link),
+                  child: Text(busy ? '处理中…' : '同意并配对'),
+                ),
+              ],
+            ),
           ] else ...[
             const Gap(8),
             const Text(
@@ -420,7 +504,9 @@ class _HomePageState extends State<HomePage> {
                 label: '远端服务地址',
                 child: TextField(
                   controller: remoteUrl,
-                  placeholder: const Text('https://remote.example.com'),
+                  placeholder: const Text(
+                    'https://remote.example.com 或 lsp2://pair?… 链接',
+                  ),
                   features: const [InputFeature.clear()],
                 ),
               ),
@@ -944,6 +1030,55 @@ class _ToggleRow extends StatelessWidget {
         ),
         const Gap(12),
         Switch(value: value, onChanged: onChanged),
+      ],
+    );
+  }
+}
+
+/// Consent screen: the SaaS identity verified from the gateway's signed
+/// metadata (docs/protocol-v2.md §19). Nothing here comes from the link.
+class _ConsentView extends StatelessWidget {
+  const _ConsentView({required this.consent});
+  final Map<String, dynamic> consent;
+
+  @override
+  Widget build(BuildContext context) {
+    final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
+    final models = ((consent['requested_models'] as List?) ?? []).join(', ');
+    final scopes = ((consent['requested_scopes'] as List?) ?? []).join(', ');
+    final logo = '${saas['logo_uri'] ?? ''}';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            if (logo.startsWith('https://'))
+              Padding(
+                padding: const EdgeInsets.only(right: 10),
+                child: Image.network(logo, width: 32, height: 32,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+              ),
+            Expanded(
+              child: Text('「${saas['name'] ?? ''}」请求使用本机模型').medium(),
+            ),
+          ],
+        ),
+        const Gap(4),
+        Text(consent['verified'] == true
+                ? '身份已通过网关签名校验'
+                : '身份未校验')
+            .small()
+            .muted(),
+        const Gap(10),
+        _StatRow('网关', '${consent['gateway'] ?? ''}'),
+        _StatRow('租户', '${consent['tenant'] ?? ''}'),
+        if ('${saas['homepage_uri'] ?? ''}' != '')
+          _StatRow('主页', '${saas['homepage_uri']}'),
+        if ('${saas['policy_uri'] ?? ''}' != '')
+          _StatRow('隐私政策', '${saas['policy_uri']}'),
+        _StatRow('请求模型', models.isEmpty ? '由本机配置决定' : models),
+        _StatRow('请求权限', scopes),
+        _StatRow('网关密钥', '${consent['gateway_key_id'] ?? ''}'),
       ],
     );
   }

@@ -41,15 +41,16 @@ func (x *Connector) Status() map[string]any {
 	x.mu.Lock()
 	running, remoteOK, gatewayOK, lastErr := len(x.running), x.remoteOK, x.gatewayOK, x.lastErr
 	x.mu.Unlock()
-	deviceID, gatewayURL, transport, e2ee := "", "", "offline", false
+	deviceID, gatewayURL, transport, e2ee, issuer, saasName, tenant := "", "", "offline", false, "", "", ""
 	if id := x.cfg.Identity; id != nil {
-		deviceID, gatewayURL, e2ee = id.DeviceID, id.GatewayURL, id.E2EEKey != ""
+		deviceID, gatewayURL, e2ee, issuer, saasName, tenant = id.DeviceID, id.GatewayURL, id.E2EEKey != "", id.Issuer, id.SaaSName, id.Tenant
 		transport = "wss"
 		if strings.HasPrefix(gatewayURL, "http://") {
 			transport = "ws"
 		}
 	}
 	return map[string]any{"protocol": "lsp2", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
+		"issuer": issuer, "saas_name": saasName, "tenant": tenant, "audit": x.cfg.Audit != nil,
 		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
 		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
 }
