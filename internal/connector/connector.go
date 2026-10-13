@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"localsubproxy/internal/lsp2/client"
 	"log"
 	"net"
 	"net/http"
@@ -33,6 +34,8 @@ type Config struct {
 	MaxJournalBytes                                                                                                   int64
 	Adapters                                                                                                          []AdapterConfig
 	AdapterFile                                                                                                       string
+	// V2 selects protocol v2 (lsp2). When set, ServerURL/DeviceToken are unused.
+	V2 *client.Identity
 }
 
 type AdapterConfig struct {
@@ -89,9 +92,13 @@ type Connector struct {
 	pollFailed        bool
 	remoteOK          bool
 	online            bool
+	v2                *v2State
 }
 
 func New(cfg Config) (*Connector, error) {
+	if cfg.V2 != nil && (cfg.ServerURL != "" || cfg.DeviceToken != "" || !cfg.V2.Valid()) {
+		return nil, errors.New("lsp2 identity is invalid or mixed with v1 credentials")
+	}
 	if cfg.JournalFile == "" || (cfg.ServerURL == "" && cfg.DeviceToken != "") || (cfg.ServerURL != "" && (cfg.DeviceID == "" || len(cfg.DeviceToken) < 32)) {
 		return nil, errors.New("journal and valid connection credentials are required")
 	}
@@ -208,6 +215,9 @@ func New(cfg Config) (*Connector, error) {
 	}
 	if err := x.saveLocked(); err != nil {
 		return nil, err
+	}
+	if cfg.V2 != nil {
+		x.v2 = &v2State{sinks: map[string]func(string) error{}, active: map[string]string{}}
 	}
 	return x, nil
 }
@@ -663,6 +673,9 @@ func (x *Connector) sendHeartbeat(ctx context.Context, h protocol.Heartbeat) err
 }
 
 func (x *Connector) Run(ctx context.Context) error {
+	if x.cfg.V2 != nil {
+		return x.runV2(ctx)
+	}
 	if x.cfg.ServerURL == "" {
 		return errors.New("remote service connection is not configured")
 	}
@@ -1166,6 +1179,12 @@ func (x *Connector) callOllama(ctx context.Context, c protocol.Command, a Adapte
 }
 
 func (x *Connector) emit(c protocol.Command, kind string, data any) error {
+	if sink := x.v2Sink(c.TaskID); sink != nil {
+		if m, ok := data.(map[string]string); ok && kind == "output.delta" {
+			return sink(m["text"])
+		}
+		return nil
+	}
 	x.mu.Lock()
 	t := x.j.Tasks[c.TaskID]
 	if kind == "output.delta" && !t.LeaseUntil.IsZero() && !time.Now().Before(t.LeaseUntil) {

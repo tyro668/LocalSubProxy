@@ -41,13 +41,22 @@ func (x *Connector) Status() map[string]any {
 	remoteConnected, gatewayConnected := x.remoteOK, x.heartbeatOK && !x.pollFailed
 	x.mu.Unlock()
 	transport := "offline"
-	if x.cfg.ServerURL != "" {
+	protocolName, deviceID, serverURL, v2err := "v1", x.cfg.DeviceID, x.cfg.ServerURL, ""
+	if x.cfg.V2 != nil {
+		protocolName, deviceID, serverURL, transport = "v2", x.cfg.V2.DeviceID, x.cfg.V2.GatewayURL, "wss"
+		if strings.HasPrefix(serverURL, "http://") {
+			transport = "ws"
+		}
+		x.v2.mu.Lock()
+		v2err = x.v2.lastErr
+		x.v2.mu.Unlock()
+	} else if x.cfg.ServerURL != "" {
 		transport = "http"
 		if strings.HasPrefix(x.cfg.ServerURL, "https://") {
 			transport = "https"
 		}
 	}
-	return map[string]any{"device_id": x.cfg.DeviceID, "device_name": localDeviceName(), "server_url": x.cfg.ServerURL, "running_tasks": running, "journal_bytes": journalBytes, "transport": transport, "connected": connected, "remote_connected": remoteConnected, "gateway_connected": gatewayConnected}
+	return map[string]any{"protocol": protocolName, "last_error": v2err, "device_id": deviceID, "device_name": localDeviceName(), "server_url": serverURL, "running_tasks": running, "journal_bytes": journalBytes, "transport": transport, "connected": connected, "remote_connected": remoteConnected, "gateway_connected": gatewayConnected}
 }
 
 func (x *Connector) ListAdapters() []AdapterView {
@@ -87,6 +96,9 @@ func (x *Connector) saveAdaptersLocked() error {
 }
 
 func (x *Connector) activeAdapterLocked(id string) bool {
+	if x.v2AdapterActive(id) {
+		return true
+	}
 	for _, t := range x.j.Tasks {
 		if t.Command.Request.Target.AdapterID == id && !isTerminal(t.State) {
 			return true
@@ -248,6 +260,13 @@ func sameCredentialEndpoint(a, old AdapterConfig) bool {
 }
 
 func (x *Connector) refreshHeartbeat() {
+	if x.cfg.V2 != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		x.probeAll(ctx)
+		cancel()
+		x.notifyV2Models()
+		return
+	}
 	if x.cfg.ServerURL == "" {
 		return
 	}
