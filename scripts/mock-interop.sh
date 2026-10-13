@@ -48,7 +48,7 @@ for impl in "${impls[@]}"; do
   else
     echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; fail=1
   fi
-  if LSP2_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LSP2_TENANT=acme LSP2_TENANT_KEY=$LSP_TENANT_KEY_ACME \
+  if LSP2_OFFICIAL_CLIENTS=${LSP2_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LSP2_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LSP2_TENANT=acme LSP2_TENANT_KEY=$LSP_TENANT_KEY_ACME \
       go test -count=1 ./mock/external -run TestExternalGateway >"$tmp/$impl.e2e" 2>&1; then
     echo "   connector e2e: ok"
   else

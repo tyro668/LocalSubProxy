@@ -437,7 +437,7 @@ func (g *Gateway) taskEvents(w http.ResponseWriter, r *http.Request) {
 // serve renders a task's events as an OpenAI response (SSE or aggregated JSON).
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after int64, stream bool) {
 	if isAnthropic(w) {
-		g.serveAnthropic(w, r, t, stream)
+		g.serveAnthropic(w, r, t, after, stream)
 		return
 	}
 	created := t.created

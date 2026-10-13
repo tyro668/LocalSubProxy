@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -289,6 +290,33 @@ func TestExternalGateway(t *testing.T) {
 	}
 	if j, _ := json.Marshal(recs); bytes.Contains(j, []byte("ping")) || bytes.Contains(j, []byte("sealed hello")) {
 		t.Fatal("audit log contains prompt content")
+	}
+
+	// 5b. Anthropic Messages through the real connector: streaming text and a tool round trip.
+	st, _, b = e.call("POST", "/v1/messages", map[string]any{"model": full, "max_tokens": 64, "stream": true, "system": "sys", "messages": []map[string]string{{"role": "user", "content": "ping"}}})
+	if st != 200 || !bytes.Contains(b, []byte("event: message_start")) || !bytes.Contains(b, []byte("event: message_stop")) || !bytes.Contains(b, []byte(`"stop_reason":"end_turn"`)) {
+		t.Fatalf("messages stream %d %s", st, b)
+	}
+	atools := []map[string]any{{"name": "get_weather", "input_schema": map[string]any{"type": "object"}}}
+	st, _, b = e.call("POST", "/v1/messages", map[string]any{"model": full, "max_tokens": 64, "tools": atools, "messages": []map[string]string{{"role": "user", "content": "weather in Paris?"}}})
+	var am struct {
+		StopReason string           `json:"stop_reason"`
+		Content    []map[string]any `json:"content"`
+	}
+	_ = json.Unmarshal(b, &am)
+	if st != 200 || am.StopReason != "tool_use" || len(am.Content) == 0 || am.Content[len(am.Content)-1]["type"] != "tool_use" {
+		t.Fatalf("messages tools %d %s", st, b)
+	}
+	// 5c. Optional: the official openai/anthropic client libraries, unchanged,
+	// with base_url pointed at the gateway (scripts/official-clients.sh).
+	if cmd := os.Getenv("LSP2_OFFICIAL_CLIENTS"); cmd != "" {
+		x := exec.CommandContext(ctx, "bash", "-c", cmd)
+		x.Env = append(os.Environ(), "LSP2_BASE_URL="+gw, "LSP2_API_KEY="+e.key, "LSP2_END_USER="+e.u, "LSP2_MODEL="+full)
+		out, err := x.CombinedOutput()
+		t.Logf("official clients:\n%s", out)
+		if err != nil {
+			t.Fatalf("official clients: %v", err)
+		}
 	}
 
 	// 6. Refresh via RFC 7523 assertion happens inside the connector; force a

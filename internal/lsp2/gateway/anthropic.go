@@ -267,7 +267,7 @@ func (g *Gateway) messages(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveAnthropic renders a task's events as an Anthropic Messages response.
-func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtask, stream bool) {
+func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtask, after int64, stream bool) {
 	msgID := "msg_" + strings.TrimPrefix(t.id, "task_")
 	if !stream {
 		var text strings.Builder
@@ -315,16 +315,40 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, _ := w.(http.Flusher)
+	// SSE events derived from one task event are written as a group and only
+	// the last one carries that task event's seq as its id, so a Last-Event-ID
+	// always names a fully delivered group. On reattach the stream is replayed
+	// from the start to rebuild content-block state and only groups after that
+	// id are written.
+	var cur int64
+	var group [][2]string
 	send := func(typ string, v any) error {
 		b, _ := json.Marshal(v)
-		_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typ, b)
+		group = append(group, [2]string{typ, string(b)})
+		return nil
+	}
+	flush := func() error {
+		defer func() { group = group[:0] }()
+		if after > 0 && cur <= after {
+			return nil
+		}
+		for i, e := range group {
+			id := ""
+			if i == len(group)-1 && cur > 0 {
+				id = fmt.Sprintf("id: %d\n", cur)
+			}
+			if _, err := fmt.Fprintf(w, "event: %s\n%sdata: %s\n\n", e[0], id, e[1]); err != nil {
+				return err
+			}
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}
-		return err
+		return nil
 	}
 	_ = send("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": msgID, "type": "message", "role": "assistant",
 		"model": t.reqModel, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}}})
+	_ = flush()
 	idx, open := -1, ""
 	tools := map[int]int{} // OpenAI tool index → content block index
 	closeOpen := func() {
@@ -333,7 +357,16 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 			open = ""
 		}
 	}
-	_ = t.stream(r.Context(), 0, func() error { return send("ping", map[string]any{"type": "ping"}) }, func(e event) error {
+	ping := func() error {
+		if _, err := fmt.Fprint(w, "event: ping\ndata: {\"type\":\"ping\"}\n\n"); err != nil {
+			return err
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return nil
+	}
+	handle := func(e event) error {
 		switch e.Type {
 		case lsp2.TypeTaskDelta:
 			var d lsp2.TaskDelta
@@ -383,6 +416,13 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 			return send("error", map[string]any{"type": "error", "error": map[string]any{"type": AnthropicErrorType(errStatus(eb.Code)), "message": eb.Message, "lsp2_code": eb.Code}})
 		}
 		return nil
+	}
+	_ = t.stream(r.Context(), 0, ping, func(e event) error {
+		cur = e.Seq
+		if err := handle(e); err != nil {
+			return err
+		}
+		return flush()
 	})
 }
 
