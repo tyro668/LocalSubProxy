@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"strings"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // anthropicW marks a response as Anthropic-shaped for apiError/httpError/serve.

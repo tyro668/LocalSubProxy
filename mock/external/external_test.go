@@ -25,11 +25,11 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/audit"
-	"localsubproxy/internal/connector"
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/client"
-	"localsubproxy/mock/fakemodel"
+	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 )
 
 const dataKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"

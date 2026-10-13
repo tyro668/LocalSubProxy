@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // Codex is intentionally a separate, opt-in adapter. The CLI owns ChatGPT login;

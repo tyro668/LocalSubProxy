@@ -10,8 +10,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
 )
 
 // dstate is one device's protocol state. It outlives a single WebSocket

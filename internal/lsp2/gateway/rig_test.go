@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/client"
-	"localsubproxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
 )
 
 // fakeExec is a deterministic executor:

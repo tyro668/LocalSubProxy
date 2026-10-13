@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
 )
 
 func providerStatus(code int) error {

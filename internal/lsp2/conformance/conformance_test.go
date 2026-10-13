@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
 )
 
 // The Go reference gateway must pass its own conformance suite.

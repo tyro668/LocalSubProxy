@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // Transport is an http.RoundTripper that serves requests in-process through

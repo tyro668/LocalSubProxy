@@ -17,7 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 type Config struct {
@@ -87,7 +87,7 @@ func New(cfg Config, id Identity) (*Client, error) {
 		cfg.MaxConcurrency = 1
 	}
 	if cfg.Client == "" {
-		cfg.Client = "localsubproxy/lsp2"
+		cfg.Client = "github.com/tyro668/LocalSubProxy/lsp2"
 	}
 	if cfg.Flow == nil {
 		cfg.Flow = &lsp2.Flow{TaskWindow: lsp2.DefaultTaskWindow, ConnWindow: lsp2.DefaultConnWindow}

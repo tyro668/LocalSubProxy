@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/lsp2/client"
-	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/mock/demo"
-	"localsubproxy/mock/fakemodel"
-	"localsubproxy/mock/saas"
-	"localsubproxy/mock/web"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/mock/demo"
+	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
+	"github.com/tyro668/LocalSubProxy/mock/saas"
+	"github.com/tyro668/LocalSubProxy/mock/web"
 )
 
 func main() {

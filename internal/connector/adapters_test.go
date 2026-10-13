@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // Adapter mappings for tools and multimodal input against fake providers.

@@ -25,9 +25,9 @@ import (
 	"net/http"
 	"time"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
 )
 
 // Store is the persistence interface (see NewMemoryStore, OpenSQLiteStore).
@@ -173,7 +173,9 @@ func (k *Keys) KID() string { return lsp2.Thumbprint(k.pub) }
 func (k *Keys) PublicJWK() lsp2.JWK { return lsp2.PublicJWK(k.pub) }
 
 // JWKS is the document served at /.well-known/jwks.json.
-func (k *Keys) JWKS() map[string]any { return map[string]any{"keys": []lsp2.JWK{lsp2.PublicJWK(k.pub)}} }
+func (k *Keys) JWKS() map[string]any {
+	return map[string]any{"keys": []lsp2.JWK{lsp2.PublicJWK(k.pub)}}
+}
 
 // GenerateSigningKey creates a new Ed25519 gateway key (keep the seed in your secret manager).
 func GenerateSigningKey() (ed25519.PrivateKey, error) {

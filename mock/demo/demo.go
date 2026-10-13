@@ -25,12 +25,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/client"
-	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/internal/lsp2/store"
-	"localsubproxy/mock/fakemodel"
-	"localsubproxy/mock/saas"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
+	"github.com/tyro668/LocalSubProxy/mock/saas"
 )
 
 type Result struct {

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // ConsentError is returned when pairing ends without the user's consent:

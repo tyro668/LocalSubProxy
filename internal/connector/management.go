@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/audit"
-	"localsubproxy/internal/durable"
+	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/LocalSubProxy/internal/durable"
 )
 
 // AdapterView is the local UI representation. It never contains an API key.

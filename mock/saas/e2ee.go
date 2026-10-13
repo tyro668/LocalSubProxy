@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // e2eeChat is the tenant back end side of end-to-end encryption

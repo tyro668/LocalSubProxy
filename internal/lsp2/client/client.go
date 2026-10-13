@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // Executor runs one verified task. The run it receives is fully resolved:

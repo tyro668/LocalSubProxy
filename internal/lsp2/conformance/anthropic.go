@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 func (r *runner) messagesRaw(ctx context.Context, body any, hdr map[string]string) (int, http.Header, []byte) {

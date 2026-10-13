@@ -1,4 +1,4 @@
-module localsubproxy
+module github.com/tyro668/LocalSubProxy
 
 go 1.22
 

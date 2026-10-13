@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
 )
 
 func TestDeviceKeysAreEncryptedAtRest(t *testing.T) {

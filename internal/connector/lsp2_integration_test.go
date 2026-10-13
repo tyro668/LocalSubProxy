@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/audit"
-	"localsubproxy/internal/connector"
-	"localsubproxy/internal/lsp2/client"
-	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/internal/lsp2/store"
-	"localsubproxy/mock/fakemodel"
+	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 )
 
 // The desktop core pairs over RFC 8628, connects via lsp2 and serves a

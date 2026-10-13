@@ -18,7 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // Checks for the negotiated extensions: resume (X-R*), flow control (X-F*),

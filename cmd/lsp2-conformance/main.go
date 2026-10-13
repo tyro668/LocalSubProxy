@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"localsubproxy/internal/lsp2/conformance"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/conformance"
 )
 
 func main() {

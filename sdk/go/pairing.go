@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
 	"rsc.io/qr"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
 )
 
 // Pairing errors returned by Approve / Deny / RevokeDevice.
@@ -74,7 +73,7 @@ func (p *Pairing) Link(tenant, issuer string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "lsp2://pair?v=2&gateway=" + url.QueryEscape(iss) + "&tenant=" + url.QueryEscape(tenant), nil
+	return lsp2.PairLink{Gateway: iss, Tenant: tenant}.String(), nil
 }
 
 // Create returns the pair link with its QR code (SVG and PNG).

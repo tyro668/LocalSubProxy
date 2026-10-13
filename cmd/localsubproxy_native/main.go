@@ -17,10 +17,10 @@ import (
 	"time"
 	"unsafe"
 
-	"localsubproxy/internal/audit"
-	"localsubproxy/internal/connector"
-	"localsubproxy/internal/durable"
-	"localsubproxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/LocalSubProxy/internal/durable"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
 )
 
 // localIdentity is identity.json: the per-install data key plus display

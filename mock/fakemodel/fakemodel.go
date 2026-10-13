@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 type Server struct {

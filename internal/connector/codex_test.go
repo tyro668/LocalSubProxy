@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // The test binary doubles as a small App Server. It never calls a model.

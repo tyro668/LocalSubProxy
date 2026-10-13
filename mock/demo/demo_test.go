@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/mock/fakemodel"
+	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 )
 
 func TestEndToEnd(t *testing.T) {

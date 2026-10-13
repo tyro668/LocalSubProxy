@@ -4,7 +4,7 @@
 #
 #   scripts/mock-interop.sh            # node python go
 #   scripts/mock-interop.sh node       # just one
-#   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go   # SDK variants
+#   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi   # SDK variants
 set -euo pipefail
 cd "$(dirname "$0")/.."
 impls=("${@:-node python go}")
@@ -43,6 +43,11 @@ start() { # impl port
       [ -x examples/fastapi/.venv/bin/python ] || { python3 -m venv examples/fastapi/.venv && (cd examples/fastapi && .venv/bin/pip install -q -r requirements.txt); }
       (cd examples/fastapi && TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=../../mock/tenant-profiles.example.json PORT=$port \
         exec .venv/bin/uvicorn app:app --host 127.0.0.1 --port "$port" --ws websockets --log-level warning) >"$tmp/$impl.log" 2>&1 & ;;
+    sdk-go|sdk-go-sqlite)   # examples/go-nethttp: the sdk/go module imported from another module
+      (cd examples/go-nethttp && go build -o "$tmp/go-nethttp" .)
+      db=""; [ "$impl" = sdk-go-sqlite ] && db="$tmp/sdkgo.db"
+      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LSP2_DB=$db \
+        "$tmp/go-nethttp" >"$tmp/$impl.log" 2>&1 & ;;
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
   pids+=($!)

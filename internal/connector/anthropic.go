@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"localsubproxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
 )
 
 // Anthropic Messages mapping (docs/protocol-v2.md §11.6):

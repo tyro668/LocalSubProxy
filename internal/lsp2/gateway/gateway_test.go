@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
 )
 
 func setup(t *testing.T) (*Gateway, *httptest.Server) {

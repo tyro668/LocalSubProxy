@@ -15,11 +15,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"localsubproxy/internal/audit"
-	"localsubproxy/internal/connector"
-	"localsubproxy/internal/lsp2/client"
-	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/mock/web"
+	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/mock/web"
 )
 
 func main() {

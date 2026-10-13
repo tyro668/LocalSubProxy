@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"localsubproxy/internal/audit"
-	"localsubproxy/internal/durable"
-	"localsubproxy/internal/lsp2"
-	"localsubproxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/LocalSubProxy/internal/durable"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
 )
 
 type Config struct {
