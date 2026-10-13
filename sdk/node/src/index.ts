@@ -40,7 +40,7 @@ export interface LMBPServerOptions {
   /** Serve the reference chat page from this directory (mock/web) at / and /chat. */
   chatUIDir?: string;
   log?: (...a: unknown[]) => void;
-  /** Advanced engine timings (ms): tokenTTL (s), codeTTL (s), resumeWindow, taskTimeout, attachGrace, slowConsumer. */
+  /** Advanced engine timings (ms): tokenTTL (s), codeTTL (s), resumeWindow, taskTimeout, attachGrace, slowConsumer, queueTimeout. */
   tuning?: Record<string, number>;
 }
 

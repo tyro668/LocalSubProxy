@@ -49,6 +49,7 @@ type Config struct {
 	ResumeWindow time.Duration      // default 30s; how long tasks survive a device disconnect
 	AttachGrace  time.Duration      // default 30s; idempotent tasks survive a client disconnect this long
 	SlowConsumer time.Duration      // default 60s; a subscriber that stalls the stream this long fails the task
+	QueueTimeout time.Duration      // default 15s; how long a request waits for a device concurrency slot
 	MaxConc      int                // gateway cap on per-device concurrency (default 16)
 	Flow         lmbp.Flow          // windows the gateway advertises (defaults DefaultTaskWindow/ConnWindow)
 	Logger       *log.Logger
@@ -107,6 +108,9 @@ func New(cfg Config) (*Gateway, error) {
 	}
 	if cfg.AttachGrace == 0 {
 		cfg.AttachGrace = 30 * time.Second
+	}
+	if cfg.QueueTimeout == 0 {
+		cfg.QueueTimeout = 15 * time.Second
 	}
 	if cfg.SlowConsumer == 0 {
 		cfg.SlowConsumer = 60 * time.Second

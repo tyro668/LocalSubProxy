@@ -29,7 +29,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
   await new Promise((ok, bad) => { ws.once('open', ok); ws.once('error', bad); });
   const caps = Object.fromEntries(models.map((m) => [m, ['tools']]));
   ws.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', data: { device_id: tok.device_id, client: 'sdk-test', models, model_capabilities: caps,
-    max_concurrency: 4, capabilities: x ? ['tools', 'e2ee'] : ['tools'],
+    max_concurrency: opts.maxConcurrency ?? 4, capabilities: x ? ['tools', 'e2ee'] : ['tools'],
     ...(x ? { e2ee_key: E.signKeyStatement(p.priv, p.pub, tok.device_id, x.pub) } : {}), proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token) } }));
   await new Promise((ok, bad) => ws.once('message', (m) => (JSON.parse(m).type === 'welcome' ? ok() : bad(new Error(String(m))))));
   const pending = new Map(); // task_id -> { run, chunks } while an E2EE blob arrives
@@ -47,7 +47,9 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     const run = JSON.parse(Buffer.from(e.jws.split('.')[1], 'base64url'));
     if (run.e2ee) return void pending.set(run.task_id, { run, chunks: [] });
     let seq = 0;
-    const send = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
+    const send0 = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
+    // opts.delayMs: hold the task (and its concurrency slot) before answering
+    const send = opts.delayMs ? (type, data) => setTimeout(() => send0(type, data), opts.delayMs) : send0;
     const last = run.messages.at(-1);
     const text = typeof last.content === 'string' ? last.content : (last.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
     if (run.tools?.length && last.role === 'user') {

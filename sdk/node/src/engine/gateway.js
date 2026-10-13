@@ -28,7 +28,7 @@ export class Gateway {
   constructor(cfg = {}) {
     this.cfg = {
       issuer: cfg.issuer ? L.origin(cfg.issuer) : '', codeTTL: 600, tokenTTL: 900, maxConc: 16, pingInterval: 20_000,
-      resumeWindow: 30_000, taskTimeout: 10 * 60_000, slowConsumer: 60_000, attachGrace: 30_000,
+      resumeWindow: 30_000, taskTimeout: 10 * 60_000, slowConsumer: 60_000, attachGrace: 30_000, queueTimeout: 15_000,
       flow: { task_window: 1 << 20, conn_window: 4 << 20 }, log: console.error, ...cfg,
     };
     if (cfg.issuer) this.cfg.issuer = L.origin(cfg.issuer);
@@ -610,20 +610,33 @@ export class Gateway {
       const size = L.taskRunFrameSize(trial, taskID);
       if (size > L.MAX_FRAME_BYTES) return err(413, 'PAYLOAD_TOO_LARGE', `request too large: the signed task.run frame would be ${size} bytes, over max_frame_bytes ${L.MAX_FRAME_BYTES}; send large content as images/attachments`);
     }
-    if (idemKey) this.store.putIdempotency(a.t.id, a.user, idemKey, { tenant: a.t.id, owner: a.user, taskID, bodyHash });
-    this.store.putTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] });
+    // Idempotency record, task row and the in-memory hub are created in one
+    // synchronous step (no await in between), so from the moment the record
+    // exists a duplicate re-attaches to this live, pending task. Every way out
+    // of the queue below ends the task with a recorded terminal event, so a
+    // replay sees the same outcome instead of OUTCOME_UNKNOWN.
+    let task;
+    try {
+      if (idemKey) this.store.putIdempotency(a.t.id, a.user, idemKey, { tenant: a.t.id, owner: a.user, taskID, bodyHash });
+      this.store.putTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] });
+    } catch (e) {
+      this.cfg.log(`lmbp: task ${taskID}: storage error: ${e?.message ?? e}`);
+      return err(500, 'INTERNAL', 'storage error');
+    }
+    task = new Task(this, ds, taskID, a.t.id, a.user, r.model, !!run.e2ee, !!idemKey);
     const abort = new AbortController();
     res.on('close', () => abort.abort());
-    const got = await ds.acquire(15_000, abort.signal);
-    if (!got || !ds.connected()) {
+    const got = await ds.acquire(this.cfg.queueTimeout, abort.signal);
+    if (!got || !ds.connected() || task.done) {
       if (got) ds.release();
-      this.setTaskState(taskID, 'FAILED');
-      if (!ds.connected()) return err(503, 'DEVICE_OFFLINE', 'device disconnected');
+      res.setHeader('X-Task-Id', taskID);
+      if (!ds.connected()) { task.failLocal('DEVICE_OFFLINE', 'device disconnected', true); return err(503, 'DEVICE_OFFLINE', 'device disconnected'); }
+      if (task.done) return this.serve(req, res, task, 0, !!r.stream, abort.signal, anthropic);
+      task.failLocal('DEVICE_BUSY', 'device is at max concurrency', true);
       if (abort.signal.aborted) return;
       res.setHeader('Retry-After', '2');
       return err(429, 'DEVICE_BUSY', 'device is at max concurrency');
     }
-    const task = new Task(this, ds, taskID, a.t.id, a.user, r.model, !!run.e2ee, !!idemKey);
     task.slot = true;
     this.setTaskState(taskID, 'RUNNING');
     const iat = L.now();
@@ -658,11 +671,15 @@ export class Gateway {
   }
 
   // Every replay re-verifies the stored task's tenant and owner.
+  // A live (possibly still queued) task is served from memory first.
   reattach(req, res, err, tenant, owner, taskID, reqModel, stream, anthropic = false) {
-    const rec = this.store.getTask(taskID);
-    if (!rec || rec.tenant !== tenant || rec.owner !== owner) return err(404, 'BAD_REQUEST', 'task no longer available');
     let t = this.tasks.get(taskID);
-    if (!t) t = Task.finished(this, rec, reqModel);
+    if (t && (t.tenant !== tenant || t.owner !== owner)) return err(404, 'BAD_REQUEST', 'task no longer available');
+    if (!t) {
+      const rec = this.store.getTask(taskID);
+      if (!rec || rec.tenant !== tenant || rec.owner !== owner) return err(404, 'BAD_REQUEST', 'task no longer available');
+      t = Task.finished(this, rec, reqModel);
+    }
     const after = parseInt(req.headers['last-event-id'] || '0', 10) || 0;
     const abort = new AbortController();
     res.on('close', () => abort.abort());

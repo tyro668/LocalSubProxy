@@ -509,7 +509,7 @@ class Task:
 class Gateway:
     def __init__(self, issuer="", seed=None, max_conc=16, log=None, web_dir="", store: Store | None = None, **tuning):
         self.cfg = {"issuer": L.origin(issuer) if issuer else "", "code_ttl": 600, "token_ttl": 900, "max_conc": max_conc,
-                    "ping_interval": 20, "resume_window": 30, "task_timeout": 600, "slow_consumer": 60, "attach_grace": 30,
+                    "ping_interval": 20, "resume_window": 30, "task_timeout": 600, "slow_consumer": 60, "attach_grace": 30, "queue_timeout": 15,
                     "flow": dict(DEFAULT_FLOW)}
         self.cfg.update(tuning)
         self.log = log or (lambda *a: print(*a, file=sys.stderr, flush=True))
@@ -1289,20 +1289,35 @@ class Gateway:
         size = L.task_run_frame_size(trial, task_id)
         if size > L.MAX_FRAME_BYTES:
             return err(413, "PAYLOAD_TOO_LARGE", f"request too large: the signed task.run frame would be {size} bytes, over max_frame_bytes {L.MAX_FRAME_BYTES}; send large content as images/attachments")
-        if idem_key:
-            self.store.put_idempotency(t["id"], user, idem_key, {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash})
-        self.store.put_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []})
-        got = await ds.acquire(15)  # fair FIFO wait for a negotiated concurrency slot
-        if not got or not ds.connected():
+        # Idempotency record, task row and the in-memory hub are created in one
+        # step with no await in between, so from the moment the record exists a
+        # duplicate re-attaches to this live, pending task. Every way out of the
+        # queue below ends the task with a recorded terminal event, so a replay
+        # sees the same outcome instead of OUTCOME_UNKNOWN.
+        try:
+            if idem_key:
+                self.store.put_idempotency(t["id"], user, idem_key, {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash})
+            self.store.put_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []})
+        except Exception as e:  # noqa: BLE001
+            self.log(f"lmbp: task {task_id}: storage error: {e}")
+            return err(500, "INTERNAL", "storage error")
+        task = Task(self, ds, task_id, t["id"], user, r["model"], "e2ee" in run, bool(idem_key))
+        got = await ds.acquire(self.cfg["queue_timeout"])  # fair FIFO wait for a negotiated concurrency slot
+        if not got or not ds.connected() or task.done:
             if got:
                 ds.release()
-            self.set_task_state(task_id, "FAILED")
+            hdr = {"X-Task-Id": task_id}
             if not ds.connected():
-                return err(503, "DEVICE_OFFLINE", "device disconnected")
-            resp = err(429, "DEVICE_BUSY", "device is at max concurrency")
-            resp.headers["Retry-After"] = "2"
+                task.fail_local("DEVICE_OFFLINE", "device disconnected", True)
+                resp = err(503, "DEVICE_OFFLINE", "device disconnected")
+            elif task.done:  # ended while queued (e.g. timeout): report what was recorded
+                return await self.serve(req, task, 0, bool(r.get("stream")), hdr)
+            else:
+                task.fail_local("DEVICE_BUSY", "device is at max concurrency", True)
+                resp = err(429, "DEVICE_BUSY", "device is at max concurrency")
+                hdr["Retry-After"] = "2"
+            resp.headers.update(hdr)
             return resp
-        task = Task(self, ds, task_id, t["id"], user, r["model"], "e2ee" in run, bool(idem_key))
         task.slot = True
         self.set_task_state(task_id, "RUNNING")
         iat = L.now()
@@ -1343,12 +1358,15 @@ class Gateway:
                 off = end
 
     async def reattach(self, req, tenant, owner, task_id, req_model, stream):
-        """Serve an existing task again; every replay re-verifies tenant and owner."""
-        rec = self.store.get_task(task_id)
-        if rec is None or rec["tenant"] != tenant or rec["owner"] != owner:
-            return self.err_for(req)(404, "BAD_REQUEST", "task no longer available")
+        """Serve an existing task again (a live, possibly still queued task from
+        memory first); every replay re-verifies tenant and owner."""
         t = self.tasks.get(task_id)
+        if t is not None and (t.tenant != tenant or t.owner != owner):
+            return self.err_for(req)(404, "BAD_REQUEST", "task no longer available")
         if t is None:
+            rec = self.store.get_task(task_id)
+            if rec is None or rec["tenant"] != tenant or rec["owner"] != owner:
+                return self.err_for(req)(404, "BAD_REQUEST", "task no longer available")
             t = Task.finished(self, rec, req_model)
         try:
             after = int(req.headers.get("Last-Event-ID", "0") or 0)

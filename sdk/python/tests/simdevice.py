@@ -32,13 +32,13 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
     await ws.send(json.dumps({"v": 1, "type": "hello", "id": "h1", "data": {
         "device_id": tok["device_id"], "client": "sdk-test", "models": list(models), "model_capabilities": {m: ["tools"] for m in models},
-        "max_concurrency": 4, "capabilities": ["tools", "e2ee"] if x else ["tools"],
+        "max_concurrency": max_concurrency, "capabilities": ["tools", "e2ee"] if x else ["tools"],
         **({"e2ee_key": E.sign_key_statement(key, tok["device_id"], x[1])} if x else {}), "proof": proof(key, tok["device_id"], L.PROOF_HELLO, tok["access_token"])}}))
     w = json.loads(await ws.recv())
     assert w["type"] == "welcome", w
@@ -78,6 +78,8 @@ async def connect(base, key, tok, models=("m1",), e2ee=False):
 
             async def send(typ, data):
                 nonlocal seq
+                if delay:  # hold the task (and its concurrency slot) before answering
+                    await asyncio.sleep(delay)
                 seq += 1
                 await ws.send(json.dumps({"v": 1, "type": typ, "task_id": run["task_id"], "seq": seq, "data": data}))
             last = run["messages"][-1]
@@ -96,11 +98,11 @@ async def connect(base, key, tok, models=("m1",), e2ee=False):
     return ws, task
 
 
-async def pair_and_connect(lsp, base, tenant, user, e2ee=False):
+async def pair_and_connect(lsp, base, tenant, user, e2ee=False, **kw):
     key, a = await start_pairing(base, tenant)
     ok = lsp.pairing.approve(tenant, user, a["user_code"])
     tok = await finish_pairing(base, key, a)
-    ws, task = await connect(base, key, tok, e2ee=e2ee)
+    ws, task = await connect(base, key, tok, e2ee=e2ee, **kw)
     for _ in range(50):
         if any(d.online for d in lsp.pairing.list_devices(tenant, user)):
             break

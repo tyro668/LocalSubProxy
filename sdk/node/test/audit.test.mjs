@@ -149,3 +149,47 @@ for (const mode of ['event', 'state']) {
     } finally { ws.close(); await s.close(); }
   });
 }
+
+// Reliability 2: idempotency record + task + queue + in-memory hub behave as
+// one unit: a duplicate during queueing attaches to the pending task, and a
+// queueing failure is recorded so replays get the same error.
+async function slowRig(tuning = {}) {
+  const s = await setup({ tuning });
+  const dev = await pairAndConnect(s.lsp, s.base, T, 'u1', { maxConcurrency: 1, delayMs: 400 });
+  return { s, dev };
+}
+const result = async (p) => { const r = await p; return { status: r.status, task: r.headers.get('x-task-id'), body: await r.text() }; };
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+const body1 = (text) => ({ model: 'm1', messages: [{ role: 'user', content: text }] });
+
+test('idempotent duplicate while queued attaches to the pending task', async () => {
+  const { s, dev } = await slowRig();
+  try {
+    const hold = result(chat(s.base, 'u1', body1('hold the slot')));
+    await sleep(100);
+    const a = result(chat(s.base, 'u1', body1('queued call'), { 'Idempotency-Key': 'k-queue' }));
+    await sleep(100);
+    const b = await result(chat(s.base, 'u1', body1('queued call'), { 'Idempotency-Key': 'k-queue' }));
+    const ra = await a; await hold;
+    assert.equal(ra.status, 200, ra.body);
+    assert.equal(b.status, 200, b.body);
+    assert.equal(b.task, ra.task);
+    assert.equal(b.body, ra.body);
+  } finally { dev.ws.close(); await s.close(); }
+});
+
+test('idempotent queue failure is recorded and replayed (not OUTCOME_UNKNOWN)', async () => {
+  const { s, dev } = await slowRig({ queueTimeout: 150 });
+  try {
+    const hold = result(chat(s.base, 'u1', body1('hold the slot')));
+    await sleep(100);
+    const first = await result(chat(s.base, 'u1', body1('busy'), { 'Idempotency-Key': 'k-busy' }));
+    const again = await result(chat(s.base, 'u1', body1('busy'), { 'Idempotency-Key': 'k-busy' }));
+    await hold;
+    assert.equal(first.status, 429, first.body);
+    assert.match(first.body, /DEVICE_BUSY/);
+    assert.equal(again.status, 429, again.body);
+    assert.match(again.body, /DEVICE_BUSY/);
+    assert.equal(again.task, first.task);
+  } finally { dev.ws.close(); await s.close(); }
+});

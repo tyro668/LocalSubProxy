@@ -532,5 +532,8 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 	if dev3 = r.auditFrameLimits(ctx, key, at, hello, full(mTools), dev3); dev3 == nil {
 		return nil, nil
 	}
+	if dev3 = r.auditQueuedDuplicate(ctx, key, at, hello, full(mTools), dev3); dev3 == nil {
+		return nil, nil
+	}
 	return dev3.conn, dev3.frames
 }

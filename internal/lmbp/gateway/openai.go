@@ -328,9 +328,17 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Register the in-memory hub first (state "pending" until it gets a
+	// device slot): from the moment the idempotency record exists, a
+	// duplicate re-attaches to this live task (reattach checks memory before
+	// storage) instead of finding a half-created or event-less task and
+	// answering 404 / OUTCOME_UNKNOWN. Every way out of the queue below ends
+	// the task with a recorded terminal event, so replays see the same outcome.
+	task := g.newTask(ds, taskID, t.ID, user, req.Model, run.E2EE != nil, idemKey != "")
 	if idemKey != "" {
 		err := g.cfg.Store.PutIdempotency(r.Context(), store.Idempotency{TenantID: t.ID, OwnerID: user, Key: idemKey, TaskID: taskID, BodyHash: bodyHash, CreatedAt: time.Now()})
 		if err == store.ErrExists { // lost a race with a concurrent identical request
+			task.abandon()
 			if rec, err := g.cfg.Store.GetIdempotency(r.Context(), t.ID, user, idemKey); err == nil && rec.BodyHash == bodyHash {
 				g.reattach(w, r, t.ID, user, rec.TaskID, req.Model, req.Stream)
 				return
@@ -338,6 +346,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 422, lmbp.ErrIdempotency, "Idempotency-Key was used with a different request body")
 			return
 		} else if err != nil {
+			task.abandon()
 			apiError(w, 500, lmbp.ErrInternal, "storage error")
 			return
 		}
@@ -350,27 +359,33 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	if err := g.cfg.Store.CreateTask(r.Context(), store.Task{ID: taskID, TenantID: t.ID, OwnerID: user, DeviceID: ds.deviceID, Model: model, State: "QUEUED", Request: stored, CreatedAt: now, UpdatedAt: now}); err != nil {
+		task.failLocal(lmbp.ErrInternal, "storage error", false) // releases any attached duplicate
 		apiError(w, 500, lmbp.ErrInternal, "storage error")
 		return
 	}
 	// Fair FIFO wait for one of the device's negotiated concurrency slots.
-	wctx, wcancel := context.WithTimeout(r.Context(), 15*time.Second)
+	wctx, wcancel := context.WithTimeout(r.Context(), g.cfg.QueueTimeout)
 	got := ds.acquire(wctx)
 	wcancel()
-	if !got || !ds.connected() {
+	if !got || !ds.connected() || task.isDone() {
 		if got {
 			ds.release()
 		}
-		_ = g.cfg.Store.SetTaskState(context.Background(), taskID, "FAILED")
+		w.Header().Set("X-Task-Id", taskID)
 		if !ds.connected() {
+			task.failLocal(lmbp.ErrDeviceOffline, "device disconnected", true)
 			apiError(w, 503, lmbp.ErrDeviceOffline, "device disconnected")
 			return
 		}
+		if task.isDone() { // ended while queued (e.g. timeout): report what was recorded
+			g.serve(w, r, task, 0, req.Stream)
+			return
+		}
+		task.failLocal(lmbp.ErrDeviceBusy, "device is at max concurrency", true)
 		w.Header().Set("Retry-After", "2")
 		apiError(w, 429, lmbp.ErrDeviceBusy, "device is at max concurrency")
 		return
 	}
-	task := g.newTask(ds, taskID, t.ID, user, req.Model, run.E2EE != nil, idemKey != "")
 	task.mu.Lock()
 	task.slot = true
 	task.mu.Unlock()
@@ -410,15 +425,21 @@ func (g *Gateway) dispatch(t *gtask, jws string, blobs []blobData) {
 // re-verifies that the stored task belongs to (tenantID, owner): an
 // idempotency record or task id alone never grants access.
 func (g *Gateway) reattach(w http.ResponseWriter, r *http.Request, tenantID, owner, taskID, reqModel string, stream bool) {
-	st, err := g.cfg.Store.GetTask(r.Context(), taskID)
-	if err != nil || st.TenantID != tenantID || st.OwnerID != owner {
-		httpError(w, r, 404, lmbp.ErrBadRequest, "task no longer available")
-		return
-	}
+	// A live (possibly still pending) task is served from memory: its row
+	// may not be written yet. Ownership is checked on either path.
 	g.mu.Lock()
 	t := g.tasks[taskID]
 	g.mu.Unlock()
+	if t != nil && (t.tenant != tenantID || t.owner != owner) {
+		httpError(w, r, 404, lmbp.ErrBadRequest, "task no longer available")
+		return
+	}
 	if t == nil {
+		st, err := g.cfg.Store.GetTask(r.Context(), taskID)
+		if err != nil || st.TenantID != tenantID || st.OwnerID != owner {
+			httpError(w, r, 404, lmbp.ErrBadRequest, "task no longer available")
+			return
+		}
 		if t, err = g.finishedTask(st, reqModel); err != nil {
 			httpError(w, r, 500, lmbp.ErrInternal, "storage error")
 			return

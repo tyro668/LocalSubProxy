@@ -493,3 +493,89 @@ func (r *runner) auditHelloProofs(key ed25519.PrivateKey, at string) {
 	r.check("Z4b", "hello proofs with b64:false, crit, unknown headers, a kid not matching the device key or missing/mistyped iat/jti get no welcome",
 		want(len(bad) == 0, "accepted: %v", bad))
 }
+
+// Z7: an idempotent request that is still queued for a device slot is one
+// unit with its idempotency record: a duplicate arriving meanwhile attaches
+// to the pending task (no OUTCOME_UNKNOWN, no 404, no second execution). The
+// device reconnects with max_concurrency 1 and holds the only slot. Returns
+// a fresh session with the original hello for the remaining checks.
+func (r *runner) auditQueuedDuplicate(ctx context.Context, key ed25519.PrivateKey, at string, hello lmbp.Hello, model string, dev *extDev) *extDev {
+	dev.conn.Close()
+	for range dev.frames {
+	}
+	h := hello
+	h.Resume, h.MaxConcurrency = nil, 1
+	h.Flow = &lmbp.Flow{TaskWindow: 262144, ConnWindow: 262144}
+	h.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
+	d, _, err := r.dialExt(at, h)
+	if !r.check("Z7", "duplicate during queueing attaches to the pending task", err) {
+		return nil
+	}
+	type res struct {
+		st   int
+		task string
+		body []byte
+	}
+	call := func(text, idem string) chan res {
+		ch := make(chan res, 1)
+		hdr := map[string]string{}
+		if idem != "" {
+			hdr["Idempotency-Key"] = idem
+		}
+		go func() {
+			st, hd, b := r.chatRaw(ctx, map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": text}}}, hdr)
+			ch <- res{st, hd.Get("X-Task-Id"), b}
+		}()
+		return ch
+	}
+	hold := call("hold the only slot", "")
+	fa, _, err := d.await(lmbp.TypeTaskRun, nil)
+	if !r.check("Z7", "duplicate during queueing attaches to the pending task", err) {
+		return nil
+	}
+	b1 := call("queued call", "z7-queued")
+	time.Sleep(300 * time.Millisecond)
+	b2 := call("queued call", "z7-queued")
+	time.Sleep(300 * time.Millisecond)
+	_ = d.send(lmbp.TypeTaskDone, fa.TaskID, 1, lmbp.TaskDone{FinishReason: "stop"})
+	runs := 0
+	fb, _, err := d.await(lmbp.TypeTaskRun, nil)
+	if err == nil {
+		runs++
+		_ = d.send(lmbp.TypeTaskDelta, fb.TaskID, 1, lmbp.TaskDelta{Text: "queued-once"})
+		_ = d.send(lmbp.TypeTaskDone, fb.TaskID, 2, lmbp.TaskDone{FinishReason: "stop"})
+	}
+	ra, rb := <-b1, <-b2
+	<-hold
+	// a second execution would show up as another task.run
+	extra := time.After(500 * time.Millisecond)
+more:
+	for {
+		select {
+		case f, ok := <-d.frames:
+			if !ok {
+				break more
+			}
+			if f.Type == lmbp.TypeTaskRun {
+				runs++
+			}
+		case <-extra:
+			break more
+		}
+	}
+	r.check("Z7", "an Idempotency-Key duplicate that arrives while the original waits for the device's only slot attaches to the pending task: both get the same result, one task.run",
+		want(err == nil && runs == 1 && ra.st == 200 && rb.st == 200 && ra.task != "" && ra.task == rb.task &&
+			strings.Contains(string(ra.body), "queued-once") && strings.Contains(string(rb.body), "queued-once"),
+			"err %v runs %d; first %d %s %s; duplicate %d %s %s", err, runs, ra.st, ra.task, ra.body, rb.st, rb.task, rb.body))
+	d.conn.Close()
+	for range d.frames {
+	}
+	hello.Resume = nil
+	hello.Flow = &lmbp.Flow{TaskWindow: 262144, ConnWindow: 262144}
+	hello.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
+	d3, _, err := r.dialExt(at, hello)
+	if !r.check("Z7", "reconnect after the queueing check", err) {
+		return nil
+	}
+	return d3
+}

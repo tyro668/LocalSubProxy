@@ -151,3 +151,51 @@ async def test_no_ack_without_persistence(serve_app, mode):
         assert "disk full" in "\n".join(logs)
         await ws.close()
         task.cancel()
+
+
+async def _slow(serve_app_base, lsp, base):
+    return await pair_and_connect(lsp, base, T, "u1", max_concurrency=1, delay=0.4)
+
+
+async def _post(base, text, key=None):
+    hs = {"Authorization": "Bearer " + KEY, "X-End-User": "u1"}
+    if key:
+        hs["Idempotency-Key"] = key
+    async with httpx.AsyncClient(base_url=base, headers=hs, timeout=30) as h:
+        r = await h.post("/v1/chat/completions", json={"model": "m1", "messages": [{"role": "user", "content": text}]})
+    return r.status_code, r.headers.get("x-task-id"), r.text
+
+
+async def test_idempotent_duplicate_while_queued(serve_app):
+    # Reliability 2: a duplicate during queueing attaches to the pending task.
+    import asyncio
+    lsp = new()
+    async with serve_app(lsp.asgi()) as base:
+        ws, task, _ = await _slow(serve_app, lsp, base)
+        hold = asyncio.ensure_future(_post(base, "hold the slot"))
+        await asyncio.sleep(0.1)
+        a = asyncio.ensure_future(_post(base, "queued call", "k-queue"))
+        await asyncio.sleep(0.1)
+        b = await _post(base, "queued call", "k-queue")
+        a = await a
+        await hold
+        assert a[0] == 200 and b[0] == 200 and a[1] == b[1] and a[2] == b[2], (a, b)
+        await ws.close()
+        task.cancel()
+
+
+async def test_idempotent_queue_failure_replayed(serve_app):
+    # Reliability 2: a queueing failure is recorded; the replay gets the same error.
+    import asyncio
+    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], log=lambda *a: None, queue_timeout=0.15)
+    async with serve_app(lsp.asgi()) as base:
+        ws, task, _ = await _slow(serve_app, lsp, base)
+        hold = asyncio.ensure_future(_post(base, "hold the slot"))
+        await asyncio.sleep(0.1)
+        first = await _post(base, "busy", "k-busy")
+        again = await _post(base, "busy", "k-busy")
+        await hold
+        assert first[0] == 429 and "DEVICE_BUSY" in first[2], first
+        assert again[0] == 429 and "DEVICE_BUSY" in again[2] and again[1] == first[1], (first, again)
+        await ws.close()
+        task.cancel()

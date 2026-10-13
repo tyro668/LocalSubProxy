@@ -533,6 +533,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 ### 14.4 HTTP 侧续传
 - 每个 SSE 事件 MUST 带 `id:`：角色前导事件为 `0`，其后为对应设备数据帧的 `seq`（单调递增）。
 - 调用方 MAY 带 `Idempotency-Key`（1–255 字符）。同一租户、同一终端用户内，相同 key + 相同请求体（按 SHA-256 比较）MUST 接回已有任务而不是再次执行；请求体不同 MUST 返回 422 `IDEMPOTENCY_KEY_REUSED`。key 至少保留 24 小时。
+- 幂等记录、任务记录、排队等待设备并发槽位与网关内存中的任务登记 MUST 构成一个整体：从幂等记录可见的那一刻起，任务即处于“待执行（pending）”状态，此时到达的重复请求 MUST 接回这个待执行任务（等待并得到同一结果），MUST NOT 返回 404、`OUTCOME_UNKNOWN` 或再次执行。任务在排队阶段失败（如 `DEVICE_BUSY`、`DEVICE_OFFLINE`）时，网关 MUST 把该错误记录为任务的终止事件，此后用同一 key 重放得到同一错误；要重新执行，调用方使用新的 key。
+- 持久化先于确认：网关 MUST 先把设备数据帧（终止帧还包括任务终止状态）写入存储，再向订阅者发布并发送覆盖该帧的 `task.ack`。写入失败时 MUST NOT 确认该帧（设备保留在续传缓冲区中），MUST 通知设备取消任务，并以 `INTERNAL` 结束任务，不得把未持久化的结果作为成功返回给调用方。
 - 重新接入时带 `Last-Event-ID: <n>`（POST 同一 key，或 `GET /lmbp/v1/tenant/tasks/{id}/events`），网关 MUST 只发送 `id > n` 的事件；已结束的任务从存储重放。
 - 带 key 的请求，调用方断开后网关 SHOULD 保留任务 30 秒再取消；不带 key 时按 §6.5 立即取消。
 

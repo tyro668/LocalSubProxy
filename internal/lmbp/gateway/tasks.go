@@ -66,6 +66,31 @@ func (g *Gateway) newTask(ds *dstate, id, tenant, owner, reqModel string, e2ee, 
 	return t
 }
 
+// abandon drops a hub that never became a task (lost the idempotency race
+// or the record could not be written); nobody can be attached to it yet.
+func (t *gtask) abandon() {
+	t.mu.Lock()
+	t.done = true
+	t.mu.Unlock()
+	t.g.mu.Lock()
+	if t.g.tasks[t.id] == t {
+		delete(t.g.tasks, t.id)
+	}
+	t.g.mu.Unlock()
+	if t.ds != nil {
+		t.ds.mu.Lock()
+		delete(t.ds.tasks, t.id)
+		t.ds.mu.Unlock()
+	}
+	t.stop()
+}
+
+func (t *gtask) isDone() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.done
+}
+
 // finishedTask rebuilds a read-only finished task from storage (re-attach
 // after the in-memory hub was dropped).
 func (g *Gateway) finishedTask(st store.Task, reqModel string) (*gtask, error) {
