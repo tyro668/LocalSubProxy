@@ -7,6 +7,9 @@
 
 WebSocket 会话、JOSE、续传、流控、大图分块、E2EE 透传全部在 SDK 内部。纯 ASGI（不依赖 aiohttp），带类型标注（`py.typed`）。需要 Python ≥ 3.10。
 
+> **成熟度**：本 SDK 是 LMBP 网关的**独立重新实现**（纯 ASGI，自带 HTTP/SSE 渲染），不与 Go 参考网关共享代码，存在真实的行为差异。例如 `Store` 是同步 Protocol，时间参数以秒为单位，WebSocket 依赖 uvicorn 的 `websockets` 实现。
+> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[根 README 的成熟度说明](../../README.md#各实现的成熟度如实说明)。
+
 ## 安装
 
 ```bash
@@ -60,8 +63,9 @@ uvicorn app:app --ws websockets
 | 构造 | `LMBPServer(tenants, issuer="", store=None, signing_seed=None, max_concurrency=16, chat_ui_dir="", log=None, **tuning)`；租户可为 `TenantConfig` 或 dict |
 | 挂载 | `asgi(app=None)`、`LMBPMiddleware(app, server=...)`、`run(host, port, app=None)` |
 | 密钥 | `keys.kid()`、`keys.public_jwk()`、`keys.jwks()`；`LMBPServer.generate_signing_seed()`、`LMBPServer.generate_tenant_key()`。未传 `signing_seed` 时种子保存在 Store 中 |
-| 配对 | `pairing.link(tenant, issuer=None)`、`pairing.create(...) → PairingInfo(link, qr_svg)`、`pairing.lookup(tenant, code) → PendingPairing \| None`、`pairing.approve(tenant, user, code, jkt=None) → ApproveResult`、`pairing.deny(...)`、`pairing.list_devices(tenant, user) → list[DeviceInfo]`、`pairing.revoke_device(tenant, user, id)`；失败抛 `PairingError`（`code`：`BAD_REQUEST` / `NOT_FOUND` / `FORBIDDEN`） |
-| 进程内客户端 | `client(tenant, user)` → `await models()`、`await chat.completions.create(**req)`、`async for chunk in chat.completions.stream(**req)`、`messages.create / stream`（均支持 `idempotency_key=`）；失败抛 `LMBPAPIError(status, code)` |
+| 配对 | `pairing.link(tenant, issuer=None)`、`pairing.create(...) → PairingInfo(link, qr_svg)`、`pairing.lookup(tenant, code) → PendingPairing \| None`、`pairing.approve(tenant, user, code, jkt=None) → ApproveResult`、`pairing.deny(...)`、`pairing.list_devices(tenant, user) → list[DeviceInfo]`、`pairing.revoke_device(tenant, user, id)`；失败抛 `PairingError`（`code`：`BAD_REQUEST` / `NOT_FOUND` / `FORBIDDEN` / `RATE_LIMITED`；每租户每分钟 10 次错误码后锁定，与 HTTP 批准接口共用计数） |
+| 进程内客户端 | `client(tenant, user)` → `await models()`、`await chat.completions.create(**req)`、`async for chunk in chat.completions.stream(**req)`、`messages.create / stream`（均支持 `idempotency_key=`；`stream` 返回 `LMBPStream`，`last_event_id` 是续传游标，`task_id` 是任务 ID，还支持 `last_event_id=`；`chat.completions.resume(task_id, last_event_id)` 接着读）；失败抛 `LMBPAPIError(status, code)` |
+| E2EE | `seal_e2ee_request(device, pinned_jkt, {"model", "messages"})` → `E2EESealed(jwe, rid, response_key)`；请求用 `lmbp_e2ee=sealed.jwe`，响应帧 `chunk["lmbp_e2ee"]` 用 `sealed.open()` 解密，再用 `decode_e2ee_delta()` 解析。`device` 来自 `list_devices()`（带 `public_key`、`e2ee_key`） |
 | 存储 | `MemoryStore()`、`SQLiteStore(path)`（标准库 sqlite3）；自定义存储实现 `Store` Protocol（同步方法） |
 | 工具 | `lmbp_server.anthropic`：Anthropic ↔ OpenAI 转换函数 |
 
@@ -78,7 +82,7 @@ claude = Anthropic(base_url="https://saas.example.com", api_key=TENANT_API_KEY, 
 
 ```bash
 cd sdk/python && python3 -m venv .venv && .venv/bin/pip install -e '.[test]' && .venv/bin/pytest
-scripts/mock-interop.sh python python-sqlite fastapi   # 73 项一致性 + 连接器端到端 + 官方客户端
+scripts/mock-interop.sh python python-sqlite fastapi   # lmbp-conformance（99 项） + 连接器端到端 + 官方客户端
 ```
 
 ## 限制

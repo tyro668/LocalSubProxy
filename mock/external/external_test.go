@@ -90,9 +90,23 @@ func sseText(b []byte) (string, bool) {
 	return sb.String(), done
 }
 
+// ciMode: CI or LMBP_REQUIRE_EXTERNAL set (and not "false"/"0"): every
+// external check MUST run; missing configuration fails instead of skipping.
+func ciMode() bool {
+	for _, k := range []string{"CI", "LMBP_REQUIRE_EXTERNAL"} {
+		if v := os.Getenv(k); v != "" && v != "0" && v != "false" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestExternalGateway(t *testing.T) {
 	gw := strings.TrimRight(os.Getenv("LMBP_EXTERNAL_GATEWAY"), "/")
 	if gw == "" {
+		if ciMode() {
+			t.Fatal("LMBP_EXTERNAL_GATEWAY not set (required in CI / LMBP_REQUIRE_EXTERNAL mode: a skipped external check is a failure)")
+		}
 		t.Skip("LMBP_EXTERNAL_GATEWAY not set")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -309,6 +323,9 @@ func TestExternalGateway(t *testing.T) {
 	}
 	// 5c. Optional: the official openai/anthropic client libraries, unchanged,
 	// with base_url pointed at the gateway (scripts/official-clients.sh).
+	if os.Getenv("LMBP_OFFICIAL_CLIENTS") == "" && ciMode() {
+		t.Fatal("LMBP_OFFICIAL_CLIENTS not set (required in CI / LMBP_REQUIRE_EXTERNAL mode)")
+	}
 	if cmd := os.Getenv("LMBP_OFFICIAL_CLIENTS"); cmd != "" {
 		x := exec.CommandContext(ctx, "bash", "-c", cmd)
 		x.Env = append(os.Environ(), "LMBP_BASE_URL="+gw, "LMBP_API_KEY="+e.key, "LMBP_END_USER="+e.u, "LMBP_MODEL="+full)

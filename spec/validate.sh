@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Validate all machine-readable lmbp contracts and run the example skeletons.
-# Needs: python3 (venv), node >= 18.4, go; cargo optional.
+# Needs: python3 (venv), node >= 18.4, go; cargo (optional locally, required when CI/LMBP_REQUIRE_EXTERNAL is set).
 set -euo pipefail
 cd "$(dirname "$0")"
 VENV=$(realpath -m "${VENV:-.venv}")
@@ -15,4 +15,6 @@ echo "== JOSE strict vectors (jose.json): Go reference, Node SDK, Python SDK"
 echo "== Go reference vs vectors/schemas";  (cd .. && go test ./internal/lmbp/ ./internal/lmbp/conformance/)
 echo "== Python skeleton";                  (cd examples/python && "$VENV/bin/python" test_vectors.py | tail -1)
 echo "== Node skeleton";                    (cd examples/node && npm install --silent && node test_vectors.mjs | tail -1)
-if command -v cargo >/dev/null; then echo "== Rust skeleton"; (cd examples/rust && cargo test --quiet --test vectors --test ext 2>&1 | grep "test result"); fi
+if command -v cargo >/dev/null; then echo "== Rust skeleton"; (cd examples/rust && cargo test --quiet --test vectors --test ext 2>&1 | grep "test result")
+elif [ -n "${CI:-}${LMBP_REQUIRE_EXTERNAL:-}" ]; then echo "FAIL Rust skeleton: cargo not installed (required in CI mode)"; exit 1
+else echo "SKIP Rust skeleton (cargo not installed)"; fi

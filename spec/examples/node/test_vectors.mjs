@@ -59,7 +59,11 @@ try {
   for (const f of V.valid_frames) check(`schema valid frame ${f.name}`, validate(f.frame), JSON.stringify(validate.errors));
   for (const f of V.invalid_frames) check(`schema rejects ${f.name}`, !validate(f.frame));
 } catch (err) {
-  if (err.code === 'ERR_MODULE_NOT_FOUND') console.log('SKIP schema checks (npm install)'); else throw err;
+  if (err.code !== 'ERR_MODULE_NOT_FOUND') throw err;
+  // In CI / LMBP_REQUIRE_EXTERNAL mode a skipped check is a failure.
+  const strict = ['CI', 'LMBP_REQUIRE_EXTERNAL'].some((k) => process.env[k] && !['0', 'false'].includes(process.env[k]));
+  if (strict) { console.error('FAIL schema checks need ajv (npm install); skipping is not allowed in CI mode'); process.exit(1); }
+  console.log('SKIP schema checks (npm install)');
 }
 // ---- extensions: E2EE, flow control, resume ----
 const X = await import('./lmbp_ext.mjs');

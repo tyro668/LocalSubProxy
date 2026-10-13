@@ -7,6 +7,9 @@
 
 WebSocket 会话、JOSE 签名、令牌刷新、seq/ack/续传、信用流控、大图分块、E2EE 透传都封装在 SDK 内部（内嵌参考网关 `internal/lmbp/gateway`，与 `localsubproxy server` 同一份代码）。
 
+> **成熟度**：本 SDK 内嵌 **Go 参考网关**（与 `localsubproxy server` 同一份代码），是三套 SDK 的行为基准。Node 与 Python SDK 是独立重新实现，与它存在真实的行为差异。
+> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[根 README 的成熟度说明](../../README.md#各实现的成熟度如实说明)。
+
 ## 安装
 
 ```bash
@@ -59,10 +62,11 @@ http.ListenAndServe(":3000", srv.Middleware(mux)) // 协议路径由 SDK 处理�
 | 挂载 | `Handler()`（挂在根路径）、`Middleware(next)`（协议路径由 SDK 处理，其余交给 `next`）、`Close()` |
 | 密钥 | `Keys.KID()`、`Keys.PublicJWK()`、`Keys.JWKS()`；`GenerateSigningKey()`、`GenerateTenantKey()`。未传 `SigningKey` 时，签名种子保存在 Store 中（实现了 `SecretStore` 的存储），首次启动生成 |
 | 配对 | `Pairing.Link(tenant, issuer)`、`Pairing.Create(...) → PairingInfo{Link, QRSVG, QRPNG}`、`Pairing.Lookup(ctx, tenant, code) → PendingPairing{DeviceName, JKT, ...}`、`Pairing.Approve(ctx, tenant, user, code, jkt)`、`Pairing.Deny(...)`、`Pairing.ListDevices(ctx, tenant, user) → []DeviceInfo{Online, Models, ...}`、`Pairing.RevokeDevice(ctx, tenant, user, id)` |
-| 错误 | `ErrCodeInvalid`、`ErrCodeDenied`、`ErrJKTMismatch`、`ErrDeviceUnknown`、`ErrUnknownTenant`；模型调用返回 `*APIError{Status, Code, Message}` |
-| 进程内客户端 | `Client(tenant, user)` → `Models`、`ChatCompletion`、`ChatCompletionStream`、`Messages`、`MessagesStream`；流为 `*Stream[T]`：`for s.Next() { s.Current() }; s.Err()`，`Close()` 会取消任务 |
+| 错误 | `ErrCodeInvalid`、`ErrCodeDenied`、`ErrJKTMismatch`、`ErrDeviceUnknown`、`ErrUnknownTenant`、`ErrRateLimited`（每租户每分钟 10 次错误配对码后锁定，`Approve`/`Deny` 与 HTTP 批准接口共用同一计数）；模型调用返回 `*APIError{Status, Code, Message}` |
+| 进程内客户端 | `Client(tenant, user)` → `Models`、`ChatCompletion`、`ChatCompletionStream`、`Messages`、`MessagesStream`；流为 `*Stream[T]`：`for s.Next() { s.Current() }; s.Err()`，`Close()` 会取消任务。调用选项 `WithIdempotencyKey(k)`、`WithLastEventID(id)`；`s.LastEventID()` 是续传游标，`s.TaskID()` 是任务 ID，`ResumeChatCompletionStream(ctx, taskID, lastEventID)` 从游标之后接着读 |
+| E2EE | `SealE2EERequest(dev DeviceInfo, pinnedJKT, E2EERequest) → *E2EESealed{JWE, RID, ResponseKey}`，放进 `ChatRequest.E2EE`；响应帧 `ChatCompletionChunk.E2EE` / `ChatCompletion.E2EE` 用 `sealed.Open(frame)` 解密，再用 `DecodeE2EEDelta` 解析。`pinnedJKT` 是配对时记录的设备指纹（`ApproveResult.JKT`），`DeviceInfo.PublicKey` / `E2EEKey` 来自 `ListDevices` |
 | 传输层 | `Transport()`：进程内 `http.RoundTripper`，可交给任意 HTTP 客户端（包括官方 SDK 的 `option.WithHTTPClient`） |
-| 存储 | `NewMemoryStore()`、`OpenSQLiteStore(path, key32)`（key 非空时 AES-256-GCM 加密提示词、输出与密钥）；自定义存储实现 `Store`（可选 `SecretStore`） |
+| 存储 | `NewMemoryStore()`、`OpenSQLiteStore(path, key32)`（key 非空时 AES-256-GCM 加密提示词、输出与密钥）；自定义存储实现 `Store`（可选 `SecretStore`），只需公开类型 `StoreTenant`、`DeviceAuth`、`Device`、`Idempotency`、`Task`、`Event`、`ErrNotFound`、`ErrExists`（示例：`examples/customstore`） |
 | 协议类型 | `ChatMessage`、`Content`、`Text()`、`Tool`、`ToolCall`、`Usage`、`JWK`、`TenantProfile` 等（别名，外部模块无需引用 `internal/`） |
 
 `Approve` 的 `jkt` 参数可选：传入 `Lookup` 返回的设备密钥指纹，可防止配对码被换成其他设备。
@@ -82,7 +86,7 @@ claude := anthropic.NewClient(option.WithBaseURL("https://saas.example.com/"), o
 
 ```bash
 go test ./sdk/go                         # 真实桌面连接器配对 + memory/sqlite + 中间件 + 进程内客户端
-scripts/mock-interop.sh sdk-go sdk-go-sqlite   # 73 项一致性 + 连接器端到端 + 官方 openai/anthropic 客户端
+scripts/mock-interop.sh sdk-go sdk-go-sqlite   # lmbp-conformance（99 项） + 连接器端到端 + 官方 openai/anthropic 客户端
 ```
 
 ## 限制

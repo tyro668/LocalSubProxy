@@ -106,6 +106,12 @@ try:
     for f in V["invalid_frames"]:
         check(f"schema rejects {f['name']}", not val.is_valid(f["frame"]))
 except ImportError:
+    import os
+    import sys
+    # In CI / LMBP_REQUIRE_EXTERNAL mode a skipped check is a failure.
+    if any(os.environ.get(k) not in (None, "", "0", "false") for k in ("CI", "LMBP_REQUIRE_EXTERNAL")):
+        print("FAIL schema checks need jsonschema (pip install); skipping is not allowed in CI mode", file=sys.stderr)
+        sys.exit(1)
     print("SKIP schema checks (pip install jsonschema)")
 
 # ---- extensions: E2EE, flow control, resume ----

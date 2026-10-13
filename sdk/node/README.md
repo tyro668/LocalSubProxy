@@ -7,6 +7,9 @@
 
 WebSocket 会话、JOSE、续传、流控、大图分块、E2EE 透传全部在 SDK 内部。TypeScript 编写，ESM，自带类型声明。需要 Node ≥ 18.17。
 
+> **成熟度**：本 SDK 是 LMBP 网关的**独立重新实现**，不与 Go 参考网关共享代码，存在真实的行为差异。例如 JWKS 返回 `application/json`（Go 为 `application/jwk-set+json`）；`Store` 接口是同步的；默认参数和时间单位（毫秒）也不同。
+> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[根 README 的成熟度说明](../../README.md#各实现的成熟度如实说明)。
+
 ## 安装
 
 ```bash
@@ -61,8 +64,9 @@ server.listen(3000);
 | 构造 | `new LMBPServer({ tenants, issuer, store, signingSeed, maxConcurrency, chatUIDir, log, tuning })` |
 | 挂载 | `handler`、`middleware()`、`fastifyPlugin`、`attach(server)`、`listen(port, host)`、`close()`、`PATHS` |
 | 密钥 | `keys.kid()`、`keys.publicJWK()`、`keys.jwks()`；`LMBPServer.generateSigningSeed()`、`LMBPServer.generateTenantKey()`。未传 `signingSeed` 时种子保存在 Store 中 |
-| 配对 | `pairing.link(tenant, issuer?)`、`pairing.create(...) → { link, qrSVG, qrDataURL }`、`pairing.lookup(tenant, code)`、`pairing.approve(tenant, user, code, { jkt })`、`pairing.deny(...)`、`pairing.listDevices(tenant, user)`、`pairing.revokeDevice(tenant, user, id)`；失败抛 `PairingError`（`code`：`BAD_REQUEST` / `NOT_FOUND` / `FORBIDDEN`） |
-| 进程内客户端 | `client(tenant, user)` → `models()`、`chat.completions.create/stream`、`messages.create/stream`（`stream` 为 async iterable，支持 `signal` 取消、`idempotencyKey`）；失败抛 `LMBPAPIError{status, code}` |
+| 配对 | `pairing.link(tenant, issuer?)`、`pairing.create(...) → { link, qrSVG, qrDataURL }`、`pairing.lookup(tenant, code)`、`pairing.approve(tenant, user, code, { jkt })`、`pairing.deny(...)`、`pairing.listDevices(tenant, user)`、`pairing.revokeDevice(tenant, user, id)`；失败抛 `PairingError`（`code`：`BAD_REQUEST` / `NOT_FOUND` / `FORBIDDEN` / `RATE_LIMITED`；每租户每分钟 10 次错误码后锁定，与 HTTP 批准接口共用计数） |
+| 进程内客户端 | `client(tenant, user)` → `models()`、`chat.completions.create/stream`、`messages.create/stream`（`stream` 返回 `LMBPStream`：async iterable，`lastEventId` 是续传游标，`taskId` 是任务 ID；选项 `signal`、`idempotencyKey`、`lastEventId`；`chat.completions.resume(taskId, lastEventId)` 接着读）；失败抛 `LMBPAPIError{status, code}` |
+| E2EE | `sealE2EERequest(device, pinnedJkt, { model, messages })` → `{ jwe, rid, open(frame) }`；请求用 `{ model, lmbp_e2ee: sealed.jwe }`，响应帧 `chunk.lmbp_e2ee` 用 `sealed.open()` 解密，再用 `decodeE2EEDelta()` 解析。`device` 来自 `listDevices()`（带 `publicKey`、`e2eeKey`） |
 | 存储 | `MemoryStore`、`SqliteStore(path \| db)`（better-sqlite3）；自定义存储实现 `Store` 接口（同步方法） |
 | 工具 | `anthropic.*`：Anthropic ↔ OpenAI 请求/响应转换函数 |
 
@@ -79,7 +83,7 @@ const claude = new Anthropic({ baseURL: 'https://saas.example.com', apiKey: TENA
 
 ```bash
 cd sdk/node && npm test                              # SDK 单元测试（协议、配对、存储、框架、进程内客户端）
-scripts/mock-interop.sh node node-sqlite express     # 73 项一致性 + 连接器端到端 + 官方客户端
+scripts/mock-interop.sh node node-sqlite express     # lmbp-conformance（99 项） + 连接器端到端 + 官方客户端
 ```
 
 ## 限制
