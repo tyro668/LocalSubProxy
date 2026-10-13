@@ -1,0 +1,454 @@
+openapi: 3.1.0
+info:
+  title: LocalSubProxy protocol v2 (lsp2) — HTTP surface
+  version: 2.0.0
+  summary: Pairing (RFC 8628), token (RFC 6749/7523), tenant admin and OpenAI-compatible endpoints of an lsp2 gateway.
+  description: |
+    Normative text: docs/protocol-v2.md. The device WebSocket channel (`GET /v2/connect`,
+    subprotocol `lsp2`) is described in spec/asyncapi.yaml.
+
+    * OAuth endpoints (`/v2/device/authorize`, `/v2/token`) take
+      `application/x-www-form-urlencoded` bodies (normative). Gateways MAY also accept JSON.
+      Errors use the RFC 6749 §5.2 shape `{"error": "..."}`.
+    * Tenant admin endpoints (`/v2/tenant/*`) return RFC 9457 `application/problem+json` on error.
+    * OpenAI-compatible endpoints (`/v1/*`) return the OpenAI error object so existing SDKs work.
+  license:
+    name: See repository
+servers:
+  - url: https://gateway.example.com
+tags:
+  - name: discovery
+  - name: device-oauth
+  - name: tenant-admin
+  - name: openai
+paths:
+  /.well-known/lsp-connector:
+    get:
+      tags: [discovery]
+      summary: Discovery document (served by the SaaS / remote service, not the gateway)
+      operationId: getDiscovery
+      security: []
+      responses:
+        '200':
+          description: Public, secret-free discovery metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Discovery' }
+  /.well-known/jwks.json:
+    get:
+      tags: [discovery]
+      summary: Gateway signing keys (RFC 7517 JWK Set)
+      operationId: getJwks
+      security: []
+      responses:
+        '200':
+          description: JWK Set with one or more OKP/Ed25519 keys. During key rotation both keys are listed.
+          content:
+            application/jwk-set+json:
+              schema: { $ref: '#/components/schemas/JWKSet' }
+  /healthz:
+    get:
+      tags: [discovery]
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { const: ok } } }
+  /v2/device/authorize:
+    post:
+      tags: [device-oauth]
+      summary: RFC 8628 §3.1 device authorization request
+      operationId: deviceAuthorize
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/DeviceAuthorizationRequest' }
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceAuthorizationRequest' }
+      responses:
+        '200':
+          description: RFC 8628 §3.2 response. `user_code` format is `XXXX-XXXX` over the alphabet `BCDFGHJKLMNPQRSTVWXZ`.
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceAuthorizationResponse' }
+        '400': { $ref: '#/components/responses/OAuthError' }
+  /v2/token:
+    post:
+      tags: [device-oauth]
+      summary: Token endpoint (device_code grant RFC 8628 §3.4, jwt-bearer grant RFC 7523 §2.1)
+      operationId: token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '200':
+          description: "Access token (JWT, typ at+jwt, RFC 9068 profile, key-bound via cnf.jkt)."
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/OAuthError' }
+  /v2/connect:
+    get:
+      tags: [device-oauth]
+      summary: WebSocket upgrade for the device channel (see asyncapi.yaml)
+      operationId: connect
+      security:
+        - accessToken: []
+      parameters:
+        - in: header
+          name: Sec-WebSocket-Protocol
+          required: true
+          schema: { type: string, examples: [lsp2] }
+      responses:
+        '101': { description: Switching Protocols; the server selects subprotocol `lsp2`. }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /v2/tenant/device-approvals:
+    post:
+      tags: [tenant-admin]
+      summary: Approve or deny a pending user code on behalf of an authenticated end user (RFC 8628 §3.3 back-channel)
+      operationId: approveDevice
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code: { type: string, description: 'Case-insensitive; separators and whitespace are ignored.' }
+                deny: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { enum: [approved, denied] }
+                  device_id: { type: string }
+                  device_name: { type: string }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /v2/tenant/devices:
+    get:
+      tags: [tenant-admin]
+      summary: List the end user's devices
+      operationId: listDevices
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      responses:
+        '200':
+          description: Devices owned by X-End-User within the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/Device' }
+        '401': { $ref: '#/components/responses/Problem' }
+  /v2/tenant/devices/{device_id}/revoke:
+    post:
+      tags: [tenant-admin]
+      summary: Revoke a device; live sessions are closed immediately
+      operationId: revokeDevice
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+        - in: path
+          name: device_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_id: { type: string }
+                  status: { const: revoked }
+        '404': { $ref: '#/components/responses/Problem' }
+  /v1/models:
+    get:
+      tags: [openai]
+      summary: OpenAI-compatible model list (only the caller's online devices)
+      operationId: listModels
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      responses:
+        '200':
+          description: Model ids are `<device_id>/<model>`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, data]
+                properties:
+                  object: { const: list }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, object]
+                      properties:
+                        id: { type: string, examples: [dev_0192f5e0/lm/qwen3-8b] }
+                        object: { const: model }
+                        owned_by: { type: string }
+        '401': { $ref: '#/components/responses/OpenAIError' }
+  /v1/chat/completions:
+    post:
+      tags: [openai]
+      summary: OpenAI-compatible chat completion, optionally streamed as Server-Sent Events
+      operationId: createChatCompletion
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+      responses:
+        '200':
+          description: |
+            `stream=false`: one `chat.completion` object.
+            `stream=true`: `text/event-stream` (WHATWG HTML §9.2). Each event is
+            `data: <chat.completion.chunk JSON>`; the stream ends with `data: [DONE]`.
+            On a mid-stream failure the server sends `data: {"error":{...}}` and closes without `[DONE]`.
+            Comment lines (`: keep-alive`) may appear at any time.
+          headers:
+            X-Task-Id: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatCompletion' }
+            text/event-stream:
+              schema: { type: string }
+              x-sse-data-schema: { $ref: '#/components/schemas/ChatCompletionChunk' }
+        '400': { $ref: '#/components/responses/OpenAIError' }
+        '401': { $ref: '#/components/responses/OpenAIError' }
+        '404': { $ref: '#/components/responses/OpenAIError' }
+        '429': { $ref: '#/components/responses/OpenAIError' }
+        '502': { $ref: '#/components/responses/OpenAIError' }
+        '503': { $ref: '#/components/responses/OpenAIError' }
+        '504': { $ref: '#/components/responses/OpenAIError' }
+components:
+  securitySchemes:
+    tenantKey:
+      type: http
+      scheme: bearer
+      description: Tenant API key (server-to-server only; never shipped to browsers or devices). Combined with the X-End-User header.
+    accessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Device access token (typ at+jwt). Possession is additionally proven by the hello proof JWT.
+  parameters:
+    EndUser:
+      in: header
+      name: X-End-User
+      required: true
+      description: Stable, opaque id of the end user as authenticated by the tenant (1–128 chars). The gateway trusts it because the tenant key is server-side only.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+  responses:
+    OAuthError:
+      description: RFC 6749 §5.2 / RFC 8628 §3.5 error.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                enum: [invalid_request, invalid_grant, unsupported_grant_type, authorization_pending, slow_down, access_denied, expired_token, server_error]
+              error_description: { type: string }
+    Problem:
+      description: RFC 9457 problem details.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    OpenAIError:
+      description: OpenAI-style error object.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [message, code]
+                properties:
+                  message: { type: string }
+                  type: { type: string, examples: [lsp2_error] }
+                  code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
+  schemas:
+    Discovery:
+      type: object
+      required: [gateway_url, tenant, protocol]
+      properties:
+        gateway_url: { type: string, format: uri }
+        tenant: { type: string }
+        link_url: { type: string, format: uri, description: Page where a signed-in user enters the user_code (verification_uri). }
+        protocol: { const: lsp2 }
+    JWK:
+      type: object
+      required: [kty, crv, x]
+      properties:
+        kty: { const: OKP }
+        crv: { const: Ed25519 }
+        x: { type: string, description: base64url raw 32-byte public key }
+        kid: { type: string, description: RFC 7638 thumbprint }
+        alg: { const: EdDSA }
+        use: { const: sig }
+    JWKSet:
+      type: object
+      required: [keys]
+      properties:
+        keys: { type: array, items: { $ref: '#/components/schemas/JWK' } }
+    DeviceAuthorizationRequest:
+      type: object
+      required: [tenant, public_key]
+      properties:
+        tenant: { type: string }
+        public_key: { type: string, description: base64url (no padding) of the 32-byte Ed25519 public key }
+        device_name: { type: string, maxLength: 100 }
+    DeviceAuthorizationResponse:
+      type: object
+      required: [device_code, user_code, expires_in, interval]
+      properties:
+        device_code: { type: string }
+        user_code: { type: string, pattern: '^[B-DF-HJ-NP-TV-XZ]{4}-[B-DF-HJ-NP-TV-XZ]{4}$' }
+        verification_uri: { type: string, format: uri }
+        verification_uri_complete: { type: string, format: uri }
+        expires_in: { type: integer }
+        interval: { type: integer, minimum: 1 }
+    TokenRequest:
+      oneOf:
+        - type: object
+          title: device_code grant
+          required: [grant_type, device_code, proof]
+          properties:
+            grant_type: { const: 'urn:ietf:params:oauth:grant-type:device_code' }
+            device_code: { type: string }
+            proof: { type: string, description: 'Proof JWT, typ lsp2-proof+jwt, aud lsp2:token, iss "", ath = base64url(SHA-256(device_code)).' }
+        - type: object
+          title: jwt-bearer grant (refresh with the device key)
+          required: [grant_type, assertion]
+          properties:
+            grant_type: { const: 'urn:ietf:params:oauth:grant-type:jwt-bearer' }
+            assertion: { type: string, description: 'JWT typ JWT signed by the device key; iss=sub=device_id, aud lsp2-gateway/token, exp-iat <= 300, unique jti.' }
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, device_id, gateway_key]
+      properties:
+        access_token: { type: string }
+        token_type: { const: Bearer }
+        expires_in: { type: integer }
+        device_id: { type: string }
+        gateway_key: { $ref: '#/components/schemas/JWK' }
+    Device:
+      type: object
+      required: [device_id, name, status, online, models]
+      properties:
+        device_id: { type: string }
+        name: { type: string }
+        status: { enum: [active, revoked] }
+        created_at: { type: string, format: date-time, description: RFC 3339 UTC }
+        online: { type: boolean }
+        models: { type: array, items: { type: string } }
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri, examples: ['https://localsubproxy.dev/problems/device-offline'] }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
+    ChatRequest:
+      type: object
+      required: [model, messages]
+      additionalProperties: true
+      properties:
+        model: { type: string, description: '`<device_id>/<model>` or a bare model name served by exactly one of the caller''s devices' }
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: 'schemas/defs.json#/$defs/message' }
+        stream: { type: boolean, default: false }
+        max_tokens: { type: integer, minimum: 1 }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+    ChatCompletion:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object: { const: chat.completion }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              message: { $ref: 'schemas/defs.json#/$defs/message' }
+              finish_reason: { type: string }
+        usage: { $ref: 'schemas/defs.json#/$defs/usage' }
+    ChatCompletionChunk:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object: { const: chat.completion.chunk }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              delta:
+                type: object
+                properties:
+                  role: { type: string }
+                  content: { type: string }
+              finish_reason: { type: [string, 'null'] }
+        usage: { $ref: 'schemas/defs.json#/$defs/usage' }

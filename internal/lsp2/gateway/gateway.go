@@ -143,6 +143,10 @@ func (g *Gateway) RunRetention(ctx context.Context, every time.Duration) {
 func (g *Gateway) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
+	m.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/jwk-set+json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []lsp2.JWK{lsp2.PublicJWK(g.pub)}})
+	})
 	m.HandleFunc("/v2/device/authorize", g.authorize)
 	m.HandleFunc("/v2/token", g.token)
 	m.HandleFunc("/v2/connect", g.connect)

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lsp2/task.cancel.json",
+  "title": "task.cancel",
+  "description": "gateway\u2192device",
+  "type": "object",
+  "properties": {
+    "reason": {
+      "type": "string",
+      "maxLength": 256,
+      "examples": [
+        "client_disconnected",
+        "timeout"
+      ]
+    }
+  }
+}

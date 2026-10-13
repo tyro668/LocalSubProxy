@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lsp2/session.token.response.json",
+  "title": "session.token.response",
+  "description": "gateway→device",
+  "type": "object",
+  "required": [
+    "token_expires_at"
+  ],
+  "properties": {
+    "token_expires_at": {
+      "$ref": "defs.json#/$defs/numericDate"
+    }
+  }
+}

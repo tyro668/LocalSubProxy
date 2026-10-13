@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lsp2/task.delta.json",
+  "title": "task.delta",
+  "description": "device→gateway",
+  "type": "object",
+  "required": [
+    "text"
+  ],
+  "properties": {
+    "text": {
+      "type": "string",
+      "maxLength": 1048576
+    }
+  }
+}

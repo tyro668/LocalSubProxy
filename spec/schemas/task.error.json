@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lsp2/task.error.json",
+  "title": "task.error",
+  "description": "device→gateway",
+  "$ref": "defs.json#/$defs/errorBody"
+}

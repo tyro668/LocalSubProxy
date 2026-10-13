@@ -1,0 +1,343 @@
+asyncapi: 3.0.0
+info:
+  title: LocalSubProxy protocol v2 (lsp2) — device WebSocket channel
+  version: 2.0.0
+  description: |
+    Normative text: docs/protocol-v2.md. Written from the **device (connector)** point of view:
+    `send` = device→gateway, `receive` = gateway→device. A gateway implements the mirror image.
+
+    Every WebSocket *text* message is one JSON object (RFC 8259, UTF-8) matching
+    `schemas/envelope.json`. Binary messages MUST NOT be sent; a receiver MUST close with 1003.
+servers:
+  production:
+    host: gateway.example.com
+    pathname: /v2/connect
+    protocol: wss
+    description: TLS is REQUIRED except on loopback in development.
+    security:
+      - $ref: '#/components/securitySchemes/accessToken'
+channels:
+  device:
+    address: /v2/connect
+    title: Device session
+    bindings:
+      ws:
+        method: GET
+        headers:
+          type: object
+          required: [Authorization, Sec-WebSocket-Protocol]
+          properties:
+            Authorization:
+              type: string
+              pattern: '^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+            Sec-WebSocket-Protocol:
+              type: string
+              description: MUST offer lsp2; the server selects exactly lsp2.
+        bindingVersion: 0.1.0
+    messages:
+      hello:
+        $ref: '#/components/messages/hello'
+      welcome:
+        $ref: '#/components/messages/welcome'
+      taskRun:
+        $ref: '#/components/messages/taskRun'
+      taskCancel:
+        $ref: '#/components/messages/taskCancel'
+      taskDelta:
+        $ref: '#/components/messages/taskDelta'
+      taskDone:
+        $ref: '#/components/messages/taskDone'
+      taskError:
+        $ref: '#/components/messages/taskError'
+      sessionTokenRequest:
+        $ref: '#/components/messages/sessionTokenRequest'
+      sessionTokenResponse:
+        $ref: '#/components/messages/sessionTokenResponse'
+      modelsUpdate:
+        $ref: '#/components/messages/modelsUpdate'
+      pingFromGateway:
+        $ref: '#/components/messages/pingFromGateway'
+      pongToGateway:
+        $ref: '#/components/messages/pongToGateway'
+      pingFromDevice:
+        $ref: '#/components/messages/pingFromDevice'
+      pongFromGateway:
+        $ref: '#/components/messages/pongFromGateway'
+      errorFromGateway:
+        $ref: '#/components/messages/errorFromGateway'
+operations:
+  sendHello:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/hello'
+  receiveWelcome:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/welcome'
+  receiveTaskRun:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskRun'
+  receiveTaskCancel:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskCancel'
+  sendTaskDelta:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskDelta'
+  sendTaskDone:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskDone'
+  sendTaskError:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskError'
+  sendSessionTokenRequest:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/sessionTokenRequest'
+  receiveSessionTokenResponse:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/sessionTokenResponse'
+  sendModelsUpdate:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/modelsUpdate'
+  receivePingFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pingFromGateway'
+  sendPongToGateway:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pongToGateway'
+  sendPingFromDevice:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pingFromDevice'
+  receivePongFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pongFromGateway'
+  receiveErrorFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/errorFromGateway'
+components:
+  securitySchemes:
+    accessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token (typ at+jwt) from POST /v2/token, bound to the device key via cnf.jkt; possession proven by the hello proof JWT.
+  messages:
+    hello:
+      name: 'hello'
+      title: hello
+      contentType: application/json
+      summary: "Device→gateway, first frame. Requires id."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'hello'
+    welcome:
+      name: 'welcome'
+      title: welcome
+      contentType: application/json
+      summary: "Gateway→device answer to hello (same id)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'welcome'
+    taskRun:
+      name: 'task.run'
+      title: task.run
+      contentType: application/json
+      summary: "Gateway→device. No data; the payload is the compact JWS in `jws` (typ lsp2-task+jws, schema task.run.payload.json)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.run'
+    taskCancel:
+      name: 'task.cancel'
+      title: task.cancel
+      contentType: application/json
+      summary: "Gateway→device."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.cancel'
+    taskDelta:
+      name: 'task.delta'
+      title: task.delta
+      contentType: application/json
+      summary: "Device→gateway, seq 1..n."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.delta'
+    taskDone:
+      name: 'task.done'
+      title: task.done
+      contentType: application/json
+      summary: "Device→gateway, terminal."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.done'
+    taskError:
+      name: 'task.error'
+      title: task.error
+      contentType: application/json
+      summary: "Device→gateway, terminal."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.error'
+    sessionTokenRequest:
+      name: 'session.token'
+      title: session.token
+      contentType: application/json
+      summary: "Device→gateway mid-connection token swap."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'session.token'
+    sessionTokenResponse:
+      name: 'session.token'
+      title: session.token
+      contentType: application/json
+      summary: "Gateway→device acknowledgement."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'session.token'
+    modelsUpdate:
+      name: 'models.update'
+      title: models.update
+      contentType: application/json
+      summary: "Device→gateway."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'models.update'
+    pingFromGateway:
+      name: 'ping'
+      title: ping
+      contentType: application/json
+      summary: "Application-level ping (either side may also use WebSocket control pings)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'ping'
+    pongToGateway:
+      name: 'pong'
+      title: pong
+      contentType: application/json
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'pong'
+    pingFromDevice:
+      name: 'ping'
+      title: ping
+      contentType: application/json
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'ping'
+    pongFromGateway:
+      name: 'pong'
+      title: pong
+      contentType: application/json
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'pong'
+    errorFromGateway:
+      name: 'error'
+      title: error
+      contentType: application/json
+      summary: "Connection-level error; usually followed by close."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'error'

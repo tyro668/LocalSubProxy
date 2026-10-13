@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lsp2/hello.json",
+  "title": "hello",
+  "description": "device→gateway",
+  "type": "object",
+  "required": [
+    "device_id",
+    "client",
+    "models",
+    "max_concurrency",
+    "proof"
+  ],
+  "properties": {
+    "device_id": {
+      "$ref": "defs.json#/$defs/id"
+    },
+    "client": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "models": {
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "defs.json#/$defs/modelId"
+      }
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "defs.json#/$defs/capability"
+      }
+    },
+    "proof": {
+      "$ref": "defs.json#/$defs/compactJws",
+      "description": "Proof JWT, typ lsp2-proof+jwt, aud lsp2:hello, ath=SHA-256(access token)."
+    }
+  }
+}
