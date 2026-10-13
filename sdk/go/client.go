@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -89,7 +90,28 @@ func (s *Server) Client(tenant, endUser string) (*Client, error) {
 	return &Client{hc: &http.Client{Transport: s.Transport()}, key: k, user: endUser, ten: tenant}, nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any, idem string) (*http.Response, error) {
+// CallOption tunes one API call.
+type CallOption func(*callOpts)
+
+type callOpts struct{ idem, lastEventID string }
+
+// WithIdempotencyKey sends Idempotency-Key: a retry with the same key and
+// body re-attaches to the original task instead of running it again.
+func WithIdempotencyKey(k string) CallOption { return func(o *callOpts) { o.idem = k } }
+
+// WithLastEventID sends Last-Event-ID (use with WithIdempotencyKey on a
+// stream to resume after Stream.LastEventID()).
+func WithLastEventID(id string) CallOption { return func(o *callOpts) { o.lastEventID = id } }
+
+func optsOf(opts []CallOption) callOpts {
+	var o callOpts
+	for _, f := range opts {
+		f(&o)
+	}
+	return o
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any, o callOpts) (*http.Response, error) {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -105,8 +127,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idem str
 	req.Header.Set("Authorization", "Bearer "+c.key)
 	req.Header.Set("X-End-User", c.user)
 	req.Header.Set("Content-Type", "application/json")
-	if idem != "" {
-		req.Header.Set("Idempotency-Key", idem)
+	if o.idem != "" {
+		req.Header.Set("Idempotency-Key", o.idem)
+	}
+	if o.lastEventID != "" {
+		req.Header.Set("Last-Event-ID", o.lastEventID)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -137,8 +162,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idem str
 	return resp, nil
 }
 
-func (c *Client) json(ctx context.Context, method, path string, body any, idem string, out any) error {
-	resp, err := c.do(ctx, method, path, body, idem)
+func (c *Client) json(ctx context.Context, method, path string, body any, o callOpts, out any) error {
+	resp, err := c.do(ctx, method, path, body, o)
 	if err != nil {
 		return err
 	}
@@ -159,12 +184,21 @@ type Model struct {
 // ChatRequest is an OpenAI chat-completions request.
 type ChatRequest struct {
 	Model       string         `json:"model"`
-	Messages    []lmbp.Message `json:"messages"`
+	Messages    []lmbp.Message `json:"messages,omitempty"`
 	Tools       []lmbp.Tool    `json:"tools,omitempty"`
 	ToolChoice  any            `json:"tool_choice,omitempty"`
 	MaxTokens   int            `json:"max_tokens,omitempty"`
 	Temperature *float64       `json:"temperature,omitempty"`
 	Stream      bool           `json:"stream"`
+	// E2EE is a sealed request (E2EESealed.JWE); Messages/Tools must be empty.
+	E2EE string `json:"lmbp_e2ee,omitempty"`
+}
+
+// E2EEFrame is one sealed response frame (stream chunk or aggregated list).
+type E2EEFrame struct {
+	Seq  int64  `json:"seq"`
+	Type string `json:"type"` // task.delta | task.done
+	Data string `json:"data"`
 }
 
 // ChatCompletion is a non-streaming response.
@@ -179,6 +213,7 @@ type ChatCompletion struct {
 		FinishReason string       `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *lmbp.Usage `json:"usage,omitempty"`
+	E2EE  []E2EEFrame `json:"lmbp_e2ee,omitempty"` // sealed frames of an E2EE task
 }
 
 // ChatCompletionChunk is one streamed event.
@@ -195,6 +230,7 @@ type ChatCompletionChunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *lmbp.Usage `json:"usage,omitempty"`
+	E2EE  *E2EEFrame  `json:"lmbp_e2ee,omitempty"` // sealed frame of an E2EE task
 }
 
 // Models lists the models on endUser's online devices.
@@ -202,28 +238,43 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	var out struct {
 		Data []Model `json:"data"`
 	}
-	err := c.json(ctx, http.MethodGet, "/v1/models", nil, "", &out)
+	err := c.json(ctx, http.MethodGet, "/v1/models", nil, callOpts{}, &out)
 	return out.Data, err
 }
 
 // ChatCompletion runs a non-streaming chat completion.
-func (c *Client) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatCompletion, error) {
+func (c *Client) ChatCompletion(ctx context.Context, req ChatRequest, opts ...CallOption) (*ChatCompletion, error) {
 	req.Stream = false
 	var out ChatCompletion
-	if err := c.json(ctx, http.MethodPost, "/v1/chat/completions", req, "", &out); err != nil {
+	if err := c.json(ctx, http.MethodPost, "/v1/chat/completions", req, optsOf(opts), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // ChatCompletionStream runs a streaming chat completion.
-func (c *Client) ChatCompletionStream(ctx context.Context, req ChatRequest) (*Stream[ChatCompletionChunk], error) {
+func (c *Client) ChatCompletionStream(ctx context.Context, req ChatRequest, opts ...CallOption) (*Stream[ChatCompletionChunk], error) {
 	req.Stream = true
-	resp, err := c.do(ctx, http.MethodPost, "/v1/chat/completions", req, "")
+	resp, err := c.do(ctx, http.MethodPost, "/v1/chat/completions", req, optsOf(opts))
 	if err != nil {
 		return nil, err
 	}
-	return newStream[ChatCompletionChunk](resp.Body, func(_, data string) (bool, error) {
+	return chatStream(resp), nil
+}
+
+// ResumeChatCompletionStream re-attaches to a task's stream after
+// lastEventID (a Stream.LastEventID value; "" or "0" replays everything).
+// It ends immediately when lastEventID is at or beyond the terminal event.
+func (c *Client) ResumeChatCompletionStream(ctx context.Context, taskID, lastEventID string) (*Stream[ChatCompletionChunk], error) {
+	resp, err := c.do(ctx, http.MethodGet, "/lmbp/v1/tenant/tasks/"+url.PathEscape(taskID)+"/events", nil, callOpts{lastEventID: lastEventID})
+	if err != nil {
+		return nil, err
+	}
+	return chatStream(resp), nil
+}
+
+func chatStream(resp *http.Response) *Stream[ChatCompletionChunk] {
+	return newStream[ChatCompletionChunk](resp, func(_, data string) (bool, error) {
 		if data == "[DONE]" {
 			return true, nil
 		}
@@ -231,7 +282,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req ChatRequest) (*St
 			return true, streamErr(data)
 		}
 		return false, nil
-	}), nil
+	})
 }
 
 // ---------------- Anthropic-compatible ----------------
@@ -302,23 +353,26 @@ type MessageStreamEvent struct {
 }
 
 // Messages runs a non-streaming Anthropic Messages request.
-func (c *Client) Messages(ctx context.Context, req MessagesRequest) (*Message, error) {
+func (c *Client) Messages(ctx context.Context, req MessagesRequest, opts ...CallOption) (*Message, error) {
 	req.Stream = false
 	var out Message
-	if err := c.json(ctx, http.MethodPost, "/v1/messages", req, "", &out); err != nil {
+	if err := c.json(ctx, http.MethodPost, "/v1/messages", req, optsOf(opts), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // MessagesStream runs a streaming Anthropic Messages request (ping events are skipped).
-func (c *Client) MessagesStream(ctx context.Context, req MessagesRequest) (*Stream[MessageStreamEvent], error) {
+//
+// To resume a dropped stream, call MessagesStream again with the same
+// request, WithIdempotencyKey(sameKey) and WithLastEventID(stream.LastEventID()).
+func (c *Client) MessagesStream(ctx context.Context, req MessagesRequest, opts ...CallOption) (*Stream[MessageStreamEvent], error) {
 	req.Stream = true
-	resp, err := c.do(ctx, http.MethodPost, "/v1/messages", req, "")
+	resp, err := c.do(ctx, http.MethodPost, "/v1/messages", req, optsOf(opts))
 	if err != nil {
 		return nil, err
 	}
-	return newStream[MessageStreamEvent](resp.Body, func(event, data string) (bool, error) {
+	return newStream[MessageStreamEvent](resp, func(event, data string) (bool, error) {
 		switch event {
 		case "ping":
 			return false, errSkip
@@ -335,24 +389,34 @@ var errSkip = errors.New("skip")
 
 // Stream iterates server-sent events: for s.Next() { s.Current() }; then s.Err().
 type Stream[T any] struct {
-	body  io.ReadCloser
-	sc    *bufio.Scanner
-	check func(event, data string) (stop bool, err error)
-	cur   T
-	err   error
-	done  bool
+	body   io.ReadCloser
+	taskID string
+	lastID string
+	sc     *bufio.Scanner
+	check  func(event, data string) (stop bool, err error)
+	cur    T
+	err    error
+	done   bool
 }
 
-func newStream[T any](body io.ReadCloser, check func(event, data string) (bool, error)) *Stream[T] {
-	sc := bufio.NewScanner(body)
+func newStream[T any](resp *http.Response, check func(event, data string) (bool, error)) *Stream[T] {
+	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
-	return &Stream[T]{body: body, sc: sc, check: check}
+	return &Stream[T]{body: resp.Body, taskID: resp.Header.Get("X-Task-Id"), sc: sc, check: check}
 }
+
+// TaskID is the gateway task behind the stream (X-Task-Id), for
+// ResumeChatCompletionStream.
+func (s *Stream[T]) TaskID() string { return s.taskID }
+
+// LastEventID is the SSE id of the last event read by Next: the resume
+// cursor to pass as Last-Event-ID. Events without an id keep the previous one.
+func (s *Stream[T]) LastEventID() string { return s.lastID }
 
 // Next advances to the next event.
 func (s *Stream[T]) Next() bool {
 	for !s.done {
-		event, data := "", ""
+		event, data, id := "", "", ""
 		for s.sc.Scan() {
 			l := s.sc.Text()
 			if l == "" {
@@ -363,6 +427,8 @@ func (s *Stream[T]) Next() bool {
 			}
 			if v, ok := strings.CutPrefix(l, "event: "); ok {
 				event = v
+			} else if v, ok := strings.CutPrefix(l, "id: "); ok {
+				id = v
 			} else if v, ok := strings.CutPrefix(l, "data: "); ok {
 				data += v
 			}
@@ -385,6 +451,9 @@ func (s *Stream[T]) Next() bool {
 			break
 		}
 		s.cur = v
+		if id != "" {
+			s.lastID = id
+		}
 		return true
 	}
 	s.body.Close()

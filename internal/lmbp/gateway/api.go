@@ -17,6 +17,7 @@ import (
 // Pairing decision errors.
 var (
 	ErrCodeInvalid   = errors.New("code invalid, expired or already used")
+	ErrRateLimited   = errors.New("too many failed pairing codes; wait a minute")
 	ErrCodeDenied    = errors.New("pairing consent was denied for this code")
 	ErrJKTMismatch   = errors.New("device key thumbprint does not match the pairing request")
 	ErrDeviceUnknown = errors.New("device not found")
@@ -32,7 +33,23 @@ func (g *Gateway) PendingPairing(ctx context.Context, tenantID, userCode string)
 
 // Decide approves (binding the new device to owner) or denies the pairing
 // identified by userCode. jkt, when set, must match the device key.
+//
+// Failure counting and lockout live here, in the shared business layer, so
+// the HTTP API and in-process callers (SDK Pairing.Approve/Deny) are limited
+// alike: after 10 failed codes per tenant within a minute, Decide returns
+// ErrRateLimited without looking the code up (audit finding 8).
 func (g *Gateway) Decide(ctx context.Context, tenantID, owner, userCode, jkt string, deny bool) (store.DeviceAuth, error) {
+	if !g.allowAttempt(tenantID) {
+		return store.DeviceAuth{}, ErrRateLimited
+	}
+	d, err := g.decide(ctx, tenantID, owner, userCode, jkt, deny)
+	if errors.Is(err, ErrCodeDenied) || errors.Is(err, ErrCodeInvalid) || errors.Is(err, ErrJKTMismatch) {
+		g.recordFailure(tenantID)
+	}
+	return d, err
+}
+
+func (g *Gateway) decide(ctx context.Context, tenantID, owner, userCode, jkt string, deny bool) (store.DeviceAuth, error) {
 	d, err := g.cfg.Store.DeviceAuthByUserCode(ctx, tenantID, normCode(userCode))
 	if err == nil && d.Status == "denied" && !time.Now().After(d.ExpiresAt) {
 		return d, ErrCodeDenied

@@ -347,23 +347,19 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 		httpError(w, r, 400, lmbp.ErrBadRequest, "invalid JSON")
 		return
 	}
-	if !g.allowAttempt(t.ID) {
-		httpError(w, r, 429, lmbp.ErrRateLimited, "too many failed codes; wait a minute")
-		return
-	}
 	d, err := g.Decide(r.Context(), t.ID, user, req.UserCode, req.JKT, req.Deny)
 	switch {
+	case errors.Is(err, ErrRateLimited):
+		httpError(w, r, 429, lmbp.ErrRateLimited, "too many failed codes; wait a minute")
+		return
 	case errors.Is(err, ErrCodeDenied):
 		// §19: a declined pairing cannot be overridden by a later approval.
-		g.recordFailure(t.ID)
 		httpError(w, r, 403, lmbp.ErrConsentDenied, err.Error())
 		return
 	case errors.Is(err, ErrCodeInvalid):
-		g.recordFailure(t.ID)
 		httpError(w, r, 404, lmbp.ErrBadRequest, err.Error())
 		return
 	case errors.Is(err, ErrJKTMismatch):
-		g.recordFailure(t.ID)
 		httpError(w, r, 409, lmbp.ErrForbidden, err.Error())
 		return
 	case err != nil:
