@@ -127,6 +127,13 @@ type Store interface {
 	Close() error
 }
 
+// SecretStore is optionally implemented by a Store to keep small secrets
+// such as the gateway signing seed (SQLite and Memory implement it).
+type SecretStore interface {
+	GetSecret(ctx context.Context, name string) ([]byte, error) // ErrNotFound if absent
+	PutSecret(ctx context.Context, name string, v []byte) error
+}
+
 // Cipher seals prompt/output payloads. A nil *Cipher stores plaintext.
 type Cipher struct{ aead cipher.AEAD }
 

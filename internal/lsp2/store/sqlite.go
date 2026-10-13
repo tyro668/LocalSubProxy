@@ -11,6 +11,7 @@ import (
 )
 
 const schema = `
+CREATE TABLE IF NOT EXISTS secrets(name TEXT PRIMARY KEY, value BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY, name TEXT NOT NULL, api_key_hash TEXT NOT NULL UNIQUE, profile TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS device_auths(device_code_hash TEXT PRIMARY KEY, user_code TEXT NOT NULL, tenant_id TEXT NOT NULL,
   public_key BLOB NOT NULL, device_name TEXT NOT NULL, status TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '',
@@ -53,6 +54,21 @@ func OpenSQLite(path string, c *Cipher) (*SQLite, error) {
 }
 
 func (s *SQLite) Close() error { return s.db.Close() }
+
+// GetSecret implements SecretStore. Secrets are sealed when a Cipher is set.
+func (s *SQLite) GetSecret(ctx context.Context, name string) ([]byte, error) {
+	var v []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM secrets WHERE name = ?`, name).Scan(&v); err != nil {
+		return nil, nf(err)
+	}
+	return s.c.Open(v)
+}
+
+// PutSecret implements SecretStore.
+func (s *SQLite) PutSecret(ctx context.Context, name string, v []byte) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO secrets(name, value) VALUES(?, ?)`, name, s.c.Seal(v))
+	return err
+}
 
 func nf(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {

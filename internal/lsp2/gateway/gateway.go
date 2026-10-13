@@ -351,34 +351,22 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 		httpError(w, r, 429, lsp2.ErrRateLimited, "too many failed codes; wait a minute")
 		return
 	}
-	code := normCode(req.UserCode)
-	d, err := g.cfg.Store.DeviceAuthByUserCode(r.Context(), t.ID, code)
-	if err == nil && d.Status == "denied" && !time.Now().After(d.ExpiresAt) {
+	d, err := g.Decide(r.Context(), t.ID, user, req.UserCode, req.JKT, req.Deny)
+	switch {
+	case errors.Is(err, ErrCodeDenied):
 		// §19: a declined pairing cannot be overridden by a later approval.
 		g.recordFailure(t.ID)
-		httpError(w, r, 403, lsp2.ErrConsentDenied, "pairing consent was denied for this code")
+		httpError(w, r, 403, lsp2.ErrConsentDenied, err.Error())
 		return
-	}
-	if err != nil || d.Status != "pending" || time.Now().After(d.ExpiresAt) {
+	case errors.Is(err, ErrCodeInvalid):
 		g.recordFailure(t.ID)
-		httpError(w, r, 404, lsp2.ErrBadRequest, "code invalid, expired or already used")
+		httpError(w, r, 404, lsp2.ErrBadRequest, err.Error())
 		return
-	}
-	if req.JKT != "" && req.JKT != lsp2.Thumbprint(d.PublicKey) {
+	case errors.Is(err, ErrJKTMismatch):
 		g.recordFailure(t.ID)
-		httpError(w, r, 409, lsp2.ErrForbidden, "device key thumbprint does not match the pairing request")
+		httpError(w, r, 409, lsp2.ErrForbidden, err.Error())
 		return
-	}
-	if req.Deny {
-		d.Status = "denied"
-	} else {
-		d.Status, d.OwnerID, d.DeviceID = "approved", user, lsp2.RandomID("dev_")
-		if err := g.cfg.Store.CreateDevice(r.Context(), store.Device{ID: d.DeviceID, TenantID: t.ID, OwnerID: user, Name: d.DeviceName, PublicKey: d.PublicKey, Status: "active", CreatedAt: time.Now()}); err != nil {
-			httpError(w, r, 500, lsp2.ErrInternal, "storage error")
-			return
-		}
-	}
-	if err := g.cfg.Store.UpdateDeviceAuth(r.Context(), d); err != nil {
+	case err != nil:
 		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
@@ -563,16 +551,14 @@ func (g *Gateway) revoke(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	d, err := g.cfg.Store.GetDevice(r.Context(), id)
-	if err != nil || d.TenantID != t.ID || d.OwnerID != user {
-		httpError(w, r, 404, lsp2.ErrForbidden, "device not found")
+	if err := g.RevokeDevice(r.Context(), t.ID, user, id); err != nil {
+		if errors.Is(err, ErrDeviceUnknown) {
+			httpError(w, r, 404, lsp2.ErrForbidden, "device not found")
+		} else {
+			httpError(w, r, 500, lsp2.ErrInternal, "storage error")
+		}
 		return
 	}
-	if err := g.cfg.Store.SetDeviceStatus(r.Context(), id, "revoked"); err != nil {
-		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
-		return
-	}
-	g.dropDevice(id, lsp2.ErrUnauthenticated, "device revoked")
 	writeJSON(w, 200, map[string]string{"device_id": id, "status": "revoked"})
 }
 
