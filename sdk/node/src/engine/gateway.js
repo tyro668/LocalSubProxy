@@ -868,6 +868,8 @@ class Task {
       for (;;) {
         if (signal?.aborted) return false;
         const batch = this.events.filter((e) => e.seq > after);
+        // finished and nothing after the cursor (Last-Event-ID >= terminal seq): end
+        if (!batch.length && this.events.length && isTerminal(this.events.at(-1).type)) return true;
         for (const e of batch) {
           fn(e);
           after = e.seq;

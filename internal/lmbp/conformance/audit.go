@@ -18,6 +18,61 @@ import (
 
 func (r *runner) runAudit(ctx context.Context, dev *extDev, full func(string) string, mTools string) {
 	r.auditIdempotency(ctx, dev, full(mTools))
+	r.auditResumeBounds(ctx, dev, full(mTools))
+}
+
+// Z3: re-attaching to a finished stream with Last-Event-ID below, equal to
+// or beyond the terminal event's seq always ends: below replays the rest,
+// equal and beyond end promptly with no further content (audit finding 3).
+// Covered on both /v1/chat/completions and /v1/messages.
+func (r *runner) auditResumeBounds(ctx context.Context, dev *extDev, model string) {
+	for _, api := range []string{"chat", "messages"} {
+		do := func(c context.Context, hdr map[string]string) (int, []byte) {
+			body := map[string]any{"model": model, "stream": true, "max_tokens": 64, "messages": []any{map[string]any{"role": "user", "content": "resume bounds " + api}}}
+			if api == "chat" {
+				st, _, b := r.chatRaw(c, body, hdr)
+				return st, b
+			}
+			st, _, b := r.messagesRaw(c, body, hdr)
+			return st, b
+		}
+		key := lmbp.RandomID("idem_")
+		ch := make(chan []byte, 1)
+		go func() { _, b := do(ctx, map[string]string{"Idempotency-Key": key}); ch <- b }()
+		f, _, err := dev.await(lmbp.TypeTaskRun, nil)
+		if err != nil {
+			r.check("Z3", "resume bounds "+api, err)
+			return
+		}
+		_ = dev.send(lmbp.TypeTaskDelta, f.TaskID, 1, lmbp.TaskDelta{Text: "A"})
+		_ = dev.send(lmbp.TypeTaskDelta, f.TaskID, 2, lmbp.TaskDelta{Text: "B"})
+		_ = dev.send(lmbp.TypeTaskDone, f.TaskID, 3, lmbp.TaskDone{FinishReason: "stop"})
+		<-ch
+		text := func(b []byte) string {
+			if api == "chat" {
+				return sseText(parseSSE(b))
+			}
+			var s string
+			for _, e := range parseNamedSSE(b) {
+				if d, _ := e.data["delta"].(map[string]any); e.event == "content_block_delta" && d != nil {
+					t, _ := d["text"].(string)
+					s += t
+				}
+			}
+			return s
+		}
+		for _, c := range []struct {
+			id, want, name string
+		}{{"1", "B", "below"}, {"3", "", "equal to"}, {"99", "", "beyond"}} {
+			cc, cancel := context.WithTimeout(ctx, 5*time.Second)
+			start := time.Now()
+			st, b := do(cc, map[string]string{"Idempotency-Key": key, "Last-Event-ID": c.id})
+			hung := cc.Err() != nil
+			cancel()
+			r.check("Z3", fmt.Sprintf("/%s re-attach with Last-Event-ID %s the terminal seq (3) ends the stream (got %q)", api, c.name, c.want),
+				want(!hung && st == 200 && text(b) == c.want, "status %d hung %v after %v body %q", st, hung, time.Since(start).Round(time.Millisecond), b))
+		}
+	}
 }
 
 // Z1: idempotency records are scoped to (tenant, end user, key) without any

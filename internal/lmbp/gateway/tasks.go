@@ -331,7 +331,13 @@ func (t *gtask) stream(ctx context.Context, after int64, keepalive func() error,
 			}
 		}
 		wait := t.notify
+		// Finished task and nothing after the cursor (Last-Event-ID equal to
+		// or beyond the terminal seq): end instead of waiting forever.
+		ended := len(batch) == 0 && len(t.events) > 0 && isTerminal(t.events[len(t.events)-1].Type)
 		t.mu.Unlock()
+		if ended {
+			return nil
+		}
 		for _, e := range batch {
 			if err := fn(e); err != nil {
 				return err

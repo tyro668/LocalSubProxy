@@ -449,6 +449,9 @@ class Task:
         try:
             while True:
                 batch = [e for e in self.events if e["seq"] > after]
+                # finished and nothing after the cursor (Last-Event-ID >= terminal seq): end
+                if not batch and self.events and is_terminal(self.events[-1]["type"]):
+                    return
                 for e in batch:
                     await fn(e)
                     after = e["seq"]
