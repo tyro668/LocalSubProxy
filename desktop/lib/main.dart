@@ -13,10 +13,8 @@ const _brandDark = Color(0xFFAB94FF);
 const _brandDarkForeground = Color(0xFF0C1224);
 
 String _transportLabel(Object? transport) => switch (transport) {
-  'http' => 'HTTP 长轮询',
-  'https' => 'HTTPS 长轮询',
-  'wss' => 'WSS（协议 v2）',
-  'ws' => 'WS（协议 v2，仅本机联调）',
+  'wss' => 'WSS（lsp2）',
+  'ws' => 'WS（lsp2，仅本机联调）',
   _ => '未连接',
 };
 
@@ -67,7 +65,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final remoteUrl = TextEditingController();
-  final legacyKey = TextEditingController();
   Timer? timer;
   bool kernelReady = false;
   String? kernelError;
@@ -77,11 +74,10 @@ class _HomePageState extends State<HomePage> {
   bool busy = false;
   bool awaitingCode = false;
   String? pendingRemoteURL;
-  String claimCodeValue = '';
-  // v2 pairing: code shown on this device, confirmed on the remote service page.
+  // Pairing (RFC 8628 style): code shown on this device, confirmed on the
+  // remote service page.
   String? pairUserCode;
   String? pairLinkUrl;
-  int otpGeneration = 0;
   VoidCallback? _connectionRefresh;
 
   NativeApi get api => NativeApi.instance;
@@ -110,7 +106,6 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     timer?.cancel();
     remoteUrl.dispose();
-    legacyKey.dispose();
     super.dispose();
   }
 
@@ -176,10 +171,9 @@ class _HomePageState extends State<HomePage> {
     return yes == true;
   }
 
-  Future<void> boot({String? journalKey}) async {
+  Future<void> boot() async {
     try {
-      api.start(journalKey: journalKey);
-      legacyKey.clear();
+      api.start();
       if (mounted) {
         setState(() {
           kernelReady = true;
@@ -227,25 +221,13 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => busy = true);
     try {
-      if (status?['v1_enabled'] != true) {
-        final p = await pairStartAsync(url);
-        if (mounted) {
-          setState(() {
-            awaitingCode = true;
-            pendingRemoteURL = url;
-            pairUserCode = p['user_code'] as String?;
-            pairLinkUrl = p['link_url'] as String?;
-          });
-        }
-        return;
-      }
-      await prepareConnectionAsync(url);
+      final p = await pairStartAsync(url);
       if (mounted) {
         setState(() {
           awaitingCode = true;
           pendingRemoteURL = url;
-          claimCodeValue = '';
-          otpGeneration++;
+          pairUserCode = p['user_code'] as String?;
+          pairLinkUrl = p['link_url'] as String?;
         });
       }
     } catch (e) {
@@ -255,10 +237,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  bool get v2Pairing => pairUserCode != null;
-
   Future<void> pollPairing() async {
-    if (!v2Pairing || !awaitingCode) return;
+    if (pairUserCode == null || !awaitingCode) return;
     try {
       final st = await pairStatusAsync();
       if (!mounted) return;
@@ -293,33 +273,6 @@ class _HomePageState extends State<HomePage> {
         pairUserCode = null;
         pairLinkUrl = null;
       });
-    }
-  }
-
-  Future<void> claim() async {
-    final code = claimCodeValue.trim();
-    if (!RegExp(r'^\d{8}$').hasMatch(code)) {
-      show('请输入远端服务页面显示的 8 位数字验证码。', error: true);
-      return;
-    }
-    setState(() => busy = true);
-    try {
-      final url = pendingRemoteURL ?? remoteUrl.text.trim();
-      await claimAsync(url, code);
-      if (mounted) {
-        setState(() {
-          awaitingCode = false;
-          pendingRemoteURL = null;
-          claimCodeValue = '';
-          otpGeneration++;
-        });
-      }
-      await refresh(force: true);
-      show('配对成功，正在连接远端服务');
-    } catch (e) {
-      if (mounted) show('连接失败：$e', error: true);
-    } finally {
-      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -381,49 +334,23 @@ class _HomePageState extends State<HomePage> {
 
   Widget connectionCard() {
     if (!kernelReady) {
-      final needsMigration =
-          kernelError?.contains('legacy encrypted data requires journal key') ==
-          true;
       return Card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Alert(
-              destructive: !needsMigration,
-              leading: Icon(
-                needsMigration
-                    ? LucideIcons.keyRound
-                    : LucideIcons.triangleAlert,
-              ),
-              title: Text(needsMigration ? '需要迁移旧版配置' : '内核启动失败'),
-              content: Text(
-                needsMigration
-                    ? '检测到旧版加密配置。输入之前使用的本机加密密钥以迁移模型配置。'
-                    : (kernelError ?? '内核启动失败'),
-              ),
+              destructive: true,
+              leading: const Icon(LucideIcons.triangleAlert),
+              title: const Text('内核启动失败'),
+              content: Text(kernelError ?? '内核启动失败'),
             ),
-            if (needsMigration) ...[
-              const Gap(16),
-              LabeledField(
-                label: '旧版 64 位十六进制本机加密密钥',
-                child: TextField(
-                  controller: legacyKey,
-                  placeholder: const Text('64 位十六进制'),
-                  features: const [InputFeature.passwordToggle()],
-                ),
-              ),
-            ],
             const Gap(16),
             Align(
               alignment: Alignment.centerRight,
               child: PrimaryButton(
-                onPressed: () => boot(
-                  journalKey: needsMigration ? legacyKey.text.trim() : null,
-                ),
-                leading: Icon(
-                  needsMigration ? LucideIcons.keyRound : LucideIcons.refreshCw,
-                ),
-                child: Text(needsMigration ? '迁移并启动' : '重试'),
+                onPressed: boot,
+                leading: const Icon(LucideIcons.refreshCw),
+                child: const Text('重试'),
               ),
             ),
           ],
@@ -476,10 +403,8 @@ class _HomePageState extends State<HomePage> {
             _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
           ] else ...[
             const Gap(8),
-            Text(
-              status?['v1_enabled'] == true
-                  ? '输入远端服务地址并点击连接，再输入远端服务页面显示的验证码。'
-                  : '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
+            const Text(
+              '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
             ).small().muted(),
             if ((status?['pairing_error'] ?? '') != '' && !awaitingCode) ...[
               const Gap(8),
@@ -499,7 +424,7 @@ class _HomePageState extends State<HomePage> {
                   features: const [InputFeature.clear()],
                 ),
               ),
-            if (awaitingCode && v2Pairing) ...[
+            if (awaitingCode) ...[
               const Gap(16),
               LabeledField(
                 label: '配对码（请在远端服务页面输入）',
@@ -520,58 +445,23 @@ class _HomePageState extends State<HomePage> {
               const Gap(8),
               const Text('等待远端服务确认…').small().muted(),
             ],
-            if (awaitingCode && !v2Pairing) ...[
-              const Gap(16),
-              LabeledField(
-                label: '远端服务页面显示的数字验证码',
-                hint: '8 位数字，可直接粘贴',
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: InputOTP(
-                    key: ValueKey(otpGeneration),
-                    onChanged: (value) => claimCodeValue = value.otpToString(),
-                    onSubmitted: (_) {
-                      if (!busy) claim();
-                    },
-                    children: [
-                      for (var i = 0; i < 4; i++)
-                        InputOTPChild.character(allowDigit: true),
-                      InputOTPChild.separator,
-                      for (var i = 0; i < 4; i++)
-                        InputOTPChild.character(allowDigit: true),
-                    ],
-                  ),
-                ),
-              ),
-            ],
             const Gap(16),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 if (awaitingCode) ...[
                   GhostButton(
-                    onPressed: busy
-                        ? null
-                        : (v2Pairing
-                              ? cancelPairing
-                              : () => setState(() {
-                                  awaitingCode = false;
-                                  pendingRemoteURL = null;
-                                  claimCodeValue = '';
-                                  otpGeneration++;
-                                })),
+                    onPressed: busy ? null : cancelPairing,
                     child: const Text('返回'),
                   ),
                   const Gap(8),
                 ],
-                if (!(awaitingCode && v2Pairing))
-                PrimaryButton(
-                  onPressed: busy
-                      ? null
-                      : (awaitingCode ? claim : prepareConnection),
-                  leading: const Icon(LucideIcons.link),
-                  child: Text(busy ? '处理中…' : (awaitingCode ? '完成连接' : '连接')),
-                ),
+                if (!awaitingCode)
+                  PrimaryButton(
+                    onPressed: busy ? null : prepareConnection,
+                    leading: const Icon(LucideIcons.link),
+                    child: Text(busy ? '处理中…' : '连接'),
+                  ),
               ],
             ),
           ],
