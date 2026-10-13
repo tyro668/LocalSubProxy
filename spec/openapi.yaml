@@ -46,6 +46,26 @@ paths:
           content:
             application/jwk-set+json:
               schema: { $ref: '#/components/schemas/JWKSet' }
+  /.well-known/lsp2-gateway:
+    get:
+      tags: [discovery]
+      summary: Gateway metadata (§18.2); with ?tenant= adds the signed SaaS identity for the pairing consent screen (§19.1)
+      operationId: getGatewayMetadata
+      security: []
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' }
+      responses:
+        '200':
+          description: Metadata. issuer is the gateway https origin; endpoints are on that origin. With tenant, signed_metadata is a JWS (typ lsp2-metadata+jwt) by a JWKS key whose payload supersedes the unsigned fields.
+          headers:
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: 'schemas/gateway-metadata.json' }
+        '404': { $ref: '#/components/responses/Problem' }
   /healthz:
     get:
       tags: [discovery]
@@ -417,7 +437,7 @@ components:
           required: [grant_type, assertion]
           properties:
             grant_type: { const: 'urn:ietf:params:oauth:grant-type:jwt-bearer' }
-            assertion: { type: string, description: 'JWT typ JWT signed by the device key; iss=sub=device_id, aud lsp2-gateway/token, exp-iat <= 300, unique jti.' }
+            assertion: { type: string, description: 'JWT typ JWT signed by the device key; iss=sub=device_id, aud <issuer>/v2/token (§18.3), exp-iat <= 300, unique jti.' }
     TokenResponse:
       type: object
       required: [access_token, token_type, expires_in, device_id, gateway_key]
@@ -427,6 +447,7 @@ components:
         expires_in: { type: integer }
         device_id: { type: string }
         gateway_key: { $ref: '#/components/schemas/JWK' }
+        issuer: { type: string, description: 'Gateway issuer origin (§18.1); devices MUST check it equals the metadata issuer. The token has iss=<issuer>, aud=<issuer>/tenants/<tenant>.' }
     Device:
       type: object
       required: [device_id, name, status, online, models]

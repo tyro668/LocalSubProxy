@@ -151,7 +151,7 @@
 
 ### 4.1 Python（已运行：`spec/examples/python/lsp2.py`）
 ```python
-def verify_hello(gw_pub, device_pub_of, frame, access_token, aud="lsp2-gateway", now=None):
+def verify_hello(gw_pub, device_pub_of, frame, access_token, aud="https://gw.example.com/tenants/acme", now=None):
     claims = verify_access_token(gw_pub, access_token, aud, now)          # typ=at+jwt, aud, exp/iat ±30s
     dev_pub = device_pub_of(claims["sub"])                                # 查库，且 status == active
     if claims.get("cnf", {}).get("jkt") != thumbprint(dev_pub):
@@ -163,7 +163,7 @@ def verify_hello(gw_pub, device_pub_of, frame, access_token, aud="lsp2-gateway",
 
 def issue_access_token(gw_key, kid, device_id, tenant, device_pub, ttl=900, now=None, jti=None):
     now = int(time.time()) if now is None else now
-    claims = {"iss": "lsp2-gateway", "sub": device_id, "aud": "lsp2-gateway", "tenant": tenant, "iat": now,
+    claims = {"iss": issuer, "sub": device_id, "aud": f"{issuer}/tenants/{tenant}", "tenant": tenant, "iat": now,
               "exp": now + ttl, "jti": jti or "jti_" + secrets.token_hex(16), "cnf": {"jkt": thumbprint(device_pub)}}
     return sign_jws(gw_key, "at+jwt", json_bytes(claims), kid)
 
@@ -181,7 +181,7 @@ FastAPI 中接入 WebSocket（示意）：`await ws.accept(subprotocol="lsp2")`�
 
 ### 4.2 Node.js（已运行：`spec/examples/node/lsp2.mjs`）
 ```js
-export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = 'lsp2-gateway', now } = {}) {
+export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = 'https://gw.example.com/tenants/acme', now } = {}) {
   const claims = verifyAccessToken(gwPub, accessToken, aud, now);
   const devPub = devicePubOf(claims.sub);
   if (claims.cnf?.jkt !== thumbprint(devPub)) throw new Error('token not bound to device key');
@@ -190,7 +190,7 @@ export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = 'lsp
   return claims;
 }
 export function issueAccessToken(gwKey, kid, { deviceId, tenant, devicePub, ttl = 900, now = Math.floor(Date.now() / 1000), jti }) {
-  const claims = { iss: 'lsp2-gateway', sub: deviceId, aud: 'lsp2-gateway', tenant, iat: now, exp: now + ttl,
+  const claims = { iss: issuer, sub: deviceId, aud: `${issuer}/tenants/${tenant}`, tenant, iat: now, exp: now + ttl,
     jti: jti ?? `jti_${randomBytes(16).toString('hex')}`, cnf: { jkt: thumbprint(devicePub) } };
   return signJws(gwKey, 'at+jwt', jsonBytes(claims), kid);
 }
@@ -236,7 +236,7 @@ fmt.Fprintf(w, "data: %s\n\n", chunkJSON); w.(http.Flusher).Flush()
 ### 4.4 Rust（已运行：`spec/examples/rust/src/lib.rs`）
 ```rust
 pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &Value, token: &str, now: i64) -> Result<Value> {
-    let c = verify_access_token(gw, token, "lsp2-gateway", now)?;
+    let c = verify_access_token(gw, token, &format!("{ISSUER}/tenants/acme"), now)?;
     let sub = c["sub"].as_str().ok_or("sub")?.to_string();
     let dev = device_pub_of(&sub);
     if c["cnf"]["jkt"] != thumbprint(&dev).as_str() { return Err("token not bound to device key".into()); }
@@ -245,7 +245,7 @@ pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &
     Ok(c)
 }
 pub fn issue_access_token(gw: &SigningKey, kid: &str, device_id: &str, tenant: &str, device_pub: &[u8], now: i64, ttl: i64, jti: &str) -> String {
-    let c = json!({"iss":"lsp2-gateway","sub":device_id,"aud":"lsp2-gateway","tenant":tenant,"iat":now,"exp":now+ttl,"jti":jti,"cnf":{"jkt":thumbprint(device_pub)}});
+    let c = json!({"iss":ISSUER,"sub":device_id,"aud":format!("{ISSUER}/tenants/{tenant}"),"tenant":tenant,"iat":now,"exp":now+ttl,"jti":jti,"cnf":{"jkt":thumbprint(device_pub)}});
     sign_jws(gw, TYP_ACCESS_TOKEN, c.to_string().as_bytes(), Some(kid))
 }
 pub fn sign_task_run(gw: &SigningKey, kid: &str, payload: &Value) -> Value {
@@ -340,3 +340,24 @@ HPKE（RFC 9180）在设计上更现代，但 2026 年各语言 JOSE 生态对 J
 7. 断线后按指数退避重连；收到 `invalid_grant` 后停止，提示用户重新配对。
 
 Go 设备端参考实现见 `internal/lsp2/client`。
+
+
+## 网关身份绑定与配对同意（§18–§19）对接清单
+
+**网关（任何语言）**
+1. 配置 issuer = 对外 https origin（例如 `https://gw.example.com`），不要用主机名推导。
+2. 访问令牌：`iss = issuer`，`aud = issuer + "/tenants/" + tenant`；验证时两项都要比对。设备断言的 `aud = issuer + "/v2/token"`。
+3. 提供 `GET /.well-known/lsp2-gateway`；带 `?tenant=` 时用 JWKS 中的 Ed25519 密钥签 `signed_metadata`（`typ: lsp2-metadata+jwt`，`kid` = RFC 7638 指纹），载荷是除 `signed_metadata` 外的全部字段，`exp - iat ≤ 24h`。结构见 `spec/schemas/gateway-metadata.json`。
+4. 令牌响应带 `issuer`。
+
+**设备（桌面端）**
+1. 入口是深链接 `lsp2://pair?v=2&gateway=…&tenant=…`，或 SaaS 地址 → `/.well-known/lsp-connector`。
+2. 拉取元数据和 JWKS（必须同源），校验签名、issuer、tenant、audience、有效期；失败就不显示同意页。
+3. 同意页显示 `saas.*`、网关 origin、请求的模型和作用域、密钥指纹。用户拒绝时不发任何请求，返回 `CONSENT_DENIED`。
+4. 用户同意后才调用 `device_authorize`。令牌响应的 `gateway_key` 必须等于签名元数据的密钥。
+5. 持久化 `issuer` 和 `audience`。之后每个令牌都要检查 `iss`、`aud`、`tenant`、`sub`、`cnf.jkt`，不符就停止连接。
+
+**常见坑**
+- issuer 末尾的 `/`、大写主机名、显式 `:443`：先按 §18.1 规范化，再比较。
+- 网关在反向代理后面：issuer 填公网 origin；运行一致性测试时加 `-issuer`。
+- 测试向量 `spec/testvectors/vectors.json` 的 `identity` 段包含：origin 规范化用例、签名元数据的正例和 7 个反例、深链接的正例和反例，以及一个“签名有效但 issuer 不同、必须拒绝”的令牌。

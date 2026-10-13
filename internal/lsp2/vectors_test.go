@@ -22,6 +22,8 @@ var update = flag.Bool("update", false, "rewrite spec/testvectors/vectors.json")
 
 const vecIat = int64(1767225600) // 2026-01-01T00:00:00Z
 
+const vecIssuer = "https://gw.example.com"
+
 type vecKey struct {
 	Seed               string `json:"seed_b64url"`
 	Public             string `json:"public_b64url"`
@@ -72,6 +74,7 @@ type vectors struct {
 	E2EE        *vecE2EE            `json:"e2ee"`
 	Flow        []vecFlow           `json:"flow"`
 	Resume      []vecResume         `json:"resume"`
+	Identity    *vecIdentity        `json:"identity"`
 }
 
 func vkey(label string) (ed25519.PrivateKey, vecKey) {
@@ -101,10 +104,10 @@ func generate() vectors {
 	gk, gv := vkey("lsp2 test vector: gateway key")
 	devID := "dev_0192f5e0-7c1a-7cc0-9b4a-3f1d2e5a6b70"
 	kid := gv.JKT
-	at := Claims{Iss: "lsp2-gateway", Sub: devID, Aud: "lsp2-gateway", Tenant: "acme", Iat: vecIat, Exp: vecIat + 600, Jti: "jti_0192f5e0-7c1a-7cc0-9b4a-000000000001", Cnf: map[string]string{"jkt": dv.JKT}}
-	atJWS := mkJWS("access_token", "access_token", "gateway", gk, TypAccessToken, kid, at, map[string]any{"typ": TypAccessToken, "aud": "lsp2-gateway", "cnf.jkt": dv.JKT})
-	as := Claims{Iss: devID, Sub: devID, Aud: "lsp2-gateway/token", Iat: vecIat, Exp: vecIat + 60, Jti: "a_0192f5e0-7c1a-7cc0-9b4a-000000000002"}
-	asJWS := mkJWS("client_assertion", "client_assertion", "device", dk, TypAssertion, dv.JKT, as, map[string]any{"typ": TypAssertion, "aud": "lsp2-gateway/token"})
+	at := Claims{Iss: vecIssuer, Sub: devID, Aud: TokenAudience(vecIssuer, "acme"), Tenant: "acme", Iat: vecIat, Exp: vecIat + 600, Jti: "jti_0192f5e0-7c1a-7cc0-9b4a-000000000001", Cnf: map[string]string{"jkt": dv.JKT}}
+	atJWS := mkJWS("access_token", "access_token", "gateway", gk, TypAccessToken, kid, at, map[string]any{"typ": TypAccessToken, "aud": TokenAudience(vecIssuer, "acme"), "iss": vecIssuer, "tenant": "acme", "cnf.jkt": dv.JKT})
+	as := Claims{Iss: devID, Sub: devID, Aud: AssertionAudience(vecIssuer), Iat: vecIat, Exp: vecIat + 60, Jti: "a_0192f5e0-7c1a-7cc0-9b4a-000000000002"}
+	asJWS := mkJWS("client_assertion", "client_assertion", "device", dk, TypAssertion, dv.JKT, as, map[string]any{"typ": TypAssertion, "aud": AssertionAudience(vecIssuer)})
 	deviceCode := "dc_0192f5e0-7c1a-7cc0-9b4a-000000000003"
 	pTok := ProofClaims{Iss: "", Aud: ProofToken, Iat: vecIat, Jti: "p_0192f5e0-7c1a-7cc0-9b4a-000000000004", Ath: Ath(deviceCode)}
 	pHello := ProofClaims{Iss: devID, Aud: ProofHello, Iat: vecIat, Jti: "p_0192f5e0-7c1a-7cc0-9b4a-000000000005", Ath: Ath(atJWS.Compact)}
@@ -152,6 +155,7 @@ func generate() vectors {
 		panic(err)
 	}
 	v.E2EE, v.Flow, v.Resume = e2, genFlow(), genResume()
+	v.Identity = genIdentity(gk, kid, at)
 	atPayload, _ := json.Marshal(at)
 	tampered := strings.Split(atJWS.Compact, ".")
 	evil := at
@@ -323,6 +327,7 @@ func TestVectors(t *testing.T) {
 		}
 	}
 	checkExt(t, v)
+	checkIdentity(t, v)
 }
 
 func sha256Sum(b []byte) []byte { h := sha256.Sum256(b); return h[:] }

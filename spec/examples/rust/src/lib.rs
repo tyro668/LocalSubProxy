@@ -51,8 +51,12 @@ pub fn verify_access_token(gw: &[u8], tok: &str, aud: &str, now: i64) -> Result<
     Ok(c)
 }
 
+/// §18: iss is the gateway's https origin; aud binds the token to one tenant.
+pub const EXAMPLE_ISSUER: &str = "https://gw.example.com";
+pub fn token_audience(issuer: &str, tenant: &str) -> String { format!("{issuer}/tenants/{tenant}") }
+
 pub fn issue_access_token(gw: &SigningKey, kid: &str, device_id: &str, tenant: &str, device_pub: &[u8], now: i64, ttl: i64, jti: &str) -> String {
-    let c = json!({"iss":"lsp2-gateway","sub":device_id,"aud":"lsp2-gateway","tenant":tenant,"iat":now,"exp":now+ttl,"jti":jti,"cnf":{"jkt":thumbprint(device_pub)}});
+    let c = json!({"iss":EXAMPLE_ISSUER,"sub":device_id,"aud":token_audience(EXAMPLE_ISSUER, tenant),"tenant":tenant,"iat":now,"exp":now+ttl,"jti":jti,"cnf":{"jkt":thumbprint(device_pub)}});
     sign_jws(gw, TYP_ACCESS_TOKEN, c.to_string().as_bytes(), Some(kid))
 }
 
@@ -66,7 +70,7 @@ pub fn verify_proof(dev: &[u8], proof: &str, iss: &str, aud: &str, credential: &
 }
 
 pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &Value, token: &str, now: i64) -> Result<Value> {
-    let c = verify_access_token(gw, token, "lsp2-gateway", now)?;
+    let c = verify_access_token(gw, token, &token_audience(EXAMPLE_ISSUER, "acme"), now)?;
     let sub = c["sub"].as_str().ok_or("sub")?.to_string();
     let dev = device_pub_of(&sub);
     if c["cnf"]["jkt"] != thumbprint(&dev).as_str() { return Err("token not bound to device key".into()); }

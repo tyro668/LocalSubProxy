@@ -86,11 +86,19 @@ def verify_access_token(gw_pub: bytes, token: str, aud: str, now: int | None = N
     return c
 
 
+# §18: iss is the gateway's https origin; aud binds the token to one tenant.
+EXAMPLE_ISSUER = "https://gw.example.com"
+
+
+def token_audience(issuer: str, tenant: str) -> str:
+    return f"{issuer}/tenants/{tenant}"
+
+
 def issue_access_token(gw_key: Ed25519PrivateKey, kid: str, device_id: str, tenant: str, device_pub: bytes,
-                       ttl: int = 900, now: int | None = None, jti: str | None = None) -> str:
+                       ttl: int = 900, now: int | None = None, jti: str | None = None, issuer: str = EXAMPLE_ISSUER) -> str:
     now = int(time.time()) if now is None else now
     # Member order mirrors the Go reference only so that test_vectors can compare bytes.
-    claims = {"iss": "lsp2-gateway", "sub": device_id, "aud": "lsp2-gateway", "tenant": tenant, "iat": now,
+    claims = {"iss": issuer, "sub": device_id, "aud": token_audience(issuer, tenant), "tenant": tenant, "iat": now,
               "exp": now + ttl, "jti": jti or "jti_" + secrets.token_hex(16), "cnf": {"jkt": thumbprint(device_pub)}}
     return sign_jws(gw_key, TYP_ACCESS_TOKEN, json_bytes(claims), kid)
 
@@ -105,7 +113,7 @@ def verify_proof(dev_pub: bytes, proof: str, iss: str, aud: str, credential: str
     return c  # caller MUST also reject a repeated jti
 
 
-def verify_hello(gw_pub: bytes, device_pub_of, frame: dict, access_token: str, aud: str = "lsp2-gateway",
+def verify_hello(gw_pub: bytes, device_pub_of, frame: dict, access_token: str, aud: str = token_audience(EXAMPLE_ISSUER, "acme"),
                  now: int | None = None) -> dict:
     """Gateway side of the handshake: access token (Authorization header) + hello proof."""
     claims = verify_access_token(gw_pub, access_token, aud, now)

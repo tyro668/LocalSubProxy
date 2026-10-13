@@ -42,8 +42,12 @@ export function verifyAccessToken(gwPub, token, aud, now = Math.floor(Date.now()
   return c;
 }
 
-export function issueAccessToken(gwKey, kid, { deviceId, tenant, devicePub, ttl = 900, now = Math.floor(Date.now() / 1000), jti }) {
-  const claims = { iss: 'lsp2-gateway', sub: deviceId, aud: 'lsp2-gateway', tenant, iat: now, exp: now + ttl,
+// §18: iss is the gateway's https origin; aud binds the token to one tenant.
+export const EXAMPLE_ISSUER = 'https://gw.example.com';
+export const tokenAudience = (issuer, tenant) => `${issuer}/tenants/${tenant}`;
+
+export function issueAccessToken(gwKey, kid, { deviceId, tenant, devicePub, ttl = 900, now = Math.floor(Date.now() / 1000), jti, issuer = EXAMPLE_ISSUER }) {
+  const claims = { iss: issuer, sub: deviceId, aud: tokenAudience(issuer, tenant), tenant, iat: now, exp: now + ttl,
     jti: jti ?? `jti_${randomBytes(16).toString('hex')}`, cnf: { jkt: thumbprint(devicePub) } };
   return signJws(gwKey, TYP.accessToken, jsonBytes(claims), kid);
 }
@@ -55,7 +59,7 @@ export function verifyProof(devPub, proof, { iss, aud, credential }, now = Math.
   return c; // caller MUST reject a repeated jti
 }
 
-export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = 'lsp2-gateway', now } = {}) {
+export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = tokenAudience(EXAMPLE_ISSUER, 'acme'), now } = {}) {
   const claims = verifyAccessToken(gwPub, accessToken, aud, now);
   const devPub = devicePubOf(claims.sub);
   if (claims.cnf?.jkt !== thumbprint(devPub)) throw new Error('token not bound to device key');

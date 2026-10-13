@@ -52,6 +52,7 @@ type runner struct {
 	results []Result
 	schema  *jsonschema.Schema
 	payload *jsonschema.Schema
+	meta    *jsonschema.Schema
 	gwKey   ed25519.PublicKey
 	devKey  ed25519.PrivateKey
 	devID   string
@@ -88,7 +89,7 @@ func Run(ctx context.Context, cfg Config) []Result {
 	r := &runner{cfg: cfg, hc: &http.Client{Timeout: cfg.Timeout}}
 	if cfg.SchemaDir != "" {
 		var err error
-		r.schema, r.payload, err = loadSchemas(cfg.SchemaDir)
+		r.schema, r.payload, r.meta, err = loadSchemas(cfg.SchemaDir)
 		if !r.check("S0", "spec/schemas compile (JSON Schema 2020-12)", err) {
 			return r.results
 		}
@@ -97,32 +98,36 @@ func Run(ctx context.Context, cfg Config) []Result {
 	return r.results
 }
 
-func loadSchemas(dir string) (*jsonschema.Schema, *jsonschema.Schema, error) {
+func loadSchemas(dir string) (*jsonschema.Schema, *jsonschema.Schema, *jsonschema.Schema, error) {
 	c := jsonschema.NewCompiler()
 	c.DefaultDraft(jsonschema.Draft2020)
 	ents, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, e := range ents {
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := c.AddResource("https://localsubproxy.dev/spec/lsp2/"+e.Name(), doc); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	env, err := c.Compile("https://localsubproxy.dev/spec/lsp2/envelope.json")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	p, err := c.Compile("https://localsubproxy.dev/spec/lsp2/task.run.payload.json")
-	return env, p, err
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	m, err := c.Compile("https://localsubproxy.dev/spec/lsp2/gateway-metadata.json")
+	return env, p, m, err
 }
 
 func (r *runner) validate(s *jsonschema.Schema, raw []byte) error {
@@ -564,11 +569,17 @@ func (r *runner) metadata() error {
 	}
 	r.check("M2", "jwks_uri, device_authorization_endpoint, token_endpoint and connect_endpoint are on the issuer origin", want(ok && len(base.ProtocolVersions) > 0, "%+v", base))
 	st, _, _, _ = r.tenant(http.MethodGet, lsp2.MetadataPath+"?tenant=no-such-tenant-"+lsp2.RandomID(""), nil)
+	if r.meta != nil {
+		r.check("M6", "gateway metadata validates against spec/schemas/gateway-metadata.json", r.validate(r.meta, b))
+	}
 	r.check("M3", "metadata for an unknown tenant is 404", want(st == 404, "status %d", st))
 	st, m, _, err = r.tenant(http.MethodGet, lsp2.MetadataPath+"?tenant="+url.QueryEscape(r.cfg.Tenant), nil)
 	var tm lsp2.GatewayMetadata
 	b, _ = json.Marshal(m)
 	_ = json.Unmarshal(b, &tm)
+	if r.meta != nil {
+		r.check("M7", "tenant metadata validates against spec/schemas/gateway-metadata.json", r.validate(r.meta, b))
+	}
 	_, jwks, _, _ := r.tenant(http.MethodGet, "/.well-known/jwks.json", nil)
 	var verr error = errors.New("no JWKS key verifies signed_metadata")
 	var sm lsp2.GatewayMetadata

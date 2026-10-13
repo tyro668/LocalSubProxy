@@ -4,10 +4,11 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 ## 使用流程
 
-1. 打开应用，在底部的「远端服务地址」输入服务地址，点击「连接」。按联调说明启动参考网关和模拟服务后，本机可填写 `http://127.0.0.1:3000`；远端地址使用 HTTPS。
-2. 应用显示一个 `XXXX-XXXX` 配对码和确认链接。
+1. 打开应用，在底部的「远端服务地址」输入服务地址（或粘贴 SaaS 提供的 `lsp2://pair?…` 配对链接），点击「连接」。按联调说明启动参考网关和模拟服务后，本机可填写 `http://127.0.0.1:3000`；远端地址使用 HTTPS。
+2. 应用先显示**配对同意页**：SaaS 名称、logo、主页、隐私政策、网关地址、请求的模型与权限。这些信息都经过网关签名校验，不是链接里自带的。点击「同意并配对」后，应用显示一个 `XXXX-XXXX` 配对码和确认链接；点击「拒绝」则不会向网关发送任何请求。
 3. 在已登录的远端服务页面输入配对码并确认，应用会自动完成连接。界面会显示本机设备名称、服务地址和连接状态；设备私钥加密保存在本机。远端服务或网关停止时会显示「未连接」，服务恢复后自动重连，无需重新配对。
 4. 点击「添加方案」配置模型。你也可以先添加方案，再连接远端服务。
+5. 连接后，「近 7 天用量」按 SaaS × 模型显示请求数、token 和失败数。每次请求都写入本机审计日志 `audit.db`，记录 SaaS、模型、时间、token、延迟、状态和错误码，**不记录对话内容**，默认保留 90 天。命令行可以用 `localsubproxy usage -group saas,model,day` 和 `localsubproxy audit` 查看。
 
 ## 配置模型方案
 
@@ -52,4 +53,4 @@ macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-window
 | 黑盒一致性测试 | `LSP2_TENANT_KEY=... go run ./cmd/lsp2-conformance -gateway <url> -tenant <id>` |
 | 一键校验 | `spec/validate.sh` |
 
-Go 参考实现位于 `internal/lsp2`，网关用 `localsubproxy server` 启动。业务服务的模拟实现与端到端演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。
+Go 参考实现位于 `internal/lsp2`，网关用 `localsubproxy server -issuer https://<网关公网地址> [-tenant-profiles profiles.json]` 启动。`profiles.json` 里配置每个租户的展示身份，它会出现在桌面端的同意页上。业务服务的模拟实现与端到端演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。

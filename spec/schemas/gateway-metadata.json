@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lsp2/gateway-metadata.json",
+  "title": "gateway metadata (GET /.well-known/lsp2-gateway[?tenant=])",
+  "description": "docs/protocol-v2.md §18.2 and §19.1. Also the payload of signed_metadata (typ lsp2-metadata+jwt), which then omits signed_metadata itself. Consumers MUST use the signed values.",
+  "type": "object",
+  "required": ["issuer", "jwks_uri", "device_authorization_endpoint", "token_endpoint", "connect_endpoint", "protocol_versions", "capabilities", "scopes_supported"],
+  "properties": {
+    "issuer": { "$ref": "#/$defs/origin" },
+    "jwks_uri": { "type": "string", "format": "uri" },
+    "device_authorization_endpoint": { "type": "string", "format": "uri" },
+    "token_endpoint": { "type": "string", "format": "uri" },
+    "connect_endpoint": { "type": "string", "pattern": "^wss?://" },
+    "chat_completions_endpoint": { "type": "string", "format": "uri" },
+    "protocol_versions": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "capabilities": { "type": "array", "items": { "$ref": "defs.json#/$defs/capability" } },
+    "scopes_supported": { "type": "array", "items": { "$ref": "#/$defs/scope" } },
+    "tenant": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "audience": { "type": "string", "description": "<issuer>/tenants/<tenant>; the aud of access tokens for this tenant" },
+    "saas": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "logo_uri": { "type": "string", "format": "uri" },
+        "homepage_uri": { "type": "string", "format": "uri" },
+        "policy_uri": { "type": "string", "format": "uri", "description": "privacy policy" },
+        "tos_uri": { "type": "string", "format": "uri" },
+        "pairing_uri": { "type": "string", "format": "uri", "description": "page where the signed-in user confirms the user_code" }
+      }
+    },
+    "requested_models": { "type": "array", "items": { "type": "string" } },
+    "requested_scopes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/scope" } },
+    "iat": { "type": "integer" },
+    "exp": { "type": "integer" },
+    "signed_metadata": { "type": "string", "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$" }
+  },
+  "dependentRequired": {
+    "tenant": ["audience", "saas", "requested_scopes", "iat", "exp"],
+    "signed_metadata": ["tenant"]
+  },
+  "$defs": {
+    "origin": { "type": "string", "pattern": "^(https://[a-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]{1,5})?)$" },
+    "scope": { "enum": ["lsp2.chat", "lsp2.tools", "lsp2.vision", "lsp2.audio"] }
+  }
+}

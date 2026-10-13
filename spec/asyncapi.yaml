@@ -17,7 +17,7 @@ servers:
     host: gateway.example.com
     pathname: /v2/connect
     protocol: wss
-    description: TLS is REQUIRED except on loopback in development.
+    description: TLS is REQUIRED except on loopback in development. Use the connect_endpoint from /.well-known/lsp2-gateway (§18.2).
     security:
       - $ref: '#/components/securitySchemes/accessToken'
 channels:
@@ -34,6 +34,7 @@ channels:
             Authorization:
               type: string
               pattern: '^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+              description: 'Access token (typ at+jwt) with iss = gateway issuer origin and aud = <issuer>/tenants/<tenant> (docs/protocol-v2.md §18.3). The gateway rejects other iss/aud with 401; the device rejects tokens that do not match its stored issuer/audience before connecting (§18.4).'
             Sec-WebSocket-Protocol:
               type: string
               description: MUST offer lsp2; the server selects exactly lsp2.

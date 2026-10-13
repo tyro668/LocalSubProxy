@@ -30,7 +30,10 @@
 15. 流量控制（能力 `flow`）
 16. tools 与多模态（能力 `tools`、`multimodal`）
 17. 端到端加密（能力 `e2ee`）
-18. 尚未定义的内容
+18. 网关身份绑定
+19. 配对同意（签名元数据、`lsp2://pair`、`CONSENT_DENIED`）
+20. 本机审计日志与用量统计
+21. 尚未定义的内容
 
 ---
 
@@ -149,15 +152,15 @@
 ### 5.3 访问令牌（RFC 9068 配置）
 | 声明 | 要求 |
 |---|---|
-| `iss` | 网关的签发者标识（参考实现为 `lsp2-gateway`） |
+| `iss` | 网关的签发者标识 = 网关的 https 源（origin），如 `https://gw.example.com`（§18.1） |
 | `sub` | `device_id` |
-| `aud` | 网关受众（参考实现为 `lsp2-gateway`） |
+| `aud` | `<iss>/tenants/<tenant>`：同时绑定网关和 SaaS（租户），见 §18.3 |
 | `tenant` | 租户 ID |
 | `iat`、`exp` | NumericDate；`exp - iat` SHOULD ≤ 900 秒，MUST ≤ 3600 秒 |
 | `jti` | 唯一 ID |
 | `cnf.jkt` | 设备公钥的 RFC 7638 指纹 |
 
-网关验证访问令牌时，除 §5.2 的步骤外，MUST 检查：`aud`；`exp + 30 ≥ now`；`iat - 30 ≤ now`；`sub` 对应的设备存在、状态为 `active`、属于 `tenant`；`cnf.jkt` 等于该设备公钥的指纹。
+网关验证访问令牌时，除 §5.2 的步骤外，MUST 检查：`iss` 等于自身 issuer；`aud` 等于 `<iss>/tenants/<tenant>`；`exp + 30 ≥ now`；`iat - 30 ≤ now`；`sub` 对应的设备存在、状态为 `active`、属于 `tenant`；`cnf.jkt` 等于该设备公钥的指纹。
 
 ### 5.4 证明 JWT（`typ: lsp2-proof+jwt`）
 载荷：
@@ -173,7 +176,7 @@
 验证方 MUST 检查：签名使用该设备登记的公钥；`aud`、`iss`、`ath` 都符合预期；`|now - iat| ≤ 60`；`jti` 在 120 秒内没有出现过。重复的 `jti` MUST 拒绝，这一点在网关多实例部署时同样 MUST 成立。
 
 ### 5.5 客户端断言（RFC 7523）
-设备刷新令牌时提交 JWT：`typ: JWT`，`iss = sub = device_id`，`aud = <网关受众> + "/token"`，`exp - iat ≤ 300`，`jti` 唯一。网关 MUST 用该设备登记的公钥验证签名；在 `exp + 60` 秒之前，同一 `jti` 只能使用一次。
+设备刷新令牌时提交 JWT：`typ: JWT`，`iss = sub = device_id`，`aud = <iss> + "/v2/token"`（RFC 7523 §3：令牌端点地址），`exp - iat ≤ 300`，`jti` 唯一。网关 MUST 用该设备登记的公钥验证签名；在 `exp + 60` 秒之前，同一 `jti` 只能使用一次。
 
 ### 5.6 任务签名（`typ: lsp2-task+jws`）
 载荷（[`task.run.payload.json`](../spec/schemas/task.run.payload.json)）：
@@ -202,6 +205,7 @@
 ### 6.1 发现
 - 租户后端 SHOULD 在 `GET /.well-known/lsp-connector` 返回 `{gateway_url, tenant, link_url, protocol: "lsp2"}`，供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
 - 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
+- 网关 MUST 提供 `GET /.well-known/lsp2-gateway[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
 
 ### 6.2 设备授权：`POST /v2/device/authorize`
 - 请求 MUST 支持 `application/x-www-form-urlencoded`（RFC 8628 §3.1），MAY 同时接受 JSON。参数：`tenant`（必填）、`public_key`（必填，base64url 32 字节）、`device_name`（≤ 100 字符）。
@@ -379,6 +383,7 @@ RUNNING ──task.done──▶ SUCCEEDED
 | `PAYLOAD_TOO_LARGE` | 附件超出限制 | 413 | 否 |
 | `IDEMPOTENCY_KEY_REUSED` | 同一 `Idempotency-Key` 用于不同请求体 | 422 | 否 |
 | `E2EE_DECRYPT_FAILED` | 设备无法解密或校验密封请求 | 400 / 502 | 否 |
+| `CONSENT_DENIED` | 配对未获用户同意：本机用户在同意页拒绝，或 SaaS 侧用户拒绝（OAuth `access_denied` 映射为此码），§19.3 | 403 | 否 |
 
 OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_grant`、`unsupported_grant_type`、`authorization_pending`、`slow_down`、`access_denied`、`expired_token`、`server_error`。
 
@@ -465,9 +470,10 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 spec/validate.sh
 # 2) 黑盒测试你的网关
 LSP2_TENANT_KEY=<租户 key> go run ./cmd/lsp2-conformance \
-  -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas
+  -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
+  [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lsp2-conformance` 依次扮演设备和租户后端，共 53 项检查（含 X1、X-* 扩展检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
+`lsp2-conformance` 依次扮演设备和租户后端，共 63 项检查（含 X1、X-* 扩展检查，以及 M1–M5、I1–I3 身份绑定检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 
@@ -566,8 +572,97 @@ LSP2_TENANT_KEY=<租户 key> go run ./cmd/lsp2-conformance \
 
 ---
 
-## 18. 尚未定义的内容
+## 18. 网关身份绑定
+
+### 18.1 issuer
+- 每个网关 MUST 配置唯一的 **issuer**：它对外的 https origin（`scheme://host[:port]`，小写，无路径、查询、userinfo，默认端口省略）。仅开发环境的回环地址允许 `http`。
+- issuer 是访问令牌的 `iss`、所有受众的基准，也是元数据文档的 `issuer`。参考实现通过 `server -issuer https://…` 配置；未配置时仅在开发模式下按请求 Host 推导，生产环境 MUST NOT 依赖推导。
+
+### 18.2 元数据：`GET /.well-known/lsp2-gateway`
+参照 RFC 8414（授权服务器元数据）。响应 `application/json`，可缓存（SHOULD ≤ 300 秒）：
+
+| 字段 | 要求 |
+|---|---|
+| `issuer` | REQUIRED，§18.1 |
+| `jwks_uri` | REQUIRED，MUST 与 issuer 同源 |
+| `device_authorization_endpoint`、`token_endpoint` | REQUIRED，同源 |
+| `connect_endpoint` | REQUIRED，`wss://<host>/v2/connect`（开发环境 `ws://`） |
+| `chat_completions_endpoint` | OPTIONAL |
+| `protocol_versions` | REQUIRED，如 `["2"]` |
+| `capabilities` | REQUIRED，网关支持的扩展 |
+| `scopes_supported` | REQUIRED，§19.2 的作用域 |
+| `tenant`、`audience`、`saas`、`requested_models`、`requested_scopes`、`iat`、`exp`、`signed_metadata` | 仅 `?tenant=` 时出现，§19.1 |
+
+未知租户 MUST 返回 404。
+
+### 18.3 令牌受众
+- 访问令牌：`iss = <issuer>`，`aud = <issuer>/tenants/<tenant>`，`tenant` 声明同值。为租户 A 签发的令牌在租户 B 或其他网关处都无效。
+- 设备断言（§5.5）：`aud = <issuer>/v2/token`。网关 MUST 拒绝其他 `aud`（`invalid_grant`）。
+- 令牌响应 SHOULD 带 `issuer` 字段，设备 MUST 校验它与元数据一致。
+
+### 18.4 设备侧校验
+设备在配对时记录 `issuer` 和 `audience`，并作为身份的一部分持久化。之后每次取得访问令牌，设备 MUST 用固定的网关公钥验证签名，并检查 `iss`、`aud`、`tenant`、`sub = device_id`、`cnf.jkt = 自身公钥指纹`。任何一项不符 MUST 拒绝该令牌并停止重连（参考实现返回 `ErrGatewayIdentity`），不得退而使用该令牌。
+
+## 19. 配对同意
+
+### 19.1 签名元数据
+`GET /.well-known/lsp2-gateway?tenant=<id>` 返回 §18.2 的字段，外加：
+
+| 字段 | 说明 |
+|---|---|
+| `tenant`、`audience` | 租户 ID 与 `<issuer>/tenants/<tenant>` |
+| `saas` | `{name (REQUIRED), logo_uri, homepage_uri, policy_uri（隐私政策）, tos_uri, pairing_uri（用户确认配对码的页面）}` |
+| `requested_models` | SaaS 打算使用的模型（可为空：由本机配置决定） |
+| `requested_scopes` | §19.2 中的作用域，至少一个 |
+| `iat`、`exp` | `exp - iat` MUST ≤ 24 小时 |
+| `signed_metadata` | 上述全部字段（不含自身）的紧凑 JWS，`typ: lsp2-metadata+jwt`，`alg: EdDSA`，`kid` = 网关签名密钥指纹，密钥 MUST 在 `jwks_uri` 中 |
+
+与 RFC 8414 §2.1 一致：设备 MUST 只使用 `signed_metadata` 内的值。
+
+设备 MUST：从期望的 issuer（深链接或发现文档给出的网关 origin）读取元数据；`jwks_uri` 同源；用 JWKS 中 `kid` 对应的 Ed25519 密钥验证签名；`issuer`、`tenant`、`audience` 与期望一致；`saas.name` 非空；未过期；各端点同源；`pairing_uri` 为 https（开发环境回环除外）。任何一步失败 MUST NOT 显示同意页。配对完成后，令牌响应中的 `gateway_key` MUST 等于签名元数据的密钥，否则中止。
+
+### 19.2 作用域注册表
+| scope | 含义 |
+|---|---|
+| `lsp2.chat` | 文本对话（默认） |
+| `lsp2.tools` | 函数调用（§16.1） |
+| `lsp2.vision` | 图片输入 |
+| `lsp2.audio` | 音频输入 |
+
+作用域用于同意页展示；本机的策略引擎仍以本地配置为准。
+
+### 19.3 同意流程
+1. 设备通过深链接或 SaaS 地址得到 `(issuer, tenant)`，按 §19.1 校验签名元数据。
+2. 设备 MUST 展示：SaaS 名称、logo、主页、隐私政策、网关 origin、租户、请求的模型与作用域、网关密钥指纹。
+3. 用户 MUST 显式点击“同意”或“拒绝”。没有默认同意；超时视为拒绝。
+4. 拒绝：设备不向网关发送任何请求，本地 API 返回 `CONSENT_DENIED`。
+5. 同意：设备才生成设备密钥并调用 `device_authorize`（§6.2），在本机显示 `user_code`，并打开 `pairing_uri?user_code=…&jkt=…`。
+6. SaaS 侧用户拒绝时，令牌端点返回 `access_denied`，设备将其映射为 `CONSENT_DENIED`。
+
+只用于自动化（测试、脚本、`connector -yes`）的实现 MAY 跳过第 2–3 步，但交互式应用 MUST NOT。
+
+### 19.4 深链接 `lsp2://pair`
+```
+lsp2://pair?v=2&gateway=<https issuer origin>&tenant=<tenant id>[&remote=<SaaS origin>]
+```
+- `v` REQUIRED，当前为 `2`；`gateway` REQUIRED，按 §18.1 规范化；`tenant` 匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；参数不得重复。
+- 链接 MUST NOT 携带秘密或展示信息；展示的一切都来自签名元数据，因此伪造的链接最多只能把用户引到另一个真实的、已签名的身份上。
+- 桌面应用 SHOULD 注册 `lsp2` URL scheme；不能注册时，用户可以粘贴链接。
+
+## 20. 本机审计日志与用量统计（桌面端，非线协议）
+
+本节约束桌面实现，不影响互通。
+
+- 每个执行完毕的任务记录一行：`connection_id`（device_id）、`gateway`（issuer）、`tenant`、`saas_name`、`task_id`、`model`、`adapter`、开始时间、`status`（`ok | error | cancelled`）、`error_code`、`prompt_tokens`、`completion_tokens`、`usage_reported`（运行时是否给出用量）、`latency_ms`、`ttft_ms`、`e2ee`、`tools`、图片数。
+- MUST NOT 记录 prompt、输出、工具参数或附件内容。
+- 统计：按 `saas`、`model`、`day`、`hour`、`status`、`connection` 任意组合聚合请求数、失败数、prompt/completion/total tokens、平均与最大延迟、未计量请求数；时间桶默认 UTC，可选本地时区。
+- 保留期默认 90 天，MUST 定期清理；用户可以手动清理。
+- 参考实现：`internal/audit`（SQLite `audit.db`）；本地 API `audit_list`、`usage_stats`、`audit_purge`；CLI `localsubproxy usage`、`localsubproxy audit`。
+
+## 21. 尚未定义的内容
 
 - 网关多实例部署时的会话路由和共享去重/续传存储（参考实现为单进程）；
 - E2EE 的多设备/群组密钥与密钥透明日志；
-- `/v2/device/authorize` 返回租户级 `verification_uri`。
+- 网关签名密钥轮换（JWKS 中并存多把密钥的过渡期规则）；
+- 网关侧的按租户用量计费接口；
+- 按 SaaS 的本机策略（配额、时间窗）与 `QUOTA_EXCEEDED` / `POLICY_DENIED` 错误码。
