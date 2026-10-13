@@ -15,6 +15,8 @@ const _brandDarkForeground = Color(0xFF0C1224);
 String _transportLabel(Object? transport) => switch (transport) {
   'http' => 'HTTP 长轮询',
   'https' => 'HTTPS 长轮询',
+  'wss' => 'WSS（协议 v2）',
+  'ws' => 'WS（协议 v2，仅本机联调）',
   _ => '未连接',
 };
 
@@ -76,6 +78,9 @@ class _HomePageState extends State<HomePage> {
   bool awaitingCode = false;
   String? pendingRemoteURL;
   String claimCodeValue = '';
+  // v2 pairing: code shown on this device, confirmed on the remote service page.
+  String? pairUserCode;
+  String? pairLinkUrl;
   int otpGeneration = 0;
   VoidCallback? _connectionRefresh;
 
@@ -95,7 +100,10 @@ class _HomePageState extends State<HomePage> {
       (_) => AppTray.instance.init(),
     );
     boot();
-    timer = Timer.periodic(const Duration(seconds: 2), (_) => refresh());
+    timer = Timer.periodic(const Duration(seconds: 2), (_) {
+      refresh();
+      pollPairing();
+    });
   }
 
   @override
@@ -219,6 +227,18 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => busy = true);
     try {
+      if (status?['v1_enabled'] != true) {
+        final p = await pairStartAsync(url);
+        if (mounted) {
+          setState(() {
+            awaitingCode = true;
+            pendingRemoteURL = url;
+            pairUserCode = p['user_code'] as String?;
+            pairLinkUrl = p['link_url'] as String?;
+          });
+        }
+        return;
+      }
       await prepareConnectionAsync(url);
       if (mounted) {
         setState(() {
@@ -232,6 +252,47 @@ class _HomePageState extends State<HomePage> {
       if (mounted) show('连接远端服务失败：$e', error: true);
     } finally {
       if (mounted) setState(() => busy = false);
+    }
+  }
+
+  bool get v2Pairing => pairUserCode != null;
+
+  Future<void> pollPairing() async {
+    if (!v2Pairing || !awaitingCode) return;
+    try {
+      final st = await pairStatusAsync();
+      if (!mounted) return;
+      if (st['state'] == 'paired') {
+        setState(() {
+          awaitingCode = false;
+          pendingRemoteURL = null;
+          pairUserCode = null;
+          pairLinkUrl = null;
+        });
+        await refresh(force: true);
+        show('配对成功，正在连接远端服务');
+      } else if (st['state'] == 'failed') {
+        setState(() {
+          awaitingCode = false;
+          pairUserCode = null;
+          pairLinkUrl = null;
+        });
+        show('配对失败：${st['error'] ?? ''}', error: true);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> cancelPairing() async {
+    try {
+      await pairCancelAsync();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        awaitingCode = false;
+        pendingRemoteURL = null;
+        pairUserCode = null;
+        pairLinkUrl = null;
+      });
     }
   }
 
@@ -265,7 +326,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> disconnect() async {
     final yes = await confirm(
       title: '断开连接',
-      message: '将清除本机连接信息。模型配置会保留；再次连接需从远端服务获取新验证码。',
+      message: '将清除本机连接信息和设备私钥。模型配置会保留；再次连接需要重新配对。',
       action: '断开',
       destructive: true,
     );
@@ -415,7 +476,15 @@ class _HomePageState extends State<HomePage> {
             _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
           ] else ...[
             const Gap(8),
-            const Text('输入远端服务地址并点击连接，再输入远端服务页面显示的验证码。').small().muted(),
+            Text(
+              status?['v1_enabled'] == true
+                  ? '输入远端服务地址并点击连接，再输入远端服务页面显示的验证码。'
+                  : '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
+            ).small().muted(),
+            if ((status?['pairing_error'] ?? '') != '' && !awaitingCode) ...[
+              const Gap(8),
+              Text('${status?['pairing_error']}').small(),
+            ],
             const Gap(16),
             if (awaitingCode)
               Text(
@@ -430,7 +499,28 @@ class _HomePageState extends State<HomePage> {
                   features: const [InputFeature.clear()],
                 ),
               ),
-            if (awaitingCode) ...[
+            if (awaitingCode && v2Pairing) ...[
+              const Gap(16),
+              LabeledField(
+                label: '配对码（请在远端服务页面输入）',
+                hint: '10 分钟内有效；确认后本机会自动完成连接',
+                child: Text(
+                  pairUserCode ?? '',
+                  style: const TextStyle(
+                    fontSize: 28,
+                    letterSpacing: 4,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ),
+              if (pairLinkUrl != null && pairLinkUrl!.isNotEmpty) ...[
+                const Gap(8),
+                Text('打开：$pairLinkUrl').small().muted(),
+              ],
+              const Gap(8),
+              const Text('等待远端服务确认…').small().muted(),
+            ],
+            if (awaitingCode && !v2Pairing) ...[
               const Gap(16),
               LabeledField(
                 label: '远端服务页面显示的数字验证码',
@@ -462,16 +552,19 @@ class _HomePageState extends State<HomePage> {
                   GhostButton(
                     onPressed: busy
                         ? null
-                        : () => setState(() {
-                            awaitingCode = false;
-                            pendingRemoteURL = null;
-                            claimCodeValue = '';
-                            otpGeneration++;
-                          }),
+                        : (v2Pairing
+                              ? cancelPairing
+                              : () => setState(() {
+                                  awaitingCode = false;
+                                  pendingRemoteURL = null;
+                                  claimCodeValue = '';
+                                  otpGeneration++;
+                                })),
                     child: const Text('返回'),
                   ),
                   const Gap(8),
                 ],
+                if (!(awaitingCode && v2Pairing))
                 PrimaryButton(
                   onPressed: busy
                       ? null

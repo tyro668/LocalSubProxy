@@ -68,6 +68,19 @@ class NativeApi {
   Map<String, dynamic> status() =>
       (_invoke(_call, {'action': 'status'}) as Map).cast<String, dynamic>();
 
+  // Protocol v2 (lsp2): RFC 8628 pairing. The kernel shows a user code that the
+  // user confirms on the signed-in remote service page; it then polls itself.
+  Map<String, dynamic> pairStart(String remoteUrl) =>
+      (_invoke(_call, {'action': 'pair_start', 'remote_url': remoteUrl})
+              as Map)
+          .cast<String, dynamic>();
+
+  Map<String, dynamic> pairStatus() =>
+      (_invoke(_call, {'action': 'pair_status'}) as Map)
+          .cast<String, dynamic>();
+
+  void pairCancel() => _invoke(_call, {'action': 'pair_cancel'});
+
   void prepareConnection(String remoteUrl) =>
       _invoke(_call, {'action': 'prepare_connection', 'remote_url': remoteUrl});
 
@@ -130,6 +143,15 @@ class NativeApi {
 // retain a State (including its Timer), which cannot cross isolate boundaries.
 Future<void> prepareConnectionAsync(String url) =>
     Isolate.run(() => NativeApi.instance.prepareConnection(url));
+
+Future<Map<String, dynamic>> pairStartAsync(String url) =>
+    Isolate.run(() => NativeApi.instance.pairStart(url));
+
+Future<Map<String, dynamic>> pairStatusAsync() =>
+    Isolate.run(() => NativeApi.instance.pairStatus());
+
+Future<void> pairCancelAsync() =>
+    Isolate.run(() => NativeApi.instance.pairCancel());
 
 Future<Map<String, dynamic>> claimAsync(String url, String code) =>
     Isolate.run(() => NativeApi.instance.claim(url, code));
