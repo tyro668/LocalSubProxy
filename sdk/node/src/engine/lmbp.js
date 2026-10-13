@@ -49,23 +49,53 @@ export function signJWS(priv, typ, kid, payload) {
   return input + '.' + b64(crypto.sign(null, Buffer.from(input), priv));
 }
 
+// verifyJWS: strict compact EdDSA JWS (spec §5.2). The protected header is
+// exactly {alg: "EdDSA", typ, kid?}; any other member (crit, b64, jku, ...) is
+// rejected; kid, when present, is the verifying key's RFC 7638 thumbprint.
+// The payload MUST be a JSON object.
 export function verifyJWS(pub, jws, typ) {
   if (typeof jws !== 'string') throw new Error('malformed JWS');
   const parts = jws.split('.');
   if (parts.length !== 3) throw new Error('malformed JWS');
-  const h = JSON.parse(unb64(parts[0]).toString());
-  if (!h || h.alg !== 'EdDSA' || h.typ !== typ) throw new Error('bad JWS header');
-  if ('crit' in h) throw new Error('unsupported crit header');
+  let h;
+  try { h = JSON.parse(unb64(parts[0]).toString()); } catch { throw new Error('bad JWS header'); }
+  if (!isObject(h)) throw new Error('bad JWS header');
+  for (const k of Object.keys(h)) if (k !== 'alg' && k !== 'typ' && k !== 'kid') throw new Error(`forbidden JWS header ${k}`);
+  if (h.alg !== 'EdDSA') throw new Error('JWS alg must be EdDSA');
+  if (h.typ !== typ) throw new Error(`JWS typ must be ${typ}`);
+  if ('kid' in h && (typeof h.kid !== 'string' || !pub || pub.length !== 32 || h.kid !== thumbprint(pub))) throw new Error('JWS kid does not match the verifying key');
   const sig = unb64(parts[2]);
   if (!pub || pub.length !== 32 || sig.length !== 64 || !crypto.verify(null, Buffer.from(parts[0] + '.' + parts[1]), pubKeyObj(pub), sig)) throw new Error('bad JWS signature');
-  return unb64(parts[1]);
+  const p = unb64(parts[1]);
+  let c;
+  try { c = JSON.parse(p.toString()); } catch { throw new Error('bad JWS payload'); }
+  if (!isObject(c)) throw new Error('JWS payload must be a JSON object');
+  return p;
+}
+
+const isObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+// A NumericDate is a JSON integer 0..2^53-1. Number.isSafeInteger also
+// accepts 1.0 from JSON; the raw-text vectors never use that form.
+export const isNumericDate = (x) => Number.isSafeInteger(x) && x >= 0;
+
+// requireClaims: ints are NumericDates, strs non-empty strings, opt strings.
+export function requireClaims(c, ints = [], strs = [], opt = []) {
+  for (const k of ints) if (!isNumericDate(c[k])) throw new Error(`claim ${k} must be a non-negative integer`);
+  for (const k of strs) if (typeof c[k] !== 'string' || c[k] === '') throw new Error(`claim ${k} must be a non-empty string`);
+  for (const k of opt) if (typeof c[k] !== 'string') throw new Error(`claim ${k} must be a string`);
+}
+
+function timeRange(c) {
+  requireClaims(c, ['iat', 'exp']);
+  if (c.exp < c.iat) throw new Error('exp before iat');
 }
 
 export function verifyJWT(pub, tok, typ, aud, t = now()) {
   const c = JSON.parse(verifyJWS(pub, tok, typ).toString());
-  if (!c || typeof c !== 'object') throw new Error('bad token payload');
+  requireClaims(c, [], ['iss', 'sub', 'aud', 'jti']);
+  timeRange(c);
   if (c.aud !== aud) throw new Error('wrong audience');
-  if (!(Number.isInteger(c.exp) && Number.isInteger(c.iat)) || t > c.exp + 30 || t + 30 < c.iat) throw new Error('token expired');
+  if (t > c.exp + 30 || t + 30 < c.iat) throw new Error('token expired');
   return c;
 }
 
@@ -79,14 +109,17 @@ export function unverifiedClaims(tok) {
 
 export function verifyProof(pub, proof, deviceID, aud, credential, t = now()) {
   const c = JSON.parse(verifyJWS(pub, proof, TYP.proof).toString());
-  if (!c || c.aud !== aud || (c.iss ?? '') !== deviceID || !c.jti || c.ath !== ath(credential)) throw new Error('proof claims invalid');
+  requireClaims(c, ['iat'], ['aud', 'jti', 'ath'], ['iss']);
+  if (c.aud !== aud || c.iss !== deviceID || !c.jti || c.ath !== ath(credential)) throw new Error('proof claims invalid');
   if (Math.abs(t - c.iat) > 60) throw new Error('proof iat outside allowed skew');
   return c;
 }
 
 export function verifyE2EEKey(devicePub, deviceID, stmt, t = now()) {
   const c = JSON.parse(verifyJWS(devicePub, stmt, TYP.e2eeKey).toString());
-  const k = c?.jwk;
+  requireClaims(c, [], ['iss', 'sub']);
+  timeRange(c);
+  const k = c.jwk;
   if (c.sub !== deviceID || c.iss !== deviceID || !k || k.kty !== 'OKP' || k.crv !== 'X25519') throw new Error('bad e2ee key statement');
   if (t > c.exp || t + 60 < c.iat) throw new Error('e2ee key statement expired');
   const x = unb64(k.x);

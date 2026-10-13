@@ -66,6 +66,13 @@ func VerifyE2EEKey(devicePub ed25519.PublicKey, pinnedJKT, deviceID, stmt string
 	if err != nil {
 		return nil, "", err
 	}
+	cs := claimsOf(p)
+	if err := cs.require(nil, []string{"iss", "sub"}, nil); err != nil {
+		return nil, "", err
+	}
+	if _, _, err := cs.timeRange(); err != nil {
+		return nil, "", err
+	}
 	var c E2EEKeyClaims
 	if json.Unmarshal(p, &c) != nil || c.Sub != deviceID || c.Iss != deviceID || c.JWK.Kty != "OKP" || c.JWK.Crv != "X25519" {
 		return nil, "", errors.New("bad e2ee key statement")

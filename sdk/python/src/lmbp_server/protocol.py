@@ -110,16 +110,30 @@ def sign_jws(key: SigningKey, typ: str, kid: str, payload) -> str:
 
 
 def verify_jws(pub: bytes, jws: str, typ: str) -> bytes:
+    """Strict compact EdDSA JWS (spec §5.2): the protected header is exactly
+    {alg: "EdDSA", typ, kid?}; any other member (crit, b64, jku, ...) is
+    rejected; kid, when present, is the verifying key's RFC 7638 thumbprint.
+    The payload MUST be a JSON object."""
     if not isinstance(jws, str):
         raise ValueError("malformed JWS")
     parts = jws.split(".")
     if len(parts) != 3:
         raise ValueError("malformed JWS")
-    h = json.loads(unb64(parts[0]))
-    if not isinstance(h, dict) or h.get("alg") != "EdDSA" or h.get("typ") != typ:
+    try:
+        h = json.loads(unb64(parts[0]))
+    except ValueError:
+        raise ValueError("bad JWS header") from None
+    if not isinstance(h, dict):
         raise ValueError("bad JWS header")
-    if "crit" in h:
-        raise ValueError("unsupported crit header")
+    for k in h:
+        if k not in ("alg", "typ", "kid"):
+            raise ValueError(f"forbidden JWS header {k}")
+    if h.get("alg") != "EdDSA":
+        raise ValueError("JWS alg must be EdDSA")
+    if h.get("typ") != typ:
+        raise ValueError(f"JWS typ must be {typ}")
+    if "kid" in h and (not isinstance(h["kid"], str) or len(pub) != 32 or h["kid"] != thumbprint(pub)):
+        raise ValueError("JWS kid does not match the verifying key")
     sig = unb64(parts[2])
     if len(pub) != 32 or len(sig) != 64:
         raise ValueError("bad JWS signature")
@@ -127,17 +141,47 @@ def verify_jws(pub: bytes, jws: str, typ: str) -> bytes:
         Ed25519PublicKey.from_public_bytes(pub).verify(sig, (parts[0] + "." + parts[1]).encode())
     except InvalidSignature:
         raise ValueError("bad JWS signature") from None
-    return unb64(parts[1])
+    p = unb64(parts[1])
+    try:
+        c = json.loads(p)
+    except ValueError:
+        raise ValueError("bad JWS payload") from None
+    if not isinstance(c, dict):
+        raise ValueError("JWS payload must be a JSON object")
+    return p
+
+
+def is_numeric_date(v) -> bool:
+    """A NumericDate is a JSON integer 0..2^53-1 (bool and float rejected)."""
+    return is_int(v) and 0 <= v <= 2**53 - 1
+
+
+def require_claims(c: dict, ints=(), strs=(), opt=()) -> None:
+    for k in ints:
+        if not is_numeric_date(c.get(k)):
+            raise ValueError(f"claim {k} must be a non-negative integer")
+    for k in strs:
+        if not isinstance(c.get(k), str) or c[k] == "":
+            raise ValueError(f"claim {k} must be a non-empty string")
+    for k in opt:
+        if not isinstance(c.get(k), str):
+            raise ValueError(f"claim {k} must be a string")
+
+
+def _time_range(c: dict) -> None:
+    require_claims(c, ints=("iat", "exp"))
+    if c["exp"] < c["iat"]:
+        raise ValueError("exp before iat")
 
 
 def verify_jwt(pub: bytes, tok: str, typ: str, aud: str, t: int | None = None) -> dict:
     t = now() if t is None else t
     c = json.loads(verify_jws(pub, tok, typ))
-    if not isinstance(c, dict):
-        raise ValueError("bad token payload")
-    if c.get("aud") != aud:
+    require_claims(c, strs=("iss", "sub", "aud", "jti"))
+    _time_range(c)
+    if c["aud"] != aud:
         raise ValueError("wrong audience")
-    if not (is_int(c.get("exp")) and is_int(c.get("iat"))) or t > c["exp"] + 30 or t + 30 < c["iat"]:
+    if t > c["exp"] + 30 or t + 30 < c["iat"]:
         raise ValueError("token expired")
     return c
 
@@ -152,22 +196,27 @@ def unverified_claims(tok) -> dict:
     return c
 
 
-def verify_proof(pub: bytes, proof, device_id: str, aud: str, credential: str) -> dict:
+def verify_proof(pub: bytes, proof, device_id: str, aud: str, credential: str, t: int | None = None) -> dict:
+    t = now() if t is None else t
     c = json.loads(verify_jws(pub, proof, TYP_PROOF))
-    if (not isinstance(c, dict) or c.get("aud") != aud or c.get("iss", "") != device_id or not c.get("jti")
+    require_claims(c, ints=("iat",), strs=("aud", "jti", "ath"), opt=("iss",))
+    if (c["aud"] != aud or c["iss"] != device_id or not c.get("jti")
             or c.get("ath") != ath(credential)):
         raise ValueError("proof claims invalid")
-    if not is_int(c.get("iat")) or abs(now() - c["iat"]) > 60:
+    if not is_int(c.get("iat")) or abs(t - c["iat"]) > 60:
         raise ValueError("proof iat outside allowed skew")
     return c
 
 
-def verify_e2ee_key(device_pub: bytes, device_id: str, stmt: str) -> None:
+def verify_e2ee_key(device_pub: bytes, device_id: str, stmt: str, t: int | None = None) -> None:
+    t = now() if t is None else t
     c = json.loads(verify_jws(device_pub, stmt, TYP_E2EE_KEY))
-    k = c.get("jwk") if isinstance(c, dict) else None
+    require_claims(c, strs=("iss", "sub"))
+    _time_range(c)
+    k = c.get("jwk")
     if c.get("sub") != device_id or c.get("iss") != device_id or not isinstance(k, dict) or k.get("kty") != "OKP" or k.get("crv") != "X25519":
         raise ValueError("bad e2ee key statement")
-    if now() > c.get("exp", 0) or now() + 60 < c.get("iat", 0):
+    if t > c["exp"] or t + 60 < c["iat"]:
         raise ValueError("e2ee key statement expired")
     x = unb64(k.get("x", ""))
     if len(x) != 32 or k.get("kid") != x25519_thumbprint(x):

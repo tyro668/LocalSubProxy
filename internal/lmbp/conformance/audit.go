@@ -10,8 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
@@ -188,4 +191,92 @@ func (r *runner) auditFlow(ctx context.Context, key ed25519.PrivateKey, at strin
 		want(err == nil && ok == n && got == n*len(img) && pt <= window && pc <= window,
 			"err %v ok %d/%d blob bytes %d; peak unacked per task %d, per connection %d (window %d)", err, ok, n, got, pt, pc, window))
 	return dev
+}
+
+// joseMutations are header/claim mutations of a valid token that every
+// verifier MUST reject (spec §5.2; spec/testvectors/jose.json has the full
+// offline set). Applied black-box to client assertions and hello proofs (Z4).
+func joseMutations(hdr, claims map[string]any, other ed25519.PublicKey) map[string][2]map[string]any {
+	cp := func(m map[string]any) map[string]any {
+		out := map[string]any{}
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	}
+	h := func(f func(map[string]any)) [2]map[string]any {
+		x := cp(hdr)
+		f(x)
+		return [2]map[string]any{x, claims}
+	}
+	c := func(f func(map[string]any)) [2]map[string]any {
+		x := cp(claims)
+		f(x)
+		return [2]map[string]any{hdr, x}
+	}
+	return map[string][2]map[string]any{
+		"b64:false":      h(func(x map[string]any) { x["b64"] = false }),
+		"crit":           h(func(x map[string]any) { x["crit"] = []string{"b64"}; x["b64"] = false }),
+		"unknown header": h(func(x map[string]any) { x["x-extra"] = "1" }),
+		"kid mismatch":   h(func(x map[string]any) { x["kid"] = "other-key-" + lmbp.B64(other) }),
+		"iat missing":    c(func(x map[string]any) { delete(x, "iat") }),
+		"iat string":     c(func(x map[string]any) { x["iat"] = fmt.Sprint(x["iat"]) }),
+		"iat fractional": c(func(x map[string]any) { x["iat"] = float64(x["iat"].(int64)) + 0.5 }),
+		"jti missing":    c(func(x map[string]any) { delete(x, "jti") }),
+		"jti wrong type": c(func(x map[string]any) { x["jti"] = 42 }),
+	}
+}
+
+func signRawJWS(key ed25519.PrivateKey, hdr, claims map[string]any) string {
+	hb, _ := json.Marshal(hdr)
+	cb, _ := json.Marshal(claims)
+	in := lmbp.B64(hb) + "." + lmbp.B64(cb)
+	return in + "." + lmbp.B64(ed25519.Sign(key, []byte(in)))
+}
+
+// auditAssertions: Z4a — malformed client assertions get invalid_grant.
+func (r *runner) auditAssertions(key ed25519.PrivateKey, refresh func(string) (int, map[string]any)) {
+	pub := key.Public().(ed25519.PublicKey)
+	_, otherKey, _ := ed25519.GenerateKey(rand.Reader)
+	now := time.Now().Unix()
+	base := func() map[string]any {
+		return map[string]any{"iss": r.devID, "sub": r.devID, "aud": lmbp.AssertionAudience(r.issuer), "iat": now, "exp": now + 60, "jti": lmbp.RandomID("a_")}
+	}
+	var bad []string
+	hdr := map[string]any{"alg": "EdDSA", "typ": lmbp.TypAssertion, "kid": lmbp.Thumbprint(pub)}
+	for name := range joseMutations(hdr, base(), nil) {
+		m := joseMutations(hdr, base(), otherKey.Public().(ed25519.PublicKey))[name] // fresh jti per attempt
+		if st, _ := refresh(signRawJWS(key, m[0], m[1])); st == 200 {
+			bad = append(bad, name)
+		}
+	}
+	r.check("Z4a", "client assertions with b64:false, crit, unknown headers, kid mismatch or missing/mistyped iat/jti are rejected",
+		want(len(bad) == 0, "accepted: %v", bad))
+}
+
+// auditHelloProofs: Z4b — hello with a malformed proof gets no welcome.
+func (r *runner) auditHelloProofs(key ed25519.PrivateKey, at string) {
+	_, otherKey, _ := ed25519.GenerateKey(rand.Reader)
+	base := func() map[string]any {
+		return map[string]any{"iss": r.devID, "aud": lmbp.ProofHello, "iat": time.Now().Unix(), "jti": lmbp.RandomID("p_"), "ath": lmbp.Ath(at)}
+	}
+	var bad []string
+	d := websocket.Dialer{Subprotocols: []string{lmbp.Subprotocol}, HandshakeTimeout: r.cfg.Timeout}
+	wsURL := "ws" + strings.TrimPrefix(r.cfg.GatewayURL, "http") + "/lmbp/v1/connect"
+	hdr := map[string]any{"alg": "EdDSA", "typ": lmbp.TypProof}
+	for name := range joseMutations(hdr, base(), nil) {
+		m := joseMutations(hdr, base(), otherKey.Public().(ed25519.PublicKey))[name]
+		conn, _, err := d.Dial(wsURL, http.Header{"Authorization": {"Bearer " + at}})
+		if err != nil {
+			bad = append(bad, name+" (dial: "+err.Error()+")")
+			continue
+		}
+		_ = r.writeFrame(conn, "hello", "hz", "", lmbp.Hello{DeviceID: r.devID, Client: "lmbp-conformance", Models: []string{"m"}, MaxConcurrency: 1, Proof: signRawJWS(key, m[0], m[1])})
+		if f, _ := r.readFrame(conn); f.Type == lmbp.TypeWelcome {
+			bad = append(bad, name)
+		}
+		conn.Close()
+	}
+	r.check("Z4b", "hello proofs with b64:false, crit, unknown headers, a kid not matching the device key or missing/mistyped iat/jti get no welcome",
+		want(len(bad) == 0, "accepted: %v", bad))
 }

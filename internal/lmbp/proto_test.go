@@ -11,7 +11,7 @@ import (
 func TestJWT(t *testing.T) {
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	now := time.Now()
-	tok := SignJWT(key, TypAccessToken, "k", Claims{Sub: "dev_1", Aud: "a", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "j"})
+	tok := SignJWT(key, TypAccessToken, Thumbprint(pub), Claims{Iss: "https://gw", Sub: "dev_1", Aud: "a", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "j"})
 	if c, err := VerifyJWT(pub, tok, TypAccessToken, "a", now); err != nil || c.Sub != "dev_1" {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestJWT(t *testing.T) {
 		t.Fatal("expired accepted")
 	}
 	parts := strings.Split(tok, ".")
-	forged := SignJWT(key, TypAccessToken, "k", Claims{Sub: "dev_2", Aud: "a", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix()})
+	forged := SignJWT(key, TypAccessToken, Thumbprint(pub), Claims{Iss: "https://gw", Sub: "dev_2", Aud: "a", Jti: "j", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix()})
 	if _, err := VerifyJWT(pub, parts[0]+"."+strings.Split(forged, ".")[1]+"."+parts[2], TypAccessToken, "a", now); err == nil {
 		t.Fatal("tampered payload accepted")
 	}

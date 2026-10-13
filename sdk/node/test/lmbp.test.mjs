@@ -8,7 +8,7 @@ const key = L.signingKey(Buffer.alloc(32, 7));
 test('JWS round trip and rejections', () => {
   const jws = L.signJWS(key.priv, 'at+jwt', key.kid, { a: 1 });
   assert.equal(L.verifyJWS(key.pub, jws, 'at+jwt').toString(), '{"a":1}');
-  assert.throws(() => L.verifyJWS(key.pub, jws, 'JWT'), /header/);
+  assert.throws(() => L.verifyJWS(key.pub, jws, 'JWT'), /typ/);
   const [h, p, s] = jws.split('.');
   assert.throws(() => L.verifyJWS(key.pub, `${h}.${L.b64(Buffer.from('{"a":2}'))}.${s}`, 'at+jwt'), /signature/);
   assert.throws(() => L.verifyJWS(key.pub, `${h}.${p}.${s}=`, 'at+jwt'), /base64url/);
@@ -18,7 +18,7 @@ test('JWS round trip and rejections', () => {
 
 test('JWT audience and lifetime', () => {
   const iat = L.now();
-  const tok = L.signJWS(key.priv, 'at+jwt', '', { aud: 'a', iat, exp: iat + 60 });
+  const tok = L.signJWS(key.priv, 'at+jwt', '', { iss: 'https://gw', sub: 'dev_1', jti: 'j1', aud: 'a', iat, exp: iat + 60 });
   assert.equal(L.verifyJWT(key.pub, tok, 'at+jwt', 'a').aud, 'a');
   assert.throws(() => L.verifyJWT(key.pub, tok, 'at+jwt', 'b'), /audience/);
   assert.throws(() => L.verifyJWT(key.pub, tok, 'at+jwt', 'a', iat + 200), /expired/);

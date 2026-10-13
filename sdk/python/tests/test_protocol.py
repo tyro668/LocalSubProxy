@@ -20,7 +20,7 @@ class JWSTest(unittest.TestCase):
 
     def test_jwt_audience_and_lifetime(self):
         iat = L.now()
-        tok = L.sign_jws(KEY, "at+jwt", "", {"aud": "a", "iat": iat, "exp": iat + 60})
+        tok = L.sign_jws(KEY, "at+jwt", "", {"iss": "https://gw", "sub": "dev_1", "jti": "j1", "aud": "a", "iat": iat, "exp": iat + 60})
         self.assertEqual(L.verify_jwt(KEY.pub, tok, "at+jwt", "a")["aud"], "a")
         self.assertRaises(ValueError, L.verify_jwt, KEY.pub, tok, "at+jwt", "b")
         self.assertRaises(ValueError, L.verify_jwt, KEY.pub, tok, "at+jwt", "a", iat + 200)

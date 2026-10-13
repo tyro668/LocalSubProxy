@@ -275,6 +275,7 @@ func (r *runner) run(ctx context.Context) error {
 	}
 	now := time.Now()
 	foreign := lmbp.SignJWT(key, lmbp.TypAssertion, lmbp.Thumbprint(pub), lmbp.Claims{Iss: r.devID, Sub: r.devID, Aud: "https://other-gateway.invalid/lmbp/v1/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lmbp.RandomID("a_")})
+	r.auditAssertions(key, refresh)
 	st, m = refresh(foreign)
 	r.check("I3", "assertion whose aud is not this gateway's token endpoint is rejected (invalid_grant)", want(m["error"] == "invalid_grant", "status %d %v", st, m))
 	st, m = refresh(a1)
@@ -296,6 +297,7 @@ func (r *runner) run(ctx context.Context) error {
 		f, _ := r.readFrame(conn)
 		r.check("W3", "hello whose proof is bound to another token is rejected (error/close, no welcome)", want(f.Type != lmbp.TypeWelcome, "got welcome"))
 		conn.Close()
+		r.auditHelloProofs(key, at)
 	} else {
 		r.check("W3", "hello whose proof is bound to another token is rejected", fmt.Errorf("could not connect: %v %s", err, status(resp)))
 	}

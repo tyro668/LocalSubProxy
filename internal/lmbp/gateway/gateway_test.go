@@ -97,11 +97,11 @@ func TestDeviceFlow(t *testing.T) {
 	if at.Iss != s.URL || at.Aud != lmbp.TokenAudience(s.URL, "acme") || m["issuer"] != s.URL {
 		t.Fatalf("token not bound to issuer/tenant: iss=%q aud=%q", at.Iss, at.Aud)
 	}
-	wrongAud := lmbp.SignJWT(key, lmbp.TypAssertion, "d", lmbp.Claims{Iss: devID, Sub: devID, Aud: "https://other.example/lmbp/v1/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x0"})
+	wrongAud := lmbp.SignJWT(key, lmbp.TypAssertion, lmbp.Thumbprint(key.Public().(ed25519.PublicKey)), lmbp.Claims{Iss: devID, Sub: devID, Aud: "https://other.example/lmbp/v1/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x0"})
 	if _, m := post(t, s.URL+"/lmbp/v1/token", "", "", map[string]string{"grant_type": jwtBearerGrant, "assertion": wrongAud}); m["error"] != "invalid_grant" {
 		t.Fatal("assertion for another gateway accepted")
 	}
-	as := lmbp.SignJWT(key, lmbp.TypAssertion, "d", lmbp.Claims{Iss: devID, Sub: devID, Aud: lmbp.AssertionAudience(s.URL), Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x1"})
+	as := lmbp.SignJWT(key, lmbp.TypAssertion, lmbp.Thumbprint(key.Public().(ed25519.PublicKey)), lmbp.Claims{Iss: devID, Sub: devID, Aud: lmbp.AssertionAudience(s.URL), Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x1"})
 	if st, _ := post(t, s.URL+"/lmbp/v1/token", "", "", map[string]string{"grant_type": jwtBearerGrant, "assertion": as}); st != 200 {
 		t.Fatal("refresh failed")
 	}

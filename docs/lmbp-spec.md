@@ -133,13 +133,19 @@
 - 网关 MUST 在 `/.well-known/jwks.json` 发布当前签名公钥。轮换期间 MUST 同时发布新旧两把公钥，时长不少于访问令牌 TTL。
 
 ### 5.2 JWS 通用规则
-所有 JWS 都使用紧凑序列化，受保护头 MUST 包含 `alg: "EdDSA"` 和 `typ`，MAY 包含 `kid`。验证方 MUST 依次：
+所有 JWS 都使用紧凑序列化。受保护头 MUST 恰好由 `alg: "EdDSA"`、`typ` 和可选的 `kid` 组成。验证方 MUST 依次：
 1. 确认正好有三段，且每段都是合法 base64url（§4.2）；
-2. 确认 `alg` 恰好为 `EdDSA`，**拒绝 `none`、`HS*`、`RS*` 等其他值**；
-3. 确认 `typ` 等于预期值（下表）；
-4. 遇到 `crit` 头，或 `b64: false`，MUST 拒绝；
-5. 对 ASCII 字节串 `protected || "." || payload` 验证 Ed25519 签名，SHOULD 使用严格验证（拒绝小阶公钥和非规范 S 值）；
-6. 签名通过后，才解析载荷 JSON。
+2. 确认受保护头是 JSON 对象，且**只含 `alg`、`typ`、`kid`**：出现任何其他成员（包括 `crit`、`b64`、`jku`、`jwk`、`x5u`、`x5c` 及未知成员）MUST 拒绝；
+3. 确认 `alg` 恰好为字符串 `EdDSA`，**拒绝 `none`、`HS*`、`RS*` 等其他值**；
+4. 确认 `typ` 是字符串且等于预期值（下表）；
+5. 若有 `kid`，它 MUST 是字符串，且等于验证所用公钥的 RFC 7638 指纹，否则拒绝；
+6. 对 ASCII 字节串 `protected || "." || payload` 验证 Ed25519 签名，SHOULD 使用严格验证（拒绝小阶公钥和非规范 S 值）；
+7. 签名通过后才解析载荷：载荷 MUST 是 JSON 对象；
+8. 按各用途检查声明类型：要求的 NumericDate（`iat`、`exp`）MUST 是 0..2^53-1 的 JSON 整数（字符串、小数、布尔值、负数均拒绝）；要求的标识符（`iss`、`sub`、`aud`、`jti`、`ath` 等）MUST 是非空字符串（证明 JWT 的 `iss` 在配对前可为空字符串，但仍 MUST 是字符串）；同时有 `iat` 和 `exp` 时 MUST `exp ≥ iat`。
+
+各用途的必需声明：证明 JWT `iss`(可空)、`aud`、`iat`、`jti`、`ath`；访问令牌与客户端断言 `iss`、`sub`、`aud`、`iat`、`exp`、`jti`；任务签名 `task_id`、`device_id`、`model`、`nonce`、`iat`、`exp`，且每个 `blobs[]` 项的 `id`、`media_type` 为非空字符串、`size` 为非负整数、`sha256` 为 32 字节 base64url；元数据 `issuer`、`tenant`、`audience`、`iat`、`exp`；E2EE 密钥声明 `iss`、`sub`、`iat`、`exp`。
+
+`spec/testvectors/jose.json` 是这些规则的共享正/反向向量集（由 `go test ./internal/lmbp -run TestJOSEVectors -update` 生成）。LMBP 的证明 JWT 以 `aud`（用途）和 `ath`（凭据哈希）绑定上下文，不使用 DPoP 的 `htm`/`htu`。
 
 | 用途 | `typ` | 签名方 | `kid` |
 |---|---|---|---|

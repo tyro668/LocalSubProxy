@@ -43,7 +43,7 @@ type vecIdentity struct {
 
 func genIdentity(gk ed25519.PrivateKey, kid string, at Claims) *vecIdentity {
 	m := GatewayMetadata{Issuer: vecIssuer, JWKSURI: vecIssuer + "/.well-known/jwks.json", DeviceAuthorizationEndpoint: vecIssuer + "/lmbp/v1/device/authorize",
-		TokenEndpoint: vecIssuer + "/lmbp/v1/token", ConnectEndpoint: "wss://gw.example.com/lmbp/v1/connect", ProtocolVersions: []string{"2"}, Capabilities: Capabilities, ScopesSupported: Scopes,
+		TokenEndpoint: vecIssuer + "/lmbp/v1/token", ConnectEndpoint: "wss://gw.example.com/lmbp/v1/connect", ProtocolVersions: []string{"1.0"}, Capabilities: Capabilities, ScopesSupported: Scopes,
 		Tenant: "acme", Audience: TokenAudience(vecIssuer, "acme"), SaaS: &SaaSInfo{Name: "Acme CRM", LogoURI: "https://acme.example/logo.png", HomepageURI: "https://acme.example",
 			PolicyURI: "https://acme.example/privacy", PairingURI: "https://acme.example/lsp/link"}, RequestedModels: []string{"lm/qwen3-8b"}, RequestedScopes: []string{ScopeChat, ScopeTools},
 		Iat: vecIat, Exp: vecIat + 3600}

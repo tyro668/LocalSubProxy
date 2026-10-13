@@ -134,6 +134,13 @@ func VerifyMetadata(pub ed25519.PublicKey, jws, issuer, tenant string, now time.
 	if err != nil {
 		return m, err
 	}
+	cs := claimsOf(p)
+	if err := cs.require(nil, []string{"issuer", "tenant", "audience"}, nil); err != nil {
+		return m, err
+	}
+	if _, _, err := cs.timeRange(); err != nil {
+		return m, err
+	}
 	if json.Unmarshal(p, &m) != nil {
 		return m, errors.New("bad metadata payload")
 	}

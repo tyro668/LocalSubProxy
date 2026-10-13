@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -415,25 +417,133 @@ func SignJWS(key ed25519.PrivateKey, typ, kid string, payload []byte) string {
 	return in + "." + B64(ed25519.Sign(key, []byte(in)))
 }
 
-// VerifyJWS checks a compact EdDSA JWS with the expected typ and returns its payload.
+// VerifyJWS checks a compact EdDSA JWS with the expected typ and returns its
+// payload, which MUST be a JSON object. The protected header MUST be exactly
+// {alg: "EdDSA", typ, kid?}: any other member (crit, b64, jku, jwk, x5u, ...)
+// is rejected, and kid, when present, MUST be the RFC 7638 thumbprint of the
+// verifying key (spec §5.2).
 func VerifyJWS(pub ed25519.PublicKey, jws, typ string) ([]byte, error) {
 	parts := strings.Split(jws, ".")
 	if len(parts) != 3 {
 		return nil, errors.New("malformed JWS")
 	}
-	var h map[string]any
+	var h map[string]json.RawMessage
 	hb, err := UnB64(parts[0])
-	if err != nil || json.Unmarshal(hb, &h) != nil || h["alg"] != "EdDSA" || h["typ"] != typ {
+	if err != nil || json.Unmarshal(hb, &h) != nil || h == nil {
 		return nil, errors.New("bad JWS header")
 	}
-	if _, crit := h["crit"]; crit {
-		return nil, errors.New("unsupported crit header")
+	for k := range h {
+		if k != "alg" && k != "typ" && k != "kid" {
+			return nil, fmt.Errorf("forbidden JWS header %q", k)
+		}
+	}
+	var alg, gotTyp string
+	if json.Unmarshal(h["alg"], &alg) != nil || alg != "EdDSA" {
+		return nil, errors.New("JWS alg must be EdDSA")
+	}
+	if json.Unmarshal(h["typ"], &gotTyp) != nil || gotTyp != typ {
+		return nil, fmt.Errorf("JWS typ must be %s", typ)
+	}
+	if raw, ok := h["kid"]; ok {
+		var kid string
+		if json.Unmarshal(raw, &kid) != nil || len(pub) != ed25519.PublicKeySize || kid != Thumbprint(pub) {
+			return nil, errors.New("JWS kid does not match the verifying key")
+		}
 	}
 	sig, err := UnB64(parts[2])
 	if err != nil || len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
 		return nil, errors.New("bad JWS signature")
 	}
-	return UnB64(parts[1])
+	p, err := UnB64(parts[1])
+	if err != nil {
+		return nil, errors.New("bad JWS payload")
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(p, &obj) != nil || obj == nil {
+		return nil, errors.New("JWS payload must be a JSON object")
+	}
+	return p, nil
+}
+
+// claimSet is a decoded JWS payload for strict claim type checks.
+type claimSet map[string]json.RawMessage
+
+func claimsOf(p []byte) claimSet {
+	var c claimSet
+	_ = json.Unmarshal(p, &c)
+	return c
+}
+
+// require checks that every name in ints is a NumericDate (a JSON integer in
+// 0..2^53-1, no fraction or exponent) and every name in strs a non-empty
+// string; names in opt are strings that may be empty.
+func (c claimSet) require(ints, strs, opt []string) error {
+	for _, k := range ints {
+		if _, err := c.numericDate(k); err != nil {
+			return err
+		}
+	}
+	for _, k := range strs {
+		if s, ok := c.str(k); !ok || s == "" {
+			return fmt.Errorf("claim %s must be a non-empty string", k)
+		}
+	}
+	for _, k := range opt {
+		if _, ok := c.str(k); !ok {
+			return fmt.Errorf("claim %s must be a string", k)
+		}
+	}
+	return nil
+}
+
+func (c claimSet) numericDate(k string) (int64, error) {
+	return jsonUint(c[k], "claim "+k)
+}
+
+// jsonUint parses a raw JSON value that MUST be an integer 0..2^53-1.
+func jsonUint(raw json.RawMessage, what string) (int64, error) {
+	s := string(raw)
+	if s == "" || len(s) > 16 {
+		return 0, fmt.Errorf("%s must be an integer", what)
+	}
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, fmt.Errorf("%s must be a non-negative integer", what)
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n > 1<<53-1 {
+		return 0, fmt.Errorf("%s out of range", what)
+	}
+	return n, nil
+}
+
+func (c claimSet) str(k string) (string, bool) {
+	raw, ok := c[k]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// timeRange requires iat and exp NumericDates with exp >= iat.
+func (c claimSet) timeRange() (int64, int64, error) {
+	iat, err := c.numericDate("iat")
+	if err != nil {
+		return 0, 0, err
+	}
+	exp, err := c.numericDate("exp")
+	if err != nil {
+		return 0, 0, err
+	}
+	if exp < iat {
+		return 0, 0, errors.New("exp before iat")
+	}
+	return iat, exp, nil
 }
 
 // SignTaskRun signs a task.run payload; the envelope carries the result in jws.
@@ -449,10 +559,47 @@ func VerifyTaskRun(pub ed25519.PublicKey, envTaskID, jws string) (TaskRun, error
 	if err != nil {
 		return run, err
 	}
+	c := claimsOf(p)
+	if err := c.require(nil, []string{"task_id", "device_id", "model", "nonce"}, nil); err != nil {
+		return run, err
+	}
+	if _, _, err := c.timeRange(); err != nil {
+		return run, err
+	}
+	if err := checkBlobRefs(c["blobs"]); err != nil {
+		return run, err
+	}
 	if json.Unmarshal(p, &run) != nil || run.TaskID == "" || run.TaskID != envTaskID {
 		return run, errors.New("task.run payload/task_id mismatch")
 	}
 	return run, nil
+}
+
+// checkBlobRefs validates the signed blob references strictly.
+func checkBlobRefs(raw json.RawMessage) error {
+	if raw == nil {
+		return nil
+	}
+	var refs []claimSet
+	if json.Unmarshal(raw, &refs) != nil {
+		return errors.New("blobs must be an array of objects")
+	}
+	for _, r := range refs {
+		if r == nil {
+			return errors.New("blob ref must be an object")
+		}
+		if err := r.require(nil, []string{"id", "media_type", "sha256"}, nil); err != nil {
+			return fmt.Errorf("blob ref: %w", err)
+		}
+		if _, err := jsonUint(r["size"], "blob size"); err != nil {
+			return err
+		}
+		h, _ := r.str("sha256")
+		if d, err := UnB64(h); err != nil || len(d) != 32 {
+			return errors.New("blob sha256 must be 32 bytes base64url")
+		}
+	}
+	return nil
 }
 
 // ProofClaims are the claims of a device key proof JWT.
@@ -477,6 +624,9 @@ func VerifyProof(pub ed25519.PublicKey, proof, deviceID, aud, credential string,
 	p, err := VerifyJWS(pub, proof, TypProof)
 	if err != nil {
 		return c, err
+	}
+	if err := claimsOf(p).require([]string{"iat"}, []string{"aud", "jti", "ath"}, []string{"iss"}); err != nil {
+		return c, fmt.Errorf("proof claims invalid: %w", err)
 	}
 	if json.Unmarshal(p, &c) != nil || c.Aud != aud || c.Iss != deviceID || c.Jti == "" || c.Ath != Ath(credential) {
 		return c, errors.New("proof claims invalid")
@@ -512,6 +662,13 @@ func VerifyJWT(pub ed25519.PublicKey, tok, typ, aud string, now time.Time) (Clai
 	if err != nil {
 		return c, err
 	}
+	cs := claimsOf(pb)
+	if err := cs.require(nil, []string{"iss", "sub", "aud", "jti"}, nil); err != nil {
+		return c, err
+	}
+	if _, _, err := cs.timeRange(); err != nil {
+		return c, err
+	}
 	if json.Unmarshal(pb, &c) != nil {
 		return c, errors.New("bad token payload")
 	}
@@ -537,4 +694,13 @@ func UnverifiedClaims(tok string) (Claims, error) {
 		return c, err
 	}
 	return c, json.Unmarshal(pb, &c)
+}
+
+// VerifyTaskRunAt is VerifyTaskRun plus the expiry check (now > exp rejects).
+func VerifyTaskRunAt(pub ed25519.PublicKey, envTaskID, jws string, now time.Time) (TaskRun, error) {
+	run, err := VerifyTaskRun(pub, envTaskID, jws)
+	if err == nil && now.Unix() > run.Exp {
+		return run, errors.New("task.run expired")
+	}
+	return run, err
 }
