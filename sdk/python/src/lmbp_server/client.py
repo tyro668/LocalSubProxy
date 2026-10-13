@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 from typing import Any, AsyncIterator, Optional
 
 from ._http import Request, Response
@@ -21,23 +22,68 @@ def _error(status: int, v: Any) -> LMBPAPIError:
     return LMBPAPIError(status, e.get("code") or e.get("lmbp_code") or "ERROR", e.get("message") or (v or {}).get("detail", "request failed") if isinstance(v, dict) else "request failed", v)
 
 
-class _Completions:
-    def __init__(self, c: "InProcessClient"):
-        self._c = c
+class LMBPStream:
+    """A streaming response: ``async for`` it. ``last_event_id`` is the SSE id of
+    the last event yielded (the resume cursor) and ``task_id`` the gateway task.
+    Resume with the same request + idempotency_key + last_event_id, or with
+    ``chat.completions.resume(task_id, last_event_id)``."""
 
-    async def create(self, *, idempotency_key: Optional[str] = None, **req: Any) -> dict:
-        """Non-streaming chat completion (OpenAI shape)."""
-        return await self._c._json("POST", "/v1/chat/completions", {**req, "stream": False}, idempotency_key)
+    def __init__(self, make):
+        self.last_event_id = ""
+        self.task_id = ""
+        self._make, self._it = make, None
 
-    async def stream(self, *, idempotency_key: Optional[str] = None, **req: Any) -> AsyncIterator[dict]:
-        """Streaming chat completion: async iterator of chunks."""
-        async for _, data in self._c._sse("/v1/chat/completions", {**req, "stream": True}, idempotency_key):
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._it is None:
+            self._it = self._make(self)
+        return await self._it.__anext__()
+
+    async def aclose(self):
+        if self._it is not None:
+            await self._it.aclose()
+
+
+def _chat_events(c, method, path, body, hdrs):
+    async def gen(st):
+        async for _, data, eid in c._sse(path, body, hdrs, method, st):
             if data == "[DONE]":
                 return
             v = json.loads(data)
             if "error" in v:
                 raise LMBPAPIError(502, v["error"].get("code", "ERROR"), v["error"].get("message", ""), v)
+            if eid:
+                st.last_event_id = eid
             yield v
+    return LMBPStream(gen)
+
+
+def _hdrs(idem, last_event_id=None):
+    h = {}
+    if idem:
+        h["idempotency-key"] = idem
+    if last_event_id:
+        h["last-event-id"] = last_event_id
+    return h
+
+
+class _Completions:
+    def __init__(self, c: "InProcessClient"):
+        self._c = c
+
+    async def create(self, *, idempotency_key: Optional[str] = None, **req: Any) -> dict:
+        """Non-streaming chat completion (OpenAI shape). E2EE: pass lmbp_e2ee=sealed.jwe, no messages."""
+        return await self._c._json("POST", "/v1/chat/completions", {**req, "stream": False}, _hdrs(idempotency_key))
+
+    def stream(self, *, idempotency_key: Optional[str] = None, last_event_id: Optional[str] = None, **req: Any) -> LMBPStream:
+        """Streaming chat completion: ``async for`` chunks (see LMBPStream for the resume cursor)."""
+        return _chat_events(self._c, "POST", "/v1/chat/completions", {**req, "stream": True}, _hdrs(idempotency_key, last_event_id))
+
+    def resume(self, task_id: str, last_event_id: str = "") -> LMBPStream:
+        """Re-attach to a task's stream after last_event_id ("" replays all); ends at once past the terminal event."""
+        return _chat_events(self._c, "GET", "/lmbp/v1/tenant/tasks/" + quote(task_id, safe="") + "/events", None, _hdrs(None, last_event_id))
 
 
 class _Chat:
@@ -51,17 +97,23 @@ class _Messages:
 
     async def create(self, *, idempotency_key: Optional[str] = None, **req: Any) -> dict:
         """Anthropic Messages, non-streaming."""
-        return await self._c._json("POST", "/v1/messages", {**req, "stream": False}, idempotency_key)
+        return await self._c._json("POST", "/v1/messages", {**req, "stream": False}, _hdrs(idempotency_key))
 
-    async def stream(self, *, idempotency_key: Optional[str] = None, **req: Any) -> AsyncIterator[dict]:
-        """Anthropic Messages, streaming: async iterator of named events (ping filtered)."""
-        async for _, data in self._c._sse("/v1/messages", {**req, "stream": True}, idempotency_key):
-            v = json.loads(data)
-            if v.get("type") == "error":
-                err = v.get("error") or {}
-                raise LMBPAPIError(502, err.get("lmbp_code", "ERROR"), err.get("message", ""), v)
-            if v.get("type") != "ping":
-                yield v
+    def stream(self, *, idempotency_key: Optional[str] = None, last_event_id: Optional[str] = None, **req: Any) -> LMBPStream:
+        """Anthropic Messages, streaming: ``async for`` named events (ping filtered)."""
+        c = self._c
+
+        async def gen(st):
+            async for _, data, eid in c._sse("/v1/messages", {**req, "stream": True}, _hdrs(idempotency_key, last_event_id), "POST", st):
+                v = json.loads(data)
+                if v.get("type") == "error":
+                    err = v.get("error") or {}
+                    raise LMBPAPIError(502, err.get("lmbp_code", "ERROR"), err.get("message", ""), v)
+                if eid:
+                    st.last_event_id = eid
+                if v.get("type") != "ping":
+                    yield v
+        return LMBPStream(gen)
 
 
 class InProcessClient:
@@ -72,17 +124,17 @@ class InProcessClient:
 
     async def models(self) -> list[dict]:
         """GET /v1/models (OpenAI shape)."""
-        return (await self._json("GET", "/v1/models", None, None))["data"]
+        return (await self._json("GET", "/v1/models", None, {}))["data"]
 
-    async def _request(self, method: str, path: str, body: Any, idem: Optional[str]):
+    async def _request(self, method: str, path: str, body: Any, extra: dict):
         g = self._server.engine
         t = g.tenants.get(self.tenant)
         if t is None:
             raise LMBPAPIError(401, "UNAUTHENTICATED", "unknown tenant " + self.tenant)
         raw = b"" if body is None else json.dumps(body).encode()
         hs = [(b"host", b"in-process"), (b"content-type", b"application/json"), (b"x-end-user", self.end_user.encode())]
-        if idem:
-            hs.append((b"idempotency-key", idem.encode()))
+        for k, v in (extra or {}).items():
+            hs.append((k.encode(), v.encode()))
         scope = {"type": "http", "method": method, "path": path, "headers": hs, "query_string": b"", "scheme": "http",
                  "lmbp.in_process_tenant": t}
         q: asyncio.Queue = asyncio.Queue()
@@ -96,7 +148,7 @@ class InProcessClient:
         async def send(m):
             if m["type"] == "http.response.start":
                 if not start.done():
-                    start.set_result((m["status"], {k.decode(): v.decode() for k, v in m["headers"]}))
+                    start.set_result((m["status"], {k.decode().lower(): v.decode() for k, v in m["headers"]}))
             elif m["type"] == "http.response.body":
                 if m.get("body"):
                     await q.put(m["body"])
@@ -125,16 +177,18 @@ class InProcessClient:
                     task.cancel()
         return status, headers, chunks()
 
-    async def _json(self, method, path, body, idem):
-        status, _, it = await self._request(method, path, body, idem)
+    async def _json(self, method, path, body, extra):
+        status, _, it = await self._request(method, path, body, extra)
         data = b"".join([c async for c in it])
         v = json.loads(data) if data else None
         if status >= 400:
             raise _error(status, v)
         return v
 
-    async def _sse(self, path, body, idem):
-        status, headers, it = await self._request("POST", path, body, idem)
+    async def _sse(self, path, body, extra, method="POST", st=None):
+        status, headers, it = await self._request(method, path, body, extra)
+        if st is not None:
+            st.task_id = headers.get("x-task-id", "")
         if status >= 400 or not headers.get("content-type", "").startswith("text/event-stream"):
             data = b"".join([c async for c in it])
             raise _error(status, json.loads(data) if data else None)
@@ -143,11 +197,13 @@ class InProcessClient:
             buf += c.decode()
             while "\n\n" in buf:
                 block, buf = buf.split("\n\n", 1)
-                ev, data = "", ""
+                ev, data, eid = "", "", ""
                 for line in block.split("\n"):
                     if line.startswith("event: "):
                         ev = line[7:]
                     elif line.startswith("data: "):
                         data += line[6:]
+                    elif line.startswith("id: "):
+                        eid = line[4:]
                 if data:
-                    yield ev, data
+                    yield ev, data, eid

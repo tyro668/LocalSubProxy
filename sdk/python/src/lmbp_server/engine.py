@@ -302,6 +302,7 @@ class Task:
         self.subs: dict[int, int] = {}
         self.next_sub = 0
         self.acked = 0
+        self.persisted = 0  # highest device seq durably stored; never ACK beyond it
         self.ack_at = time.monotonic()
         self.grace = None
         self.slot = False
@@ -342,29 +343,56 @@ class Task:
                 f.set_result(None)
 
     def record(self, ev):
+        """Publish a gateway-local event; a failed write is logged (a later
+        re-attach then reports OUTCOME_UNKNOWN) - there is nothing to ACK."""
         self.events.append(ev)
         if not getattr(self, "replayed", False):
-            self.g.store.append_event(self.id, ev)
+            try:
+                self.g.store.append_event(self.id, ev)
+            except Exception as e:  # noqa: BLE001 - any store failure
+                self.g.log(f"lmbp: task {self.id}: persisting local event failed: {e}")
         self.broadcast()
 
     def on_device_frame(self, inp):
+        """Device frames are persisted (and, for the terminal frame, the task
+        state) before they are published or ACKed: an ACK lets the device drop
+        the frame from its resume buffer, so it may only cover frames the
+        gateway can still serve after a restart."""
         if self.done:
             return self.maybe_ack()
         data = inp.get("data") if isinstance(inp.get("data"), dict) else {}
         if inp["type"] == "task.delta" and not self.e2ee and data.get("e2ee"):
             data = {k: v for k, v in data.items() if k != "e2ee"}
-        self.record({"seq": inp["seq"], "type": inp["type"], "data": data})
+        ev = {"seq": inp["seq"], "type": inp["type"], "data": data}
+        try:
+            self.g.store.append_event(self.id, ev)
+        except Exception as e:  # noqa: BLE001
+            return self.persist_failed(inp["seq"], "event", e)
+        state = ""
         if is_terminal(inp["type"]):
             state = "SUCCEEDED"
             if inp["type"] == "task.error":
                 state = "CANCELLED" if data.get("code") == "CANCELLED" else "FAILED"
-            return self.finish(state, True)
+            try:
+                self.g.set_task_state(self.id, state)
+            except Exception as e:  # noqa: BLE001
+                return self.persist_failed(inp["seq"], "terminal state", e)
+        self.events.append(ev)
+        self.persisted = inp["seq"]
+        self.broadcast()
+        if state:
+            return self.finish(state, True, write_state=False)
         self.maybe_ack()
+
+    def persist_failed(self, seq, what, e):
+        self.g.log(f"lmbp: task {self.id}: persisting {what} for seq {seq} failed: {e} (not acknowledged)")
+        self.cancel("internal_error")
+        self.fail_local("INTERNAL", "gateway could not persist task output")
 
     def maybe_ack(self):
         if self.ds is None:
             return
-        target = self.recv_seq()
+        target = min(self.recv_seq(), self.persisted)
         if not self.done:
             for d in self.subs.values():
                 target = min(target, d)
@@ -394,7 +422,7 @@ class Task:
             code, msg = "OUTCOME_UNKNOWN", msg + "; outcome unknown"
         self.fail_local(code, msg, code == "DEVICE_OFFLINE")
 
-    def finish(self, state, from_device):
+    def finish(self, state, from_device, write_state=True):
         if self.done:
             return
         self.done = True
@@ -402,7 +430,11 @@ class Task:
         for h in self.timers + ([self.grace] if self.grace else []):
             h.cancel()
         self.broadcast()
-        self.g.set_task_state(self.id, state)
+        if write_state:
+            try:
+                self.g.set_task_state(self.id, state)
+            except Exception as e:  # noqa: BLE001
+                self.g.log(f"lmbp: task {self.id}: persisting state {state} failed: {e}")
         ds = self.ds
         if ds is not None:
             if from_device:
@@ -692,22 +724,32 @@ class Gateway:
             body = None
         if not isinstance(body, dict):
             return err(400, "BAD_REQUEST", "invalid JSON")
-        if not self.allow_attempt(t["id"]):
-            return err(429, "RATE_LIMITED", "too many failed codes; wait a minute")
-        code = norm_code(body.get("user_code"))
-        d = self.store.device_auth_by_user_code(t["id"], code) if code else None
+        d, e = self.pair_decide(t["id"], user, body.get("user_code"), body.get("deny") is True, body.get("jkt"))
+        if e:
+            return err(*e)
+        return json_resp(200, {"status": d["status"], "device_id": d["device_id"], "device_name": d["name"], "jkt": L.thumbprint(d["pub"])})
+
+    def pair_decide(self, tenant, owner, user_code, deny, jkt):
+        """The one business-layer entry for approving/denying a user code (HTTP
+        handler and in-process SDK API alike): enforces the per-tenant
+        failed-code lockout and counts every failure. Returns (d, None) or
+        (None, (status, code, message))."""
+        if not self.allow_attempt(tenant):
+            return None, (429, "RATE_LIMITED", "too many failed codes; wait a minute")
+
+        def fail(*e):
+            self.record_failure(tenant)
+            return None, e
+        code = norm_code(user_code)
+        d = self.store.device_auth_by_user_code(tenant, code) if code else None
         if d is not None and d["status"] == "denied" and time.time() <= d["expires"]:
             # §19: the pairing was declined; a later approval cannot override it.
-            self.record_failure(t["id"])
-            return err(403, "CONSENT_DENIED", "pairing consent was denied for this code")
+            return fail(403, "CONSENT_DENIED", "pairing consent was denied for this code")
         if d is None or d["status"] != "pending" or time.time() > d["expires"]:
-            self.record_failure(t["id"])
-            return err(404, "BAD_REQUEST", "code invalid, expired or already used")
-        if body.get("jkt") and body["jkt"] != L.thumbprint(d["pub"]):
-            self.record_failure(t["id"])
-            return err(409, "FORBIDDEN", "device key thumbprint does not match the pairing request")
-        self.decide(d, t["id"], user, body.get("deny") is True)
-        return json_resp(200, {"status": d["status"], "device_id": d["device_id"], "device_name": d["name"], "jkt": L.thumbprint(d["pub"])})
+            return fail(404, "BAD_REQUEST", "code invalid, expired or already used")
+        if jkt and jkt != L.thumbprint(d["pub"]):
+            return fail(409, "FORBIDDEN", "device key thumbprint does not match the pairing request")
+        return self.decide(d, tenant, owner, deny), None
 
     def decide(self, d, tenant, owner, deny):
         """Approve (binding the device to owner) or deny a pending pairing."""
@@ -1406,7 +1448,9 @@ class Gateway:
         await t.stream(after, None, collect)
         if state["fail"] is not None:
             f = state["fail"]
-            return api_error(err_status(f.get("code")), f.get("code"), f.get("message"))
+            resp = api_error(err_status(f.get("code")), f.get("code"), f.get("message"))
+            resp.headers.update(headers)  # X-Task-Id on task failures too (as Go/Node)
+            return resp
         done = state["done"]
         finish = done.get("finish_reason") or "stop"
         txt = "".join(text)

@@ -78,8 +78,9 @@ export class InProcessClient {
     return v as T;
   }
 
-  private async *sse(method: string, path: string, body: unknown, headers?: Record<string, string>, signal?: AbortSignal) {
+  private async *sse(method: string, path: string, body: unknown, headers?: Record<string, string>, signal?: AbortSignal, st?: LMBPStream<unknown>) {
     const r = await this.request(method, path, body, headers, signal);
+    if (st) st.taskId = String(r.headers['x-task-id'] || '');
     if (r.status >= 400 || !String(r.headers['content-type'] || '').startsWith('text/event-stream')) {
       const chunks: Buffer[] = [];
       for await (const c of r.body) chunks.push(Buffer.from(c));
@@ -112,30 +113,64 @@ export class InProcessClient {
       create: (req: ChatRequest & { stream?: false }, opts: { idempotencyKey?: string } = {}): Promise<ChatCompletion> =>
         this.json('POST', '/v1/chat/completions', { ...req, stream: false }, idem(opts.idempotencyKey)),
       /** Streaming chat completion: async iterable of chunks. */
-      stream: async function* (this: InProcessClient, req: ChatRequest, opts: { idempotencyKey?: string; signal?: AbortSignal } = {}): AsyncGenerator<ChatCompletionChunk> {
-        for await (const e of this.sse('POST', '/v1/chat/completions', { ...req, stream: true }, idem(opts.idempotencyKey), opts.signal)) {
-          if (e.data === '[DONE]') return;
-          const v = JSON.parse(e.data);
-          if (v.error) throw new LMBPAPIError(502, v.error.code, v.error.message, v);
-          yield v;
-        }
-      }.bind(this),
+      stream: (req: ChatRequest, opts: StreamOpts = {}): LMBPStream<ChatCompletionChunk> =>
+        this.chatStream('POST', '/v1/chat/completions', { ...req, stream: true }, opts),
+      /** Re-attach to a task's stream after lastEventId (stream.lastEventId; '' replays all). Ends at once past the terminal event. */
+      resume: (taskId: string, lastEventId = '', opts: { signal?: AbortSignal } = {}): LMBPStream<ChatCompletionChunk> =>
+        this.chatStream('GET', `/lmbp/v1/tenant/tasks/${encodeURIComponent(taskId)}/events`, undefined, { ...opts, lastEventId }),
     },
   };
+
+  private chatStream(method: string, path: string, body: unknown, opts: StreamOpts): LMBPStream<ChatCompletionChunk> {
+    const st: LMBPStream<ChatCompletionChunk> = new LMBPStream(async function* (this: InProcessClient) {
+      for await (const e of this.sse(method, path, body, hdrs(opts), opts.signal, st)) {
+        if (e.data === '[DONE]') return;
+        const v = JSON.parse(e.data);
+        if (v.error) throw new LMBPAPIError(502, v.error.code, v.error.message, v);
+        if (e.id) st.lastEventId = e.id;
+        yield v;
+      }
+    }.bind(this));
+    return st;
+  }
 
   readonly messages = {
     /** Anthropic Messages, non-streaming. */
     create: (req: MessagesRequest & { stream?: false }, opts: { idempotencyKey?: string } = {}): Promise<Message> =>
       this.json('POST', '/v1/messages', { ...req, stream: false }, idem(opts.idempotencyKey)),
     /** Anthropic Messages, streaming: async iterable of named events. */
-    stream: async function* (this: InProcessClient, req: MessagesRequest, opts: { idempotencyKey?: string; signal?: AbortSignal } = {}): AsyncGenerator<MessageStreamEvent> {
-      for await (const e of this.sse('POST', '/v1/messages', { ...req, stream: true }, idem(opts.idempotencyKey), opts.signal)) {
-        const v = JSON.parse(e.data);
-        if (v.type === 'error') throw new LMBPAPIError(502, v.error?.lmbp_code ?? 'ERROR', v.error?.message ?? 'error', v);
-        if (v.type !== 'ping') yield v;
-      }
-    }.bind(this),
+    stream: (req: MessagesRequest, opts: StreamOpts = {}): LMBPStream<MessageStreamEvent> => {
+      const st: LMBPStream<MessageStreamEvent> = new LMBPStream(async function* (this: InProcessClient) {
+        for await (const e of this.sse('POST', '/v1/messages', { ...req, stream: true }, hdrs(opts), opts.signal, st)) {
+          const v = JSON.parse(e.data);
+          if (v.type === 'error') throw new LMBPAPIError(502, v.error?.lmbp_code ?? 'ERROR', v.error?.message ?? 'error', v);
+          if (e.id) st.lastEventId = e.id;
+          if (v.type !== 'ping') yield v;
+        }
+      }.bind(this));
+      return st;
+    },
   };
+}
+
+export interface StreamOpts { idempotencyKey?: string; lastEventId?: string; signal?: AbortSignal }
+
+/**
+ * A streaming response: iterate it with for await. lastEventId is the SSE id
+ * of the last event yielded (the resume cursor); taskId is the gateway task.
+ * Resume with the same request + idempotencyKey + lastEventId, or with
+ * chat.completions.resume(taskId, lastEventId).
+ */
+export class LMBPStream<T> implements AsyncIterableIterator<T> {
+  lastEventId = '';
+  taskId = '';
+  private it?: AsyncGenerator<T>;
+  constructor(private readonly make: () => AsyncGenerator<T>) {}
+  private get g() { return (this.it ??= this.make()); }
+  next() { return this.g.next(); }
+  return(v?: any) { return this.g.return(v); }
+  throw(e?: any) { return this.g.throw(e); }
+  [Symbol.asyncIterator]() { return this; }
 }
 
 /** Marks a request created by the in-process client; carries the tenant. */
@@ -143,6 +178,7 @@ export const IN_PROCESS = Symbol.for('lmbp.inProcessTenant');
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 const idem = (k?: string): Record<string, string> => (k ? { 'idempotency-key': k } : {});
+const hdrs = (o: StreamOpts): Record<string, string> => ({ ...idem(o.idempotencyKey), ...(o.lastEventId ? { 'last-event-id': o.lastEventId } : {}) });
 function toError(status: number, v: any): LMBPAPIError {
   const e = v?.error ?? {};
   return new LMBPAPIError(status, e.code ?? e.lmbp_code ?? 'ERROR', e.message ?? v?.detail ?? 'request failed', v);

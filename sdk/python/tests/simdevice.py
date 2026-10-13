@@ -9,6 +9,7 @@ import secrets
 import httpx
 import websockets
 
+from lmbp_server import e2ee as E
 from lmbp_server import protocol as L
 
 
@@ -31,24 +32,48 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",)):
+async def connect(base, key, tok, models=("m1",), e2ee=False):
+    x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
     await ws.send(json.dumps({"v": 1, "type": "hello", "id": "h1", "data": {
         "device_id": tok["device_id"], "client": "sdk-test", "models": list(models), "model_capabilities": {m: ["tools"] for m in models},
-        "max_concurrency": 4, "capabilities": ["tools"], "proof": proof(key, tok["device_id"], L.PROOF_HELLO, tok["access_token"])}}))
+        "max_concurrency": 4, "capabilities": ["tools", "e2ee"] if x else ["tools"],
+        **({"e2ee_key": E.sign_key_statement(key, tok["device_id"], x[1])} if x else {}), "proof": proof(key, tok["device_id"], L.PROOF_HELLO, tok["access_token"])}}))
     w = json.loads(await ws.recv())
     assert w["type"] == "welcome", w
+
+    pending = {}  # task_id -> (run, chunks) while an E2EE blob arrives
+
+    async def run_e2ee(run, jwe):
+        _, pt = E.open_jwe(x[0], jwe)
+        req = json.loads(pt)
+        k = L.unb64(req["response_key"])
+        text = "echo:" + req["messages"][-1]["content"]
+        for seq, (typ, v, extra) in enumerate([("task.delta", {"text": text}, {}),
+                                               ("task.done", {"finish_reason": "stop"}, {"finish_reason": "stop", "usage": {"prompt_tokens": 1, "completion_tokens": 1}})], 1):
+            await ws.send(json.dumps({"v": 1, "type": typ, "task_id": run["task_id"], "seq": seq,
+                                      "data": {**extra, "e2ee": E.seal_chunk(k, req["rid"], typ, seq, json.dumps(v).encode())}}))
 
     async def loop():
         async for raw in ws:
             e = json.loads(raw)
             if e["type"] == "ping":
                 await ws.send(json.dumps({"v": 1, "type": "pong", "id": e.get("id")}))
+            if e["type"] == "blob.chunk" and e.get("task_id") in pending:
+                run, chunks = pending[e["task_id"]]
+                chunks.append(L.unb64(e["data"]["data"]))
+                if e["data"].get("last"):
+                    del pending[e["task_id"]]
+                    await run_e2ee(run, b"".join(chunks).decode())
+                continue
             if e["type"] != "task.run":
                 continue
             p = e["jws"].split(".")[1]
             run = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+            if run.get("e2ee"):
+                pending[run["task_id"]] = (run, [])
+                continue
             seq = 0
 
             async def send(typ, data):
@@ -71,11 +96,11 @@ async def connect(base, key, tok, models=("m1",)):
     return ws, task
 
 
-async def pair_and_connect(lsp, base, tenant, user):
+async def pair_and_connect(lsp, base, tenant, user, e2ee=False):
     key, a = await start_pairing(base, tenant)
     ok = lsp.pairing.approve(tenant, user, a["user_code"])
     tok = await finish_pairing(base, key, a)
-    ws, task = await connect(base, key, tok)
+    ws, task = await connect(base, key, tok, e2ee=e2ee)
     for _ in range(50):
         if any(d.online for d in lsp.pairing.list_devices(tenant, user)):
             break

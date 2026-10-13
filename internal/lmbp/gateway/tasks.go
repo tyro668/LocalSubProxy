@@ -39,6 +39,7 @@ type gtask struct {
 	subs              map[int]int64 // subscriber → delivered seq
 	nextSub           int
 	acked             int64
+	persisted         int64 // highest device seq durably stored; never ACK beyond it
 	ackAt             time.Time
 	grace             *time.Timer
 	slot              bool
@@ -117,12 +118,18 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 			data, _ = json.Marshal(d)
 		}
 	}
-	t.events = append(t.events, event{Seq: in.Seq, Type: in.Type, Data: data})
-	t.broadcastLocked()
 	t.mu.Unlock()
-	_ = t.g.cfg.Store.AppendEvent(context.Background(), store.Event{TaskID: t.id, Seq: in.Seq, Kind: in.Type, Data: data, At: time.Now()})
+	// Persist before publishing or ACKing: an ACK tells the device it may
+	// drop the frame from its resume buffer, so it must only cover frames the
+	// gateway can still serve after a restart (re-attach / replay).
+	ctx := context.Background()
+	if err := t.g.cfg.Store.AppendEvent(ctx, store.Event{TaskID: t.id, Seq: in.Seq, Kind: in.Type, Data: data, At: time.Now()}); err != nil {
+		t.persistFailed(in.Seq, "event", err)
+		return
+	}
+	state := ""
 	if isTerminal(in.Type) {
-		state := "SUCCEEDED"
+		state = "SUCCEEDED"
 		if in.Type == lmbp.TypeTaskError {
 			state = "FAILED"
 			var eb lmbp.ErrorBody
@@ -130,10 +137,34 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 				state = "CANCELLED"
 			}
 		}
-		t.finish(state, true)
+		if err := t.g.cfg.Store.SetTaskState(ctx, t.id, state); err != nil {
+			t.persistFailed(in.Seq, "terminal state", err)
+			return
+		}
+	}
+	t.mu.Lock()
+	if t.done { // failed locally while we were writing
+		t.mu.Unlock()
+		return
+	}
+	t.events = append(t.events, event{Seq: in.Seq, Type: in.Type, Data: data})
+	t.persisted = in.Seq
+	t.broadcastLocked()
+	t.mu.Unlock()
+	if state != "" {
+		t.finishWith(state, true, false)
 		return
 	}
 	t.maybeAck()
+}
+
+// persistFailed handles a failed write of device output: the frame is not
+// ACKed (the device keeps it), the device is told to stop, and every caller
+// gets INTERNAL instead of a result the gateway could not make durable.
+func (t *gtask) persistFailed(seq int64, what string, err error) {
+	t.g.cfg.Logger.Printf("lmbp: task %s: persisting %s for seq %d failed: %v (not acknowledged)", t.id, what, seq, err)
+	t.cancel("internal_error")
+	t.failLocal(lmbp.ErrInternal, "gateway could not persist task output", false)
 }
 
 // maybeAck acknowledges what every attached subscriber has consumed (or all
@@ -144,7 +175,7 @@ func (t *gtask) maybeAck() {
 	}
 	recv := t.recvSeq()
 	t.mu.Lock()
-	target := recv
+	target := min(recv, t.persisted)
 	if !t.done {
 		for _, d := range t.subs {
 			if d < target {
@@ -218,7 +249,11 @@ func (t *gtask) failLocal(code, msg string, retryable bool) {
 	t.events = append(t.events, event{Seq: seq, Type: lmbp.TypeTaskError, Data: b})
 	t.broadcastLocked()
 	t.mu.Unlock()
-	_ = t.g.cfg.Store.AppendEvent(context.Background(), store.Event{TaskID: t.id, Seq: seq, Kind: lmbp.TypeTaskError, Data: b, At: time.Now()})
+	// A gateway-local terminal event is not a device frame (nothing to ACK);
+	// if it cannot be stored, a later re-attach reports OUTCOME_UNKNOWN.
+	if err := t.g.cfg.Store.AppendEvent(context.Background(), store.Event{TaskID: t.id, Seq: seq, Kind: lmbp.TypeTaskError, Data: b, At: time.Now()}); err != nil {
+		t.g.cfg.Logger.Printf("lmbp: task %s: persisting local %s failed: %v", t.id, code, err)
+	}
 	state := "FAILED"
 	if code == lmbp.ErrCancelled {
 		state = "CANCELLED"
@@ -235,7 +270,10 @@ func (t *gtask) failOffline(code, msg string) {
 	t.failLocal(code, msg, code == lmbp.ErrDeviceOffline)
 }
 
-func (t *gtask) finish(state string, fromDevice bool) {
+func (t *gtask) finish(state string, fromDevice bool) { t.finishWith(state, fromDevice, true) }
+
+// finishWith ends the task; writeState=false when the caller already stored it.
+func (t *gtask) finishWith(state string, fromDevice, writeState bool) {
 	t.mu.Lock()
 	if t.done {
 		t.mu.Unlock()
@@ -249,7 +287,11 @@ func (t *gtask) finish(state string, fromDevice bool) {
 	}
 	t.broadcastLocked()
 	t.mu.Unlock()
-	_ = t.g.cfg.Store.SetTaskState(context.Background(), t.id, state)
+	if writeState {
+		if err := t.g.cfg.Store.SetTaskState(context.Background(), t.id, state); err != nil {
+			t.g.cfg.Logger.Printf("lmbp: task %s: persisting state %s failed: %v", t.id, state, err)
+		}
+	}
 	if ds := t.ds; ds != nil {
 		if fromDevice {
 			t.maybeAck() // release the device's resume buffer

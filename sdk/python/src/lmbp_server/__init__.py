@@ -23,11 +23,12 @@ from urllib.parse import quote
 from . import anthropic
 from . import protocol as _L
 from .asgi import LMBPASGI, LMBPMiddleware
-from .client import InProcessClient, LMBPAPIError
+from .client import InProcessClient, LMBPAPIError, LMBPStream
+from .e2ee import E2EESealed, decode_e2ee_delta, seal_e2ee_request
 from .engine import Gateway, norm_code
 from .store import MemoryStore, SQLiteStore, Store
 
-__all__ = ["LMBPServer", "TenantConfig", "PairingInfo", "PendingPairing", "ApproveResult", "DeviceInfo", "PairingError",
+__all__ = ["LMBPStream", "E2EESealed", "seal_e2ee_request", "decode_e2ee_delta", "LMBPServer", "TenantConfig", "PairingInfo", "PendingPairing", "ApproveResult", "DeviceInfo", "PairingError",
            "Store", "MemoryStore", "SQLiteStore", "InProcessClient", "LMBPAPIError", "LMBPMiddleware", "anthropic", "Gateway"]
 __version__ = "0.1.0"
 
@@ -72,12 +73,14 @@ class DeviceInfo:
     online: bool
     models: list[str]
     model_capabilities: dict[str, list[str]]
+    public_key: bytes = b""  # Ed25519 identity key (check against your pinned jkt)
+    e2ee_key: str = ""       # device-signed X25519 key statement, for seal_e2ee_request
 
 
 class PairingError(Exception):
     def __init__(self, message: str, code: str):
         super().__init__(message)
-        self.code = code  # BAD_REQUEST | NOT_FOUND | FORBIDDEN
+        self.code = code  # BAD_REQUEST | NOT_FOUND | FORBIDDEN | RATE_LIMITED
 
 
 class _Keys:
@@ -136,7 +139,8 @@ class _Pairing:
         for d in self._s.store.list_devices(tenant, end_user):
             s = self._s.engine.online(d["id"])
             out.append(DeviceInfo(d["id"], d["name"], d["status"], d["created"], _L.thumbprint(d["pub"]), s is not None,
-                                  list(s.models) if s else [], dict(s.model_caps) if s else {}))
+                                  list(s.models) if s else [], dict(s.model_caps) if s else {},
+                                  bytes(d["pub"]), d.get("e2ee_key") or ""))
         return out
 
     def revoke_device(self, tenant: str, end_user: str, device_id: str) -> bool:
@@ -172,13 +176,9 @@ class LMBPServer:
             raise PairingError("unknown tenant", "BAD_REQUEST")
         if not end_user or len(end_user) > 128:
             raise PairingError("end_user required (<= 128 chars)", "BAD_REQUEST")
-        import time
-        d = self.store.device_auth_by_user_code(tenant, norm_code(user_code))
-        if d is None or d["status"] != "pending" or time.time() > d["expires"]:
-            raise PairingError("code invalid, expired or already used", "NOT_FOUND")
-        if jkt and jkt != _L.thumbprint(d["pub"]):
-            raise PairingError("device key thumbprint does not match", "FORBIDDEN")
-        self.engine.decide(d, tenant, end_user, deny)
+        d, e = self.engine.pair_decide(tenant, end_user, user_code, deny, jkt)
+        if e:
+            raise PairingError(e[2], {429: "RATE_LIMITED", 404: "NOT_FOUND", 403: "FORBIDDEN", 409: "FORBIDDEN"}.get(e[0], "BAD_REQUEST"))
         return ApproveResult(d["status"], d["device_id"], d["name"], _L.thumbprint(d["pub"]))
 
     def run(self, host: str = "127.0.0.1", port: int = 8080, app: Any = None) -> None:

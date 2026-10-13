@@ -131,6 +131,12 @@ const tenantKey = "tk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func newRig(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration) *rig {
 	t.Helper()
+	return newRigWith(t, flow, slowN, delay, nil)
+}
+
+// newRigWith wraps the gateway's store (e.g. to inject write failures).
+func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wrap func(store.Store) store.Store) *rig {
+	t.Helper()
 	dir := t.TempDir()
 	r := &rig{exec: &fakeExec{slowN: slowN, delay: delay}, dbPath: filepath.Join(dir, "gw.db"), logs: &syncBuf{}}
 	st, err := store.OpenSQLite(r.dbPath, nil)
@@ -138,7 +144,11 @@ func newRig(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration) *rig {
 		t.Fatal(err)
 	}
 	logger := log.New(r.logs, "", 0)
-	r.g, _ = New(Config{Store: st, Logger: logger, Flow: flow, AttachGrace: 5 * time.Second, PingInterval: time.Second})
+	var gst store.Store = st
+	if wrap != nil {
+		gst = wrap(st)
+	}
+	r.g, _ = New(Config{Store: gst, Logger: logger, Flow: flow, AttachGrace: 5 * time.Second, PingInterval: time.Second})
 	_ = r.g.RegisterTenant(context.Background(), "acme", "Acme", tenantKey)
 	mux := http.NewServeMux()
 	mux.Handle("/", r.g.Handler())

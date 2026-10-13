@@ -15,6 +15,8 @@ export interface ApproveResult { status: 'approved' | 'denied'; deviceId: string
 export interface DeviceInfo {
   deviceId: string; name: string; status: string; createdAt: Date; jkt: string; online: boolean;
   models: string[]; modelCapabilities: Record<string, string[]>;
+  /** Ed25519 identity key (check against your pinned jkt) and the device-signed X25519 key statement ('' if none), for sealE2EERequest. */
+  publicKey: Buffer; e2eeKey: string;
 }
 
 // ---- OpenAI-compatible shapes (subset) ----
@@ -32,17 +34,23 @@ export interface ChatMessage {
 }
 export interface ChatTool { type: 'function'; function: { name: string; description?: string; parameters?: unknown } }
 export interface ChatRequest {
-  model: string; messages: ChatMessage[]; tools?: ChatTool[]; tool_choice?: unknown;
+  model: string; messages?: ChatMessage[]; tools?: ChatTool[]; tool_choice?: unknown;
   max_tokens?: number; temperature?: number; stream?: boolean;
+  /** Sealed request (sealE2EERequest().jwe); messages/tools must then be empty. */
+  lmbp_e2ee?: string;
 }
+/** One sealed response frame of an E2EE task (open with E2EESealed.open). */
+export interface E2EEFrameWire { seq: number; type: 'task.delta' | 'task.done'; data: string }
 export interface Usage { prompt_tokens: number; completion_tokens: number; total_tokens?: number }
 export interface ChatCompletion {
   id: string; object: 'chat.completion'; created: number; model: string;
   choices: { index: number; message: ChatMessage; finish_reason: string }[]; usage?: Usage;
+  lmbp_e2ee?: E2EEFrameWire[];
 }
 export interface ChatCompletionChunk {
   id: string; object: 'chat.completion.chunk'; created: number; model: string;
   choices: { index: number; delta: Partial<ChatMessage>; finish_reason: string | null }[]; usage?: Usage;
+  lmbp_e2ee?: E2EEFrameWire;
 }
 export interface Model { id: string; object: 'model'; owned_by: string; capabilities: string[] }
 

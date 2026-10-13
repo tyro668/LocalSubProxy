@@ -21,6 +21,8 @@ import { InProcessClient } from './client.js';
 export { MemoryStore, SqliteStore, InProcessClient };
 export type { Store, Device, DeviceAuth, TaskRecord, TaskEvent, Idempotency, SqlDatabase } from './store.js';
 export * as anthropic from './anthropic.js';
+export * from './e2ee.js';
+export { LMBPStream } from './client.js';
 export type * from './types.js';
 import type { TenantConfig, PairingInfo, DeviceInfo, ApproveResult, PendingPairing } from './types.js';
 
@@ -164,7 +166,7 @@ export class LMBPServer {
     listDevices: (tenant: string, endUser: string): DeviceInfo[] => this.store.listDevices(tenant, endUser).map((d) => {
       const s = this.engine.online(d.id);
       return { deviceId: d.id, name: d.name, status: d.status, createdAt: d.created, jkt: L.thumbprint(d.pub), online: !!s,
-        models: s ? [...s.models] : [], modelCapabilities: s ? { ...s.modelCaps } : {} };
+        models: s ? [...s.models] : [], modelCapabilities: s ? { ...s.modelCaps } : {}, publicKey: Buffer.from(d.pub), e2eeKey: d.e2eeKey || '' };
     }),
     /** Revoke a device: its session ends immediately and refresh is refused. */
     revokeDevice: (tenant: string, endUser: string, deviceId: string): boolean => this.engine.revokeDevice(tenant, endUser, deviceId),
@@ -173,10 +175,12 @@ export class LMBPServer {
   private decide(tenant: string, endUser: string, userCode: string, deny: boolean, jkt?: string): ApproveResult {
     if (!this.engine.tenants.has(tenant)) throw new PairingError('unknown tenant', 'BAD_REQUEST');
     if (!endUser || endUser.length > 128) throw new PairingError('endUser required (<= 128 chars)', 'BAD_REQUEST');
-    const d = this.store.deviceAuthByUserCode(tenant, normCode(userCode));
-    if (!d || d.status !== 'pending' || Date.now() > d.expires) throw new PairingError('code invalid, expired or already used', 'NOT_FOUND');
-    if (jkt && jkt !== L.thumbprint(d.pub)) throw new PairingError('device key thumbprint does not match', 'FORBIDDEN');
-    this.engine.decide(d, tenant, endUser, deny);
+    const r = this.engine.pairDecide(tenant, endUser, userCode, deny, jkt);
+    if (r.error) {
+      const code = ({ 429: 'RATE_LIMITED', 404: 'NOT_FOUND', 403: 'FORBIDDEN', 409: 'FORBIDDEN' } as Record<number, PairingError['code']>)[r.error.status] || 'BAD_REQUEST';
+      throw new PairingError(r.error.message, code);
+    }
+    const d = r.d;
     return { status: d.status as 'approved' | 'denied', deviceId: d.deviceID, deviceName: d.name, jkt: L.thumbprint(d.pub) };
   }
 
@@ -187,7 +191,7 @@ export class LMBPServer {
 }
 
 export class PairingError extends Error {
-  constructor(message: string, readonly code: 'BAD_REQUEST' | 'NOT_FOUND' | 'FORBIDDEN') { super(message); }
+  constructor(message: string, readonly code: 'BAD_REQUEST' | 'NOT_FOUND' | 'FORBIDDEN' | 'RATE_LIMITED') { super(message); }
 }
 
 function normCode(s: string): string {

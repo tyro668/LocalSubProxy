@@ -52,3 +52,100 @@ test('idempotent replay never crosses users (gateway, exact audit example)', asy
     assert.equal(r3.headers.get('x-task-id'), r1.headers.get('x-task-id'));
   } finally { ws.close(); await s.close(); }
 });
+
+// Finding 10: the pairing lockout lives in the shared engine, so the
+// in-process API (approve/deny) cannot brute-force codes past it and both
+// paths share one counter.
+test('in-process pairing is rate limited and shares the HTTP lockout', async () => {
+  const s = await setup();
+  try {
+  const codes = [];
+  for (let i = 0; i < 12; i++) {
+    try { s.lsp.pairing.approve(T, 'u1', `WRONG-${String(i).padStart(4, '0')}`); codes.push('ok'); }
+    catch (e) { codes.push(e.code); }
+  }
+  assert.deepEqual(codes.slice(10), ['RATE_LIMITED', 'RATE_LIMITED'], codes.join(','));
+  assert.throws(() => s.lsp.pairing.deny(T, 'u1', 'WRONG-0000'), (e) => e.code === 'RATE_LIMITED');
+  const r = await fetch(s.base + '/lmbp/v1/tenant/device-approvals', { method: 'POST',
+    headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' }, body: JSON.stringify({ user_code: 'WRONG-0000' }) });
+  assert.equal(r.status, 429);
+  } finally { await s.close(); }
+});
+
+// Finding 7: SSE cursor + resume + idempotent replay from the in-process client.
+test('client stream exposes lastEventId/taskId and resumes after the cursor', async () => {
+  const s = await setup();
+  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+  try {
+    const c = s.lsp.client(T, 'u1');
+    const req = { model: 'm1', messages: [{ role: 'user', content: 'hello' }] };
+    const st = c.chat.completions.stream(req, { idempotencyKey: 'k-1' });
+    const ids = []; const parts = [];
+    for await (const ch of st) { ids.push(st.lastEventId); parts.push(ch.choices.map((x) => x.delta.content || '').join('')); }
+    assert.ok(st.taskId && ids.length >= 3 && ids[0] === '0', `ids ${ids} task ${st.taskId}`);
+    const text = parts.join('');
+    assert.equal(text, 'echo: hello');
+    let rest = '';
+    for await (const ch of c.chat.completions.resume(st.taskId, ids[1])) rest += ch.choices.map((x) => x.delta.content || '').join('');
+    assert.equal(rest, parts.slice(2).join(''));
+    assert.notEqual(rest, text);
+    const again = c.chat.completions.stream(req, { idempotencyKey: 'k-1' });
+    let replay = '';
+    for await (const ch of again) replay += ch.choices.map((x) => x.delta.content || '').join('');
+    assert.equal(replay, text);
+    assert.equal(again.taskId, st.taskId);
+    await assert.rejects(c.chat.completions.create(req, { idempotencyKey: 'k-1' }), (e) => e.code === 'IDEMPOTENCY_KEY_REUSED');
+    for await (const _ of c.chat.completions.resume(st.taskId, '999')) assert.fail('events after the terminal one');
+  } finally { ws.close(); await s.close(); }
+});
+
+// Finding 7: E2EE from business code (seal to the pinned device, open the sealed frames).
+test('client E2EE: sealE2EERequest + open sealed stream frames', async () => {
+  const { sealE2EERequest, decodeE2EEDelta } = await import('../dist/index.js');
+  const s = await setup();
+  const { ws, jkt } = await pairAndConnect(s.lsp, s.base, T, 'u1', { e2ee: true });
+  try {
+    const dev = s.lsp.pairing.listDevices(T, 'u1')[0];
+    assert.ok(dev.e2eeKey && dev.publicKey.length === 32);
+    assert.throws(() => sealE2EERequest(dev, 'not-the-pinned-jkt', { model: 'm1', messages: [] }));
+    const sealed = sealE2EERequest(dev, jkt, { model: 'm1', messages: [{ role: 'user', content: 'secret' }] });
+    assert.ok(!sealed.jwe.includes('secret'));
+    const c = s.lsp.client(T, 'u1');
+    let text = ''; let frames = 0;
+    for await (const ch of c.chat.completions.stream({ model: 'm1', lmbp_e2ee: sealed.jwe })) {
+      if (!ch.lmbp_e2ee) continue;
+      frames++;
+      if (ch.lmbp_e2ee.type === 'task.delta') text += decodeE2EEDelta(sealed.open(ch.lmbp_e2ee)).text ?? '';
+      else sealed.open(ch.lmbp_e2ee);
+      assert.throws(() => sealed.open({ ...ch.lmbp_e2ee, seq: ch.lmbp_e2ee.seq + 1 }), 'reordered frame must not open');
+    }
+    assert.equal(text, 'echo:secret');
+    assert.ok(frames >= 2);
+  } finally { ws.close(); await s.close(); }
+});
+
+// Reliability 1: never ACK a device frame (or the terminal frame) that was
+// not persisted; the caller gets INTERNAL instead of an unpersisted result.
+for (const mode of ['event', 'state']) {
+  test(`no ACK without persisted ${mode}; caller sees INTERNAL`, async () => {
+    const st = new MemoryStore();
+    const logs = [];
+    const append = st.appendEvent.bind(st);
+    const putTask = st.putTask.bind(st);
+    if (mode === 'event') st.appendEvent = (id, ev) => { if (ev.seq === 2 && ev.type !== 'task.error') throw new Error('disk full'); return append(id, ev); };
+    else st.putTask = (rec) => { if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(rec.state)) throw new Error('disk full'); return putTask(rec); };
+    const s = await setup({ store: st, log: (...a) => logs.push(a.join(' ')) });
+    const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    try {
+      const r = await chat(s.base, 'u1', { model: 'm1', messages: [{ role: 'user', content: 'hello' }] });
+      const body = await r.text();
+      assert.notEqual(r.status, 200, body);
+      assert.match(body, /INTERNAL/);
+      await new Promise((ok) => setTimeout(ok, 100));
+      const t = s.lsp.engine.tasks.get(r.headers.get('x-task-id'));
+      assert.ok(t, 'task in memory');
+      assert.ok(t.acked < (mode === 'event' ? 2 : 3), `ACKed ${t.acked} without persistence`);
+      assert.match(logs.join('\n'), /disk full/);
+    } finally { ws.close(); await s.close(); }
+  });
+}

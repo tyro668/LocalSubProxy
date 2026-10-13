@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import * as L from '../dist/engine/lmbp.js';
+import * as E from '../dist/e2ee.js';
 
 const proof = (priv, iss, aud, cred) => L.signJWS(priv, L.TYP.proof, '', { iss, aud, iat: L.now(), jti: L.randomID('p_'), ath: L.ath(cred) });
 
@@ -22,18 +23,29 @@ export async function finishPairing(base, p) {
   return r.json();
 }
 
-export async function connect(base, p, tok, models = ['m1']) {
+export async function connect(base, p, tok, models = ['m1'], opts = {}) {
+  const x = opts.e2ee ? E.x25519KeyPair() : null;
   const ws = new WebSocket(base.replace(/^http/, 'ws') + '/lmbp/v1/connect', L.SUBPROTOCOL, { headers: { Authorization: 'Bearer ' + tok.access_token } });
   await new Promise((ok, bad) => { ws.once('open', ok); ws.once('error', bad); });
   const caps = Object.fromEntries(models.map((m) => [m, ['tools']]));
   ws.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', data: { device_id: tok.device_id, client: 'sdk-test', models, model_capabilities: caps,
-    max_concurrency: 4, capabilities: ['tools'], proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token) } }));
+    max_concurrency: 4, capabilities: x ? ['tools', 'e2ee'] : ['tools'],
+    ...(x ? { e2ee_key: E.signKeyStatement(p.priv, p.pub, tok.device_id, x.pub) } : {}), proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token) } }));
   await new Promise((ok, bad) => ws.once('message', (m) => (JSON.parse(m).type === 'welcome' ? ok() : bad(new Error(String(m))))));
+  const pending = new Map(); // task_id -> { run, chunks } while an E2EE blob arrives
   ws.on('message', (raw) => {
     const e = JSON.parse(raw);
     if (e.type === 'ping') return ws.send(JSON.stringify({ v: 1, type: 'pong', id: e.id }));
+    if (e.type === 'blob.chunk' && pending.has(e.task_id)) {
+      const pt = pending.get(e.task_id);
+      pt.chunks.push(Buffer.from(e.data.data, 'base64url'));
+      if (!e.data.last) return;
+      pending.delete(e.task_id);
+      return runE2EE(pt.run, Buffer.concat(pt.chunks).toString());
+    }
     if (e.type !== 'task.run') return;
     const run = JSON.parse(Buffer.from(e.jws.split('.')[1], 'base64url'));
+    if (run.e2ee) return void pending.set(run.task_id, { run, chunks: [] });
     let seq = 0;
     const send = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
     const last = run.messages.at(-1);
@@ -47,15 +59,26 @@ export async function connect(base, p, tok, models = ['m1']) {
     send('task.delta', { text: last.role === 'tool' ? 'tool said ' + last.content : text });
     send('task.done', { finish_reason: 'stop', usage: { prompt_tokens: 3, completion_tokens: 4 } });
   });
+  // E2EE: open the sealed request, answer "echo:<text>" in sealed frames.
+  function runE2EE(run, jwe) {
+    const req = JSON.parse(E.openJwe(x.priv, jwe).plaintext.toString());
+    const key = Buffer.from(req.response_key, 'base64url');
+    let seq = 0;
+    const send = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
+    const last = req.messages.at(-1);
+    const sealed = (type, v) => E.sealChunk(key, req.rid, type, seq + 1, Buffer.from(JSON.stringify(v)));
+    send('task.delta', { e2ee: sealed('task.delta', { text: 'echo:' + last.content }) });
+    send('task.done', { finish_reason: 'stop', usage: { prompt_tokens: 1, completion_tokens: 1 }, e2ee: sealed('task.done', { finish_reason: 'stop' }) });
+  }
   return ws;
 }
 
 /** Pair (approving through the SDK API) and connect; returns {ws, deviceId}. */
-export async function pairAndConnect(lsp, base, tenant, user) {
+export async function pairAndConnect(lsp, base, tenant, user, opts = {}) {
   const p = await startPairing(base, tenant);
   const ok = lsp.pairing.approve(tenant, user, p.user_code);
   const tok = await finishPairing(base, p);
-  const ws = await connect(base, p, tok);
+  const ws = await connect(base, p, tok, ['m1'], opts);
   for (let i = 0; i < 50 && !lsp.pairing.listDevices(tenant, user).find((d) => d.online); i++) await new Promise((r) => setTimeout(r, 20));
-  return { ws, deviceId: ok.deviceId, pairing: p };
+  return { ws, deviceId: ok.deviceId, jkt: ok.jkt, pairing: p };
 }

@@ -202,24 +202,26 @@ export class Gateway {
     if (!a) return;
     const body = await readJSON(req, 4096);
     if (!body || typeof body !== 'object') return err(400, 'BAD_REQUEST', 'invalid JSON');
-    if (!this.allowAttempt(a.t.id)) return err(429, 'RATE_LIMITED', 'too many failed codes; wait a minute');
-    const code = normCode(body.user_code);
-    const d = code ? this.store.deviceAuthByUserCode(a.t.id, code) : null;
-    if (d && d.status === 'denied' && Date.now() <= d.expires) {
-      // §19: the pairing was declined (by the SaaS user or withdrawn by the device user).
-      this.recordFailure(a.t.id);
-      return err(403, 'CONSENT_DENIED', 'pairing consent was denied for this code');
-    }
-    if (!d || d.status !== 'pending' || Date.now() > d.expires) {
-      this.recordFailure(a.t.id);
-      return err(404, 'BAD_REQUEST', 'code invalid, expired or already used');
-    }
-    if (body.jkt && body.jkt !== L.thumbprint(d.pub)) {
-      this.recordFailure(a.t.id);
-      return err(409, 'FORBIDDEN', 'device key thumbprint does not match the pairing request');
-    }
-    this.decide(d, a.t.id, a.user, body.deny === true);
+    const r = this.pairDecide(a.t.id, a.user, body.user_code, body.deny === true, body.jkt);
+    if (r.error) return err(r.error.status, r.error.code, r.error.message);
+    const d = r.d;
     return json(res, 200, { status: d.status, device_id: d.deviceID, device_name: d.name, jkt: L.thumbprint(d.pub) });
+  }
+
+  // pairDecide is the one business-layer entry for approving/denying a user
+  // code (HTTP handler and in-process SDK API alike): it enforces the
+  // per-tenant failed-code lockout and counts every failure, so no path can
+  // brute-force codes. Returns { d } or { error: { status, code, message } }.
+  pairDecide(tenant, owner, userCode, deny, jkt) {
+    const fail = (status, code, message) => { this.recordFailure(tenant); return { error: { status, code, message } }; };
+    if (!this.allowAttempt(tenant)) return { error: { status: 429, code: 'RATE_LIMITED', message: 'too many failed codes; wait a minute' } };
+    const code = normCode(userCode);
+    const d = code ? this.store.deviceAuthByUserCode(tenant, code) : null;
+    // §19: a declined pairing cannot be overridden by a later approval.
+    if (d && d.status === 'denied' && Date.now() <= d.expires) return fail(403, 'CONSENT_DENIED', 'pairing consent was denied for this code');
+    if (!d || d.status !== 'pending' || Date.now() > d.expires) return fail(404, 'BAD_REQUEST', 'code invalid, expired or already used');
+    if (jkt && jkt !== L.thumbprint(d.pub)) return fail(409, 'FORBIDDEN', 'device key thumbprint does not match the pairing request');
+    return { d: this.decide(d, tenant, owner, deny) };
   }
 
   // decide approves (binding the device to owner) or denies a pending pairing.
@@ -782,7 +784,7 @@ class DState {
 class Task {
   constructor(g, ds, id, tenant, owner, reqModel, e2ee, idempotent) {
     Object.assign(this, { g, ds, id, tenant, owner, reqModel, e2ee, idempotent, created: L.now(), sentRun: false, abort: new AbortController(),
-      events: [], waiters: [], done: false, subs: new Map(), nextSub: 0, acked: 0, ackAt: Date.now(), grace: null, slot: false });
+      events: [], waiters: [], done: false, subs: new Map(), nextSub: 0, acked: 0, persisted: 0, ackAt: Date.now(), grace: null, slot: false });
     g.tasks.set(id, this);
     if (ds) {
       ds.tasks.set(id, this);
@@ -801,22 +803,46 @@ class Task {
   }
   recvSeq() { return this.ds?.inb ? this.ds.inb.recv(this.id) : 0; }
   broadcast() { for (const w of this.waiters.splice(0)) w(); }
-  record(ev) { this.events.push(ev); if (!this.replayed) this.g.store.appendEvent(this.id, ev); this.broadcast(); }
+  // record publishes a gateway-local event; a failed write is logged (a
+  // later re-attach then reports OUTCOME_UNKNOWN), there is nothing to ACK.
+  record(ev) {
+    this.events.push(ev);
+    if (!this.replayed) {
+      try { this.g.store.appendEvent(this.id, ev); } catch (e) { this.g.cfg.log(`lmbp: task ${this.id}: persisting local event failed: ${e?.message ?? e}`); }
+    }
+    this.broadcast();
+  }
+  // Device frames are persisted (and, for the terminal frame, the task state)
+  // before they are published or ACKed: an ACK lets the device drop the frame
+  // from its resume buffer, so it may only cover frames the gateway can serve
+  // after a restart.
   onDeviceFrame(inp) {
     if (this.done) return this.maybeAck();
     let data = inp.data && typeof inp.data === 'object' ? inp.data : {};
     if (inp.type === 'task.delta' && !this.e2ee && data.e2ee) { data = { ...data }; delete data.e2ee; }
-    this.record({ seq: inp.seq, type: inp.type, data });
+    const ev = { seq: inp.seq, type: inp.type, data };
+    let state = '';
+    try {
+      this.g.store.appendEvent(this.id, ev);
+    } catch (e) { return this.persistFailed(inp.seq, 'event', e); }
     if (isTerminal(inp.type)) {
-      let state = 'SUCCEEDED';
-      if (inp.type === 'task.error') state = data.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED';
-      return this.finish(state, true);
+      state = inp.type === 'task.error' ? (data.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED') : 'SUCCEEDED';
+      try { this.g.setTaskState(this.id, state); } catch (e) { return this.persistFailed(inp.seq, 'terminal state', e); }
     }
+    this.events.push(ev);
+    this.persisted = inp.seq;
+    this.broadcast();
+    if (state) return this.finish(state, true, false);
     this.maybeAck();
+  }
+  persistFailed(seq, what, e) {
+    this.g.cfg.log(`lmbp: task ${this.id}: persisting ${what} for seq ${seq} failed: ${e?.message ?? e} (not acknowledged)`);
+    this.cancel('internal_error');
+    this.failLocal('INTERNAL', 'gateway could not persist task output');
   }
   maybeAck() {
     if (!this.ds) return;
-    let target = this.recvSeq();
+    let target = Math.min(this.recvSeq(), this.persisted);
     if (!this.done) for (const d of this.subs.values()) target = Math.min(target, d);
     if (target <= this.acked) return;
     this.acked = target; this.ackAt = Date.now();
@@ -837,14 +863,16 @@ class Task {
     if (code === 'DEVICE_OFFLINE' && this.sentRun) { code = 'OUTCOME_UNKNOWN'; msg += '; outcome unknown'; }
     this.failLocal(code, msg, code === 'DEVICE_OFFLINE');
   }
-  finish(state, fromDevice) {
+  finish(state, fromDevice, writeState = true) {
     if (this.done) return;
     this.done = true;
     const slot = this.slot;
     this.slot = false;
     clearTimeout(this.grace); clearTimeout(this.timeout); clearInterval(this.watch);
     this.broadcast();
-    this.g.setTaskState(this.id, state);
+    if (writeState) {
+      try { this.g.setTaskState(this.id, state); } catch (e) { this.g.cfg.log(`lmbp: task ${this.id}: persisting state ${state} failed: ${e?.message ?? e}`); }
+    }
     const ds = this.ds;
     if (ds) {
       if (fromDevice) this.maybeAck();
