@@ -126,12 +126,25 @@ export class Outbox {
     return t;
   }
   fits(id, n) { return canSend(this.flow, this.task(id).used, this.connUsed, n); }
+  // wake admits queued sends in strict FIFO order. Admission and credit
+  // reservation are one synchronous step: the seq is assigned, the frame
+  // built, recorded unacked and charged to both windows before the waiter is
+  // released, so concurrent senders cannot jointly overshoot (audit finding 2).
   wake() {
     while (this.waiters.length) {
       const w = this.waiters[0];
-      if (!this.closed && !this.fits(w.task, w.n)) return;
+      if (this.closed) { this.waiters.shift(); w.reject(new Error('outbox closed')); continue; }
+      const t = this.task(w.task);
+      const seq = t.nextSeq + 1;
+      const raw = w.mk(seq);
+      const n = Buffer.byteLength(raw);
+      if (!this.fits(w.task, n)) return;
       this.waiters.shift();
-      w.resolve();
+      t.nextSeq = seq;
+      t.unacked.push({ seq, raw, n });
+      t.used += n;
+      this.connUsed += n;
+      w.resolve(seq);
     }
   }
   flush(id) {
@@ -148,27 +161,15 @@ export class Outbox {
   async send(taskID, build, signal) {
     const mk = (seq) => JSON.stringify({ v: VERSION, ...build(seq), task_id: taskID, seq });
     if (this.closed) throw new Error('outbox closed');
-    let t = this.task(taskID);
-    let raw = mk(t.nextSeq + 1);
-    if (this.waiters.length || !this.fits(taskID, Buffer.byteLength(raw))) {
-      await new Promise((resolve, reject) => {
-        const w = { task: taskID, n: Buffer.byteLength(raw), resolve };
-        this.waiters.push(w);
-        signal?.addEventListener('abort', () => {
-          const i = this.waiters.indexOf(w);
-          if (i >= 0) { this.waiters.splice(i, 1); this.wake(); reject(new Error('aborted')); }
-        }, { once: true });
-      });
-      if (this.closed) throw new Error('outbox closed');
-      t = this.task(taskID);
-    }
-    const seq = t.nextSeq + 1;
-    raw = mk(seq);
-    const n = Buffer.byteLength(raw);
-    t.nextSeq = seq;
-    t.unacked.push({ seq, raw, n });
-    t.used += n;
-    this.connUsed += n;
+    const seq = await new Promise((resolve, reject) => {
+      const w = { task: taskID, mk, resolve, reject };
+      this.waiters.push(w);
+      signal?.addEventListener('abort', () => {
+        const i = this.waiters.indexOf(w);
+        if (i >= 0) { this.waiters.splice(i, 1); this.wake(); reject(new Error('aborted')); }
+      }, { once: true });
+      this.wake(); // commits w synchronously when it is first and fits
+    });
     this.flush(taskID);
     return seq;
   }

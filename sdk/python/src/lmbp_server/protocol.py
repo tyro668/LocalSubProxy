@@ -242,13 +242,31 @@ class Outbox:
         return can_send(self.flow, self._task(tid)["used"], self.conn_used, n)
 
     def _wake(self):
+        """Admit queued sends in strict FIFO order. Admission and credit
+        reservation are one synchronous step: the seq is assigned, the frame
+        built, recorded unacked and charged to both windows before the waiter
+        is released, so concurrent senders cannot jointly overshoot a window
+        (audit finding 2)."""
         while self.waiters:
             w = self.waiters[0]
-            if not self.closed and not self._fits(w["task"], w["n"]):
+            if self.closed:
+                self.waiters.pop(0)
+                if not w["fut"].done():
+                    w["fut"].set_exception(OutboxClosed())
+                continue
+            t = self._task(w["task"])
+            seq = t["next"] + 1
+            raw = w["mk"](seq)
+            n = len(raw.encode())
+            if not self._fits(w["task"], n):
                 return
             self.waiters.pop(0)
+            t["next"] = seq
+            t["unacked"].append((seq, raw, n))
+            t["used"] += n
+            self.conn_used += n
             if not w["fut"].done():
-                w["fut"].set_result(None)
+                w["fut"].set_result(seq)
 
     def _flush(self, tid):
         while True:
@@ -270,28 +288,16 @@ class Outbox:
             return dumps(e)
         if self.closed:
             raise OutboxClosed()
-        t = self._task(tid)
-        raw = mk(t["next"] + 1)
-        if self.waiters or not self._fits(tid, len(raw.encode())):
-            w = {"task": tid, "n": len(raw.encode()), "fut": asyncio.get_running_loop().create_future()}
-            self.waiters.append(w)
-            try:
-                await w["fut"]
-            except asyncio.CancelledError:
-                if w in self.waiters:
-                    self.waiters.remove(w)
-                    self._wake()
-                raise
-            if self.closed:
-                raise OutboxClosed()
-            t = self._task(tid)
-        seq = t["next"] + 1
-        raw = mk(seq)
-        n = len(raw.encode())
-        t["next"] = seq
-        t["unacked"].append((seq, raw, n))
-        t["used"] += n
-        self.conn_used += n
+        w = {"task": tid, "mk": mk, "fut": asyncio.get_running_loop().create_future()}
+        self.waiters.append(w)
+        self._wake()  # commits w synchronously when it is first and fits
+        try:
+            seq = await w["fut"]
+        except asyncio.CancelledError:
+            if w in self.waiters:  # not yet admitted: withdraw
+                self.waiters.remove(w)
+                self._wake()
+            raise  # if already admitted, the committed frame still goes out
         self._flush(tid)
         return seq
 

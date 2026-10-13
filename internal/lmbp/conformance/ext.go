@@ -33,6 +33,14 @@ type extDev struct {
 	recv   map[string]int64 // highest contiguous gateway seq per task
 	gaps   []string
 	frames chan lmbp.Envelope
+	// batchAcks: ack every 30ms instead of per frame, and track the bytes
+	// received since the last ack (a lower bound of the gateway's in-flight
+	// bytes) to check the gateway honours our windows (Z2).
+	batchAcks    bool
+	inflight     map[string]int
+	peakTask     int
+	connInflight int
+	peakConn     int
 }
 
 func (d *extDev) write(e lmbp.Envelope) error {
@@ -53,12 +61,24 @@ func (d *extDev) send(typ, taskID string, seq int64, data any) error {
 func (d *extDev) pump() {
 	defer close(d.frames)
 	for {
-		f, err := d.r.readFrame(d.conn)
+		f, n, err := d.r.readFrameRaw(d.conn)
 		if err != nil {
 			return
 		}
 		if f.Seq > 0 && f.TaskID != "" {
 			d.mu.Lock()
+			if d.batchAcks {
+				d.inflight[f.TaskID] += n
+				d.connInflight += n
+				d.peakTask = max(d.peakTask, d.inflight[f.TaskID])
+				d.peakConn = max(d.peakConn, d.connInflight)
+				if f.Seq == d.recv[f.TaskID]+1 {
+					d.recv[f.TaskID] = f.Seq
+				}
+				d.mu.Unlock()
+				d.frames <- f
+				continue
+			}
 			if f.Seq == d.recv[f.TaskID]+1 {
 				d.recv[f.TaskID] = f.Seq
 			} else if f.Seq > d.recv[f.TaskID]+1 {
@@ -136,6 +156,29 @@ func (r *runner) dialExt(at string, hello lmbp.Hello) (*extDev, lmbp.Welcome, er
 	_ = json.Unmarshal(f.Data, &wel)
 	go dev.pump()
 	return dev, wel, nil
+}
+
+// ackLoop acks, every 30ms, everything received so far (batchAcks mode).
+func (d *extDev) ackLoop(stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-time.After(30 * time.Millisecond):
+		}
+		d.mu.Lock()
+		acks := map[string]int64{}
+		for id := range d.inflight {
+			acks[id] = d.recv[id]
+		}
+		d.inflight = map[string]int{}
+		d.connInflight = 0
+		d.mu.Unlock()
+		for id, seq := range acks {
+			b, _ := json.Marshal(lmbp.TaskAck{Seq: seq})
+			_ = d.write(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: id, Data: b})
+		}
+	}
 }
 
 // chatRaw posts a chat request and returns status, headers and the body.
@@ -478,5 +521,13 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 		rs := <-gc
 		r.check("X-F3", "a data frame that skips a seq fails the task (no silent loss)", want(!bytes.Contains(rs.body, []byte("skipped one")) && bytes.Contains(rs.body, []byte(`"error"`)), "body %s", rs.body))
 	}
-	return dev2.conn, dev2.frames
+	dev2.conn.Close()
+	for range dev2.frames {
+	}
+	hello.Resume = nil
+	dev3 := r.auditFlow(ctx, key, at, hello, full(mTools))
+	if dev3 == nil {
+		return nil, nil
+	}
+	return dev3.conn, dev3.frames
 }

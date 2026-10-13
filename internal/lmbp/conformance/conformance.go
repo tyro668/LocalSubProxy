@@ -514,11 +514,18 @@ func (r *runner) writeFrame(c *websocket.Conn, typ, id, taskID string, data any,
 
 // readFrame reads one text frame and validates it against the envelope schema.
 func (r *runner) readFrame(c *websocket.Conn) (lmbp.Envelope, error) {
+	e, _, err := r.readFrameRaw(c)
+	return e, err
+}
+
+// readFrameRaw is readFrame that also reports the frame's encoded size,
+// which is what flow-control windows count.
+func (r *runner) readFrameRaw(c *websocket.Conn) (lmbp.Envelope, int, error) {
 	var e lmbp.Envelope
 	_ = c.SetReadDeadline(time.Now().Add(r.cfg.Timeout + 30*time.Second))
 	mt, b, err := c.ReadMessage()
 	if err != nil {
-		return e, err
+		return e, 0, err
 	}
 	if mt != websocket.TextMessage {
 		r.check("F0", "gateway sends only text frames", errors.New("binary frame"))
@@ -526,7 +533,7 @@ func (r *runner) readFrame(c *websocket.Conn) (lmbp.Envelope, error) {
 	if err := r.validate(r.schema, b); err != nil {
 		r.check("F1", "gateway frame matches envelope.json", fmt.Errorf("%s: %v", b, err))
 	}
-	return e, json.Unmarshal(b, &e)
+	return e, len(b), json.Unmarshal(b, &e)
 }
 
 func status(r *http.Response) string {

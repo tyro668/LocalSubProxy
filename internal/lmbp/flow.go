@@ -35,8 +35,10 @@ type outTask struct {
 
 type waiter struct {
 	task string
-	n    int
-	ch   chan struct{}
+	mk   func(seq int64) []byte
+	ch   chan struct{} // closed once committed (seq set) or failed (err set)
+	seq  int64
+	err  error
 }
 
 // Outbox is the sending half. It is safe for concurrent use; Send blocks
@@ -133,15 +135,38 @@ func CanSend(f *Flow, taskUsed, connUsed, n int) bool {
 	return taskOK && connOK
 }
 
+// wakeLocked admits queued sends in strict FIFO order. Admission and credit
+// reservation are one atomic step under o.mu: the seq is assigned, the frame
+// built, recorded unacked and charged to both windows before the waiter is
+// released, so concurrent senders can never jointly overshoot a window
+// (audit finding 2).
 func (o *Outbox) wakeLocked() {
 	for len(o.waiters) > 0 {
 		w := o.waiters[0]
-		if !o.closed && !o.fitsLocked(w.task, w.n) {
+		if o.closed {
+			o.waiters = o.waiters[1:]
+			w.err = ErrOutboxClosed
+			close(w.ch)
+			continue
+		}
+		t := o.task(w.task)
+		seq := t.nextSeq + 1
+		raw := w.mk(seq)
+		if !o.fitsLocked(w.task, len(raw)) {
 			return // strict FIFO: later waiters do not overtake
 		}
 		o.waiters = o.waiters[1:]
+		o.commitLocked(t, seq, raw)
+		w.seq = seq
 		close(w.ch)
 	}
+}
+
+func (o *Outbox) commitLocked(t *outTask, seq int64, raw []byte) {
+	t.nextSeq = seq
+	t.unacked = append(t.unacked, outFrame{seq, raw})
+	t.used += len(raw)
+	o.connUsed += len(raw)
 }
 
 // Send assigns the next seq to env (a data frame of env.TaskID), waits for
@@ -160,50 +185,39 @@ func (o *Outbox) SendFunc(ctx context.Context, taskID string, build func(seq int
 		raw, _ := json.Marshal(env)
 		return raw
 	}
-	env := Envelope{TaskID: taskID}
 	o.mu.Lock()
 	if o.closed {
 		o.mu.Unlock()
 		return 0, ErrOutboxClosed
 	}
-	t := o.task(env.TaskID)
-	// Size is computed with a provisional seq of the same magnitude.
-	env.Seq = t.nextSeq + 1
-	raw := mk(env.Seq)
-	if len(o.waiters) > 0 || !o.fitsLocked(env.TaskID, len(raw)) {
-		w := &waiter{task: env.TaskID, n: len(raw), ch: make(chan struct{})}
-		o.waiters = append(o.waiters, w)
-		o.mu.Unlock()
-		select {
-		case <-w.ch:
-		case <-ctx.Done():
-			o.mu.Lock()
-			for i, x := range o.waiters {
-				if x == w {
-					o.waiters = append(o.waiters[:i], o.waiters[i+1:]...)
-					break
-				}
+	w := &waiter{task: taskID, mk: mk, ch: make(chan struct{})}
+	o.waiters = append(o.waiters, w)
+	o.wakeLocked() // commits w immediately when it is first and fits
+	o.mu.Unlock()
+	select {
+	case <-w.ch:
+	case <-ctx.Done():
+		o.mu.Lock()
+		queued := false
+		for i, x := range o.waiters {
+			if x == w {
+				o.waiters = append(o.waiters[:i], o.waiters[i+1:]...)
+				queued = true
+				break
 			}
-			o.wakeLocked()
-			o.mu.Unlock()
+		}
+		o.wakeLocked()
+		o.mu.Unlock()
+		if queued {
 			return 0, ctx.Err()
 		}
-		o.mu.Lock()
-		if o.closed {
-			o.mu.Unlock()
-			return 0, ErrOutboxClosed
-		}
-		t = o.task(env.TaskID)
-		env.Seq = t.nextSeq + 1
-		raw = mk(env.Seq)
+		<-w.ch // admitted concurrently with cancellation: the frame is committed
 	}
-	t.nextSeq = env.Seq
-	t.unacked = append(t.unacked, outFrame{env.Seq, raw})
-	t.used += len(raw)
-	o.connUsed += len(raw)
-	o.mu.Unlock()
-	_ = o.flush(env.TaskID)
-	return env.Seq, nil
+	if w.err != nil {
+		return 0, w.err
+	}
+	_ = o.flush(taskID)
+	return w.seq, nil
 }
 
 // Ack releases frames with seq <= seq.
