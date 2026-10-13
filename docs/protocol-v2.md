@@ -26,7 +26,11 @@
 11. 版本与能力协商
 12. 安全要求
 13. 一致性等级与测试
-14. 尚未定义的内容
+14. 断线续传（能力 `resume`）
+15. 流量控制（能力 `flow`）
+16. tools 与多模态（能力 `tools`、`multimodal`）
+17. 端到端加密（能力 `e2ee`）
+18. 尚未定义的内容
 
 ---
 
@@ -140,6 +144,7 @@
 | 客户端断言（刷新） | `JWT` | 设备 | 设备公钥指纹（OPTIONAL） |
 | 证明 JWT | `lsp2-proof+jwt` | 设备 | 无 |
 | 任务签名 | `lsp2-task+jws` | 网关 | 网关公钥指纹（REQUIRED） |
+| E2EE 密钥声明（§17.1） | `lsp2-e2ee-key+jwt` | 设备 | 设备公钥指纹 |
 
 ### 5.3 访问令牌（RFC 9068 配置）
 | 声明 | 要求 |
@@ -180,7 +185,10 @@
 | `nonce` | ≥ 16 字符。在 `exp + 60` 秒之前，设备 MUST 拒绝重复的 `nonce` |
 | `device_id` | MUST 等于本设备的 ID |
 | `model` | 本设备在 `hello`/`models.update` 中声明过的模型 ID（不带 `device_id/` 前缀） |
-| `messages` | 1–200 条，`role ∈ {system, user, assistant}`，`content` 为字符串 |
+| `messages` | 1–200 条（使用 `e2ee` 时省略），`role ∈ {system, user, assistant, tool, developer}`；`content` 为字符串、内容片段数组（§16.2）或 `null`；可带 `tool_calls`、`tool_call_id` |
+| `tools`、`tool_choice` | OPTIONAL，见 §16.1 |
+| `blobs` | OPTIONAL，`[{id, size, sha256, media_type}]`，见 §16.3 |
+| `e2ee` | OPTIONAL，`{blob}`，见 §17 |
 | `max_tokens`、`temperature` | OPTIONAL |
 
 设备 MUST 用配对时得到的网关公钥（或 JWKS 中 `kid` 对应的公钥）验证签名。验证失败时，MUST 回复 `task.error`（`BAD_SIGNATURE`），MUST NOT 调用模型。
@@ -220,8 +228,9 @@
 
 | 接口 | 作用 |
 |---|---|
-| `POST /v2/tenant/device-approvals` `{user_code, deny?}` | 确认或拒绝配对码；设备归属于 `X-End-User` |
-| `GET /v2/tenant/devices` | 列出该终端用户的设备，字段含 `created_at`（RFC 3339） |
+| `POST /v2/tenant/device-approvals` `{user_code, jkt?, deny?}` | 确认或拒绝配对码；设备归属于 `X-End-User`。带 `jkt` 时与设备公钥指纹不符 MUST 返回 409（§17.2） |
+| `GET /v2/tenant/devices` | 列出该终端用户的设备：`created_at`（RFC 3339）、`public_key`、`jkt`、`e2ee_key`、在线时还有 `model_capabilities`、`capabilities`、`max_concurrency` |
+| `GET /v2/tenant/tasks/{task_id}/events` | 按 `Last-Event-ID` 重新接入任务的 SSE 流（§14.4） |
 | `POST /v2/tenant/devices/{device_id}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
 
 - 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://localsubproxy.dev/problems/<code 的小写连字符形式>`。
@@ -231,7 +240,7 @@
 ### 6.5 OpenAI 兼容接口
 认证方式同 §6.4。错误使用 OpenAI 错误对象：`{"error":{"message","type":"lsp2_error","code"}}`。
 - `GET /v1/models`：只列出该终端用户**在线**设备上的模型，`id` 格式为 `<device_id>/<model>`。
-- `POST /v1/chat/completions`：请求体 ≤ 1 MiB；不认识的 OpenAI 字段 MUST 忽略。
+- `POST /v1/chat/completions`：不含 data: URI 时请求体 SHOULD ≤ 1 MiB，含图片/音频时 ≤ 48 MiB（§16.3）；不认识的 OpenAI 字段 MUST 忽略。支持 `tools`/`tool_choice`（§16）、内容片段数组（§16.2）、`lsp2_e2ee`（§17），以及请求头 `Idempotency-Key`、`Last-Event-ID`（§14.4）。
   - `stream: false`：返回一个 `chat.completion` 对象。
   - `stream: true`：返回 `text/event-stream`。第一个事件 SHOULD 是 `delta: {role: "assistant", content: ""}`；每个 `task.delta` 对应一个 `chat.completion.chunk` 事件；结束时发送带 `finish_reason`（以及 `usage`，如有）的块，然后发送 `data: [DONE]`。中途出错时 MUST 发送 `data: {"error":{...}}` 后关闭连接，MUST NOT 再发送 `[DONE]`。网关 SHOULD 每 15 秒发送一次注释行 `: keep-alive`。
   - 响应头 `X-Task-Id` 给出 `task_id`。
@@ -265,7 +274,7 @@
 | `type` | 字符串 | 消息类型，格式 `^[a-z][a-z0-9._]{0,63}$` |
 | `id` | 字符串 | 请求/响应关联 ID；`hello`、`session.token` 必填，响应 MUST 原样带回 |
 | `task_id` | 字符串 | 任务相关消息必填 |
-| `seq` | 整数 ≥ 1 | 设备回报任务结果时必填 |
+| `seq` | 整数 ≥ 1 | 数据帧（`task.run`、`blob.chunk`、`task.delta`、`task.done`、`task.error`）必填，每个任务、每个方向从 1 开始（§14、§15） |
 | `data` | 对象 | 消息体，结构由 `type` 决定 |
 | `jws` | 字符串 | 只用于 `task.run`；此时 MUST NOT 出现 `data` |
 
@@ -282,6 +291,8 @@
 | `session.token` | 设备→网关；网关以同名消息回复 | 请求 `session.token.request.json`，回复 `session.token.response.json` | 连接内续期令牌 |
 | `models.update` | 设备→网关 | `models.update.json` | 重新声明模型列表和并发数 |
 | `ping` / `pong` | 双向 | 无 | 应用层心跳；`pong` 带回 `ping` 的 `id` |
+| `blob.chunk` | 网关→设备 | `blob.chunk.json` | 数据帧：二进制附件分块（§16.3） |
+| `task.ack` | 双向 | `task.ack.json` | 控制帧：确认对方 `seq ≤ data.seq` 的数据帧（§14、§15） |
 | `error` | 双向 | `error.json` | 连接级错误 |
 
 ### 7.4 握手
@@ -295,7 +306,7 @@
 - 设备收到 `task.run` 后，依次检查签名（§5.6）、`device_id`、`exp`、`nonce`、模型是否在本机允许列表中、并发数是否已满，任一不满足即回复 `task.error`：签名错误为 `BAD_SIGNATURE`；不属于本设备、已过期或重放为 `FORBIDDEN` 或 `BAD_REQUEST`；并发已满为 `DEVICE_BUSY`。拒绝时 MUST NOT 调用模型。
 - 同一 `task_id` 的设备回报帧中，`seq` MUST 从 1 开始、严格加 1；终止消息（`task.done` 或 `task.error`）的 `seq` 是最后一个。终止消息之后 MUST NOT 再发送该任务的帧。
 - 网关发现 `seq` 不连续时，MUST 让该任务失败（`INTERNAL`，HTTP 502），并向设备发送 `task.cancel`（`reason: "protocol_error"`）。
-- WebSocket 保证顺序，因此本协议没有重传机制。连接断开时，网关 MUST 让所有进行中的任务失败（`DEVICE_OFFLINE`，`retryable: true`）。
+- 未协商 `resume` 时，连接断开即让所有进行中的任务失败：`task.run` 尚未发出的任务为 `DEVICE_OFFLINE`（`retryable: true`），已发出的为 `OUTCOME_UNKNOWN`（不可自动重试，模型可能已执行）。协商了 `resume` 时按 §14 处理。
 
 ### 7.6 取消
 - 网关在以下情况发送 `task.cancel`：调用方断开连接（`client_disconnected`）、任务超时（`timeout`）、协议错误（`protocol_error`）。
@@ -361,6 +372,13 @@ RUNNING ──task.done──▶ SUCCEEDED
 | `CANCELLED` | 任务已取消 | —（流已关闭） | 否 |
 | `RATE_LIMITED` | 请求过于频繁 | 429 | 是 |
 | `INTERNAL` | 网关内部错误或协议违规 | 500 / 502 | 视情况 |
+| `OUTCOME_UNKNOWN` | 任务已下发但结果未知（断线未续传） | 502 | 否 |
+| `FLOW_CONTROL` | 超出对方通告的窗口（§15） | —（断开连接） | 否 |
+| `SLOW_CONSUMER` | SSE 调用方长时间不读取（§15.4） | —（流已关闭） | 否 |
+| `CAPABILITY_UNSUPPORTED` | 模型或设备不支持请求的能力 | 400 | 否 |
+| `PAYLOAD_TOO_LARGE` | 附件超出限制 | 413 | 否 |
+| `IDEMPOTENCY_KEY_REUSED` | 同一 `Idempotency-Key` 用于不同请求体 | 422 | 否 |
+| `E2EE_DECRYPT_FAILED` | 设备无法解密或校验密封请求 | 400 / 502 | 否 |
 
 OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_grant`、`unsupported_grant_type`、`authorization_pending`、`slow_down`、`access_denied`、`expired_token`、`server_error`。
 
@@ -387,7 +405,14 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | `messages` | 1–200 条 | MUST |
 | chat 请求体 | ≤ 1 MiB | SHOULD |
 
-**背压**：网关 MUST NOT 为单个任务无限缓冲数据。下游（SSE 客户端）跟不上时，网关 SHOULD 取消该任务，或断开设备会话。参考实现在每个任务的缓冲队列写满时断开会话。
+| 续传窗口 | 30 秒（`welcome.resume_window_seconds`） | SHOULD |
+| 流控窗口默认值 | 每任务 1 MiB、每连接 4 MiB；MUST ≥ 64 KiB | SHOULD / MUST |
+| 单个附件 / 单任务附件 | ≤ 20 MiB / ≤ 32 MiB | MUST |
+| 内联 data: URI 阈值 | 16 KiB，超过即转为 blob | SHOULD |
+| E2EE 请求有效期 | `iat` 起 300 秒 | MUST |
+| 并发排队 | 设备槽位满时 FIFO 等待 ≤ 15 秒，然后 429 | SHOULD |
+
+**背压**：网关 MUST NOT 为单个任务无限缓冲数据，背压由 §15 的窗口机制实现。
 
 ---
 
@@ -401,6 +426,11 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 |---|---|
 | `session.token` | 连接内续期令牌（§7.7） |
 | `models.update` | 连接内更新模型列表 |
+| `resume` | 断线续传（§14） |
+| `flow` | 字节窗口流量控制与 `task.ack`（§15） |
+| `tools` | function calling（§16.1） |
+| `multimodal` | 内容片段与 `blob.chunk`（§16.2–§16.3） |
+| `e2ee` | 端到端加密（§17） |
 
 - 厂商私有的能力名和消息类型 SHOULD 以 `x-` 开头（消息类型用 `x.`），以免与将来的标准名冲突。
 
@@ -437,18 +467,107 @@ spec/validate.sh
 LSP2_TENANT_KEY=<租户 key> go run ./cmd/lsp2-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas
 ```
-`lsp2-conformance` 依次扮演设备和租户后端，共 31 项检查，覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
+`lsp2-conformance` 依次扮演设备和租户后端，共 53 项检查（含 X1、X-* 扩展检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 
-## 14. 尚未定义的内容
+## 14. 断线续传（能力 `resume`）
 
-以下内容不在 2.0 范围内，今后将以能力或新子协议的形式加入：
+### 14.1 数据帧与确认
+- 数据帧：`task.run`、`blob.chunk`（网关→设备）、`task.delta`、`task.done`、`task.error`（设备→网关）。其余为控制帧，不带 `seq`、不重传。
+- 发送方对每个任务的数据帧按 1、2、3… 编号，保留尚未被确认的帧。接收方用 `task.ack {seq}` 确认“该任务 `seq` 及以前的所有帧”（累计确认）。
+- 接收方 MUST 丢弃 `seq ≤ 已收最大连续 seq` 的帧（重复）；遇到跳号 MUST 让任务失败（§7.5），MUST NOT 静默接受。
 
-- 断线续传（resume）：目前断线即任务失败；
-- 基于额度的流量控制；
-- tools / function calling、多模态输入、附件；
-- 异步任务 API：`Idempotency-Key`、按 `Last-Event-ID` 重放事件；
-- 端到端加密（让网关看不到提示词）；
-- 网关多实例部署时的会话路由和共享去重存储（规范已要求去重，参考实现只在单进程内存中实现）；
+### 14.2 握手
+1. `welcome` 带 `resume_token`（不透明，≥ 128 比特）和 `resume_window_seconds`。
+2. 断线后，设备在窗口内重连，`hello.resume = {token, tasks:[{task_id, recv_seq}]}`，`recv_seq` 是该任务已从网关收到的最大连续 `seq`。仍须提供新的证明 JWT（§7.4），令牌规则不变。
+3. 网关验证 token 属于该设备且未过期后，回复 `welcome.resume = {resumed: true, tasks:[{task_id, recv_seq}]}`，`recv_seq` 是网关已收到的设备帧。新的 `welcome` 同时给出新的 `resume_token`（旧 token 作废）。
+4. 双方随后 MUST 按顺序重传对方 `recv_seq` 之后的所有未确认帧，然后才发送新帧（重传帧不得被新帧超越）。
+5. 设备未列出的进行中任务，网关 MUST 以 `OUTCOME_UNKNOWN` 结束；token 无效或过期时 `resumed: false`，所有旧任务按 §7.5 失败。
+
+### 14.3 网关侧任务保留
+设备断开后，网关在 `resume_window_seconds` 内保留任务和未确认帧，调用方的 SSE 连接保持打开（发送 keep-alive）。窗口到期仍未续传，任务按 §7.5 失败。
+
+### 14.4 HTTP 侧续传
+- 每个 SSE 事件 MUST 带 `id:`：角色前导事件为 `0`，其后为对应设备数据帧的 `seq`（单调递增）。
+- 调用方 MAY 带 `Idempotency-Key`（1–255 字符）。同一租户、同一终端用户内，相同 key + 相同请求体（按 SHA-256 比较）MUST 接回已有任务而不是再次执行；请求体不同 MUST 返回 422 `IDEMPOTENCY_KEY_REUSED`。key 至少保留 24 小时。
+- 重新接入时带 `Last-Event-ID: <n>`（POST 同一 key，或 `GET /v2/tenant/tasks/{id}/events`），网关 MUST 只发送 `id > n` 的事件；已结束的任务从存储重放。
+- 带 key 的请求，调用方断开后网关 SHOULD 保留任务 30 秒再取消；不带 key 时按 §6.5 立即取消。
+
+---
+
+## 15. 流量控制（能力 `flow`）
+
+### 15.1 窗口
+`hello.flow`（设备授予网关）和 `welcome.flow`（网关授予设备）各为 `{task_window, conn_window}`，单位是**已发送、未确认数据帧的序列化字节数**（即 WebSocket 文本消息长度）。两值 MUST ≥ 64 KiB 且 ≥ `max_frame_bytes`；缺省为 1 MiB / 4 MiB。
+
+### 15.2 接收方
+- 接收方在交付（网关：写给 SSE 订阅者；设备：交给执行器/重组缓冲）后发送 `task.ack`。网关 MUST 以所有在线订阅者中最慢的位置作为确认位置——这是端到端背压的来源。
+- 收到会使未确认字节超出所通告窗口的帧（且该窗口非空）时，接收方 MUST 发送 `error`（`FLOW_CONTROL`）并断开连接。
+
+### 15.3 发送方
+发送 n 字节的数据帧，当且仅当 `task_used + n ≤ task_window`（或 `task_used == 0`）**且** `conn_used + n ≤ conn_window`（或 `conn_used == 0`）。不满足时 MUST 等待确认；多个等待的任务 SHOULD 按 FIFO 获得窗口，以保证公平。窗口为空时总允许发送一帧，防止死锁。测试向量 `flow` 给出了发送与接收两侧的逐步判定。
+
+### 15.4 慢消费者
+网关 SHOULD 对长期不读取的 SSE 调用方设置上限（参考实现 60 秒），超时后以 `SLOW_CONSUMER` 结束任务并向设备发送 `task.cancel`。
+
+---
+
+## 16. tools 与多模态（能力 `tools`、`multimodal`）
+
+### 16.1 tools
+- `hello`/`models.update` 的 `model_capabilities` 为每个模型声明 `tools`、`vision`、`audio` 中的若干项。`GET /v1/models` MUST 返回每个模型的 `capabilities`。
+- 请求带 `tools` 而目标模型未声明 `tools`、或设备未协商 `tools` 能力时，网关 MUST 返回 400 `CAPABILITY_UNSUPPORTED`，MUST NOT 下发任务。
+- `tools`、`tool_choice` 原样放入签名的 `task.run`。设备在 `task.delta.tool_calls` 中按 OpenAI 流式格式回报（`index` 区分调用，`arguments` 可分片），以 `finish_reason: "tool_calls"` 结束。网关 MUST 透传为 SSE `delta.tool_calls`；非流式响应 MUST 按 `index` 合并成 `message.tool_calls`。
+- 后续请求中的 `role: "assistant"`+`tool_calls` 和 `role: "tool"`+`tool_call_id` 消息 MUST 原样转给设备。
+- 适配器映射（参考实现）：OpenAI 兼容直通；Anthropic 映射为 `tool_use`/`tool_result` 内容块与 `input_schema`；Ollama 映射为 `tools` 与 `message.tool_calls`（arguments 为对象）；Codex 订阅不支持（不声明能力）。
+
+### 16.2 内容片段
+`content` 可为片段数组：`{type:"text",text}`、`{type:"image_url",image_url:{url,detail?}}`（需 `vision`）、`{type:"input_audio",input_audio:{data,format}}`（需 `audio`）。缺少能力时 400 `CAPABILITY_UNSUPPORTED`。`image_url.url` 允许 `https://`（原样转发，由设备自行获取）与 `data:`；`http://` MUST 拒绝。
+
+### 16.3 blob
+- 大于 16 KiB 的 data: URI 和音频数据，网关 MUST 移入 blob：`task.run.blobs` 列出 `{id, size, sha256(base64url), media_type}`，片段中改写为 `lsp2-blob:<id>`。
+- `task.run`（seq 1）之后，网关按偏移顺序发送 `blob.chunk {blob_id, offset, data(base64url, ≤ 96 KiB 原始字节), last}` 数据帧，它们同样受 §15 窗口约束。
+- 设备 MUST 在全部 blob 到齐且 `size`、`sha256` 与签名载荷一致后才执行；不一致时 `task.error`（`BAD_REQUEST`）。单 blob ≤ 20 MiB，单任务 ≤ 32 MiB，超出时网关返回 413 `PAYLOAD_TOO_LARGE`。
+
+---
+
+## 17. 端到端加密（能力 `e2ee`）
+
+目标：租户后端与设备之间的提示词和输出对网关不可见（网关只看到路由信息、用量和结束原因）。
+
+### 17.1 设备密钥声明
+设备生成 X25519 密钥对（RFC 7748），用身份私钥签发 JWS（`typ: lsp2-e2ee-key+jwt`，`kid` 为设备公钥指纹），载荷 `{iss, sub: device_id, iat, exp, jwk:{kty:"OKP", crv:"X25519", x, kid:<RFC 7638 指纹>, use:"enc", alg:"ECDH-ES"}}`，`exp - iat` ≤ 30 天。声明放在 `hello.e2ee_key`（或 `models.update.e2ee_key`），网关存储并通过 `GET /v2/tenant/devices` 原样提供。
+
+### 17.2 信任锚
+网关可能被攻破，因此租户 MUST NOT 只凭网关返回的公钥信任设备。设备在本机显示/在 `verification_uri_complete` 中携带其身份公钥指纹 `jkt`；用户确认时由租户后端记录（钉住）该 `jkt` 并随 `device-approvals` 提交（不符时网关返回 409）。之后租户 MUST 用钉住的 `jkt` 校验 `public_key` 与密钥声明签名，并检查 `sub`、`exp` 与 X25519 `kid`。
+
+### 17.3 密封请求
+租户构造 `{rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key}`（`response_key` 为新随机 32 字节，`rid` 唯一），按 RFC 7516 JWE 紧凑序列化加密：`alg: "ECDH-ES"`（直接密钥协商，RFC 7518 §4.6，X25519 按 RFC 8037）、`enc: "A256GCM"`、`kid`、`cty: "lsp2-request+json"`；encrypted key 段为空；`zip`、`crit` MUST NOT 出现。通过 `lsp2_e2ee` 字段提交，此时 MUST NOT 带明文 `messages`/`tools`（否则 400）。
+
+### 17.4 网关与设备处理
+- 网关把 JWE 作为 `media_type: application/jose` 的 blob 下发，`task.run.e2ee = {blob}`，`task.run.model` 为路由模型，不含明文消息。网关 MUST NOT 尝试解密，日志和存储中只出现密文。
+- 设备 MUST：拒绝 `alg`/`enc` 以外的取值、`zip`；用 X25519 私钥解密；检查 `now - iat ≤ 300`、`rid` 未在窗口内出现过、密封的 `model` 等于 `task.run.model`。任一失败回复 `task.error`（`E2EE_DECRYPT_FAILED`，消息不得包含明文）。
+
+### 17.5 密封输出
+- 每个结果帧用 `response_key` 以 AES-256-GCM 加密：nonce = 4 字节 0 ‖ BE64(seq)，AAD = UTF-8 `"lsp2-e2ee/v1|" + rid + "|" + type + "|" + seq`。`task.delta.data = {e2ee: base64url(密文‖tag)}`，明文为 `{text?, tool_calls?}`，MUST NOT 同时带明文字段；`task.done` 保留明文 `finish_reason`、`usage`（计费需要），另带密封的 `{finish_reason}`。
+- 网关的 SSE 块带 `lsp2_e2ee: {seq, type, data}`；租户用 `response_key` 解开。由于 `seq`、`type`、`rid` 都绑定在 AAD 中，网关无法重排、跨请求拼接或伪造帧。
+
+### 17.6 威胁模型
+| 威胁 | 结果 |
+|---|---|
+| 网关读取提示词/输出 | 防御：只有密文 |
+| 网关替换设备公钥 | 防御：租户用配对时钉住的 jkt 校验 |
+| 网关重放请求 | 防御：`iat` 300 秒 + `rid` 去重 |
+| 网关重排/删改输出帧 | 防御：AAD 绑定 seq/type/rid；删尾可被察觉（缺少密封 `task.done`） |
+| 网关拒绝服务、观察元数据（模型名、时间、长度、用量） | 不防御 |
+| 设备或租户本身被攻破 | 不在范围 |
+不提供前向保密之外的保证：X25519 设备密钥泄露会暴露用该密钥加密的历史请求，设备 SHOULD 定期轮换（`models.update.e2ee_key`）。
+
+---
+
+## 18. 尚未定义的内容
+
+- 网关多实例部署时的会话路由和共享去重/续传存储（参考实现为单进程）；
+- E2EE 的多设备/群组密钥与密钥透明日志；
 - `/v2/device/authorize` 返回租户级 `verification_uri`。

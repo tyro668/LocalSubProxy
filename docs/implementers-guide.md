@@ -302,6 +302,32 @@ static JsonNode verifyJws(PublicKey pub, String jws, String typ) throws Exceptio
 
 ---
 
+## 4.6 扩展：断线续传、流量控制、tools/多模态、端到端加密
+
+规范见 protocol-v2.md §14–§17；测试向量 `e2ee`、`flow`、`resume` 三节和 `valid_frames` 中的扩展帧覆盖全部密码学与判定细节。
+
+### JWE / HPKE / X25519 推荐库
+
+| 语言 | X25519 + AES-GCM（直接实现，推荐） | JOSE 库（可选） | 状态 |
+|---|---|---|---|
+| Python | `cryptography`（`X25519PrivateKey`、`AESGCM`） | `joserfc`、`jwcrypto` | 已运行：`spec/examples/python/lsp2_ext.py` |
+| Node.js | `node:crypto`（`diffieHellman`、`aes-256-gcm`，Node ≥ 18） | `jose`（panva）`compactDecrypt` 并限定 `keyManagementAlgorithms:['ECDH-ES']` | 已运行：`spec/examples/node/lsp2_ext.mjs` |
+| Rust | `x25519-dalek`（`static_secrets`）+ `aes-gcm` + `sha2` | `josekit` | 已运行：`spec/examples/rust/src/ext.rs` |
+| Go | `crypto/ecdh`、`crypto/aes`+`cipher.NewGCM`（标准库） | `go-jose/v4` | 参考实现 `internal/lsp2/e2ee.go` |
+| Java | JDK 11+ `KeyAgreement("X25519")`、`Cipher("AES/GCM/NoPadding")` | Nimbus JOSE+JWT（`X25519Decrypter`，需 Tink） | 未编写示例 |
+
+HPKE（RFC 9180）在设计上更现代，但 2026 年各语言 JOSE 生态对 JOSE-HPKE 草案支持不一，故本协议选用 RFC 7518 ECDH-ES + A256GCM：Concat KDF 只是一轮 SHA-256（`00000001 ‖ Z ‖ len("A256GCM") ‖ "A256GCM" ‖ 0 ‖ 0 ‖ 00000100`），二十行内即可手写并用向量 `concat_kdf_input_hex`/`cek_b64url` 自检。
+
+### 陷阱
+- **JOSE 库默认算法过宽**：务必固定 `alg=ECDH-ES`、`enc=A256GCM`，拒绝 `zip`（压缩预言攻击）和 `ECDH-ES+A*KW`（向量 `jwe_key_wrap_alg`、`jwe_zip`）。
+- **AAD 是受保护头的 base64url 字符串本身**（ASCII 字节），不是解码后的 JSON。
+- **结果帧 nonce 由 seq 决定**：每个 `response_key` 只用于一个请求，否则 nonce 重复会彻底破坏 GCM。
+- **E2EE 帧的 seq 必须先分配再封装**；重传时发送**同一字节**，不要重新加密（参考实现的 `Outbox.SendFunc` 要求 build 函数对 seq 确定性）。
+- **流控字节数 = 发送的整条 WebSocket 文本消息长度**，包含信封；两侧必须一致，否则会误报 `FLOW_CONTROL`。
+- **重连后先重传、后发新帧**：参考实现最初就因此出过一次丢帧（新帧在重传完成前写出导致接收端判定跳号）；现由 `Outbox` 在 `Attach` 后暂停任务直到 `Retransmit`。
+- **网关只按最慢订阅者确认**，所以 SSE 写失败/阻塞会自然传导到设备，不要在网关内用无界队列“兜底”。
+- **tools 增量**：`arguments` 是字符串分片，非流式响应需按 `index` 拼接；Ollama 的 `arguments` 是对象，需序列化。
+
 ## 5. 设备端（如果你也要实现）
 
 设备端只需要以下几步：
