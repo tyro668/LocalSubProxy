@@ -1,4 +1,4 @@
-// Package store is the persistence boundary for the v2 mock gateway. The
+// Package store is the persistence boundary of the lsp2 reference gateway. The
 // reference implementation is SQLite (pure Go); a Postgres implementation can
 // satisfy the same Store interface. Prompt/output columns can be sealed with
 // AES-256-GCM at rest via Cipher.
@@ -45,7 +45,21 @@ type Device struct {
 	PublicKey []byte
 	Status    string // active | revoked
 	CreatedAt time.Time
+	E2EEKey   string // device-signed X25519 key statement (JWS); empty if none
 }
+
+// Idempotency maps (tenant, end user, Idempotency-Key) to the task it created.
+type Idempotency struct {
+	TenantID  string
+	OwnerID   string
+	Key       string
+	TaskID    string
+	BodyHash  string // hex SHA-256 of the request body
+	CreatedAt time.Time
+}
+
+// ErrExists is returned when an idempotency key is already recorded.
+var ErrExists = errors.New("already exists")
 
 type Task struct {
 	ID        string
@@ -80,6 +94,11 @@ type Store interface {
 	GetDevice(ctx context.Context, id string) (Device, error)
 	ListDevices(ctx context.Context, tenantID, ownerID string) ([]Device, error)
 	SetDeviceStatus(ctx context.Context, id, status string) error
+	SetDeviceE2EEKey(ctx context.Context, id, stmt string) error
+
+	// PutIdempotency records a key; ErrExists if (tenant, owner, key) is taken.
+	PutIdempotency(ctx context.Context, i Idempotency) error
+	GetIdempotency(ctx context.Context, tenantID, ownerID, key string) (Idempotency, error)
 
 	CreateTask(ctx context.Context, t Task) error
 	SetTaskState(ctx context.Context, id, state string) error

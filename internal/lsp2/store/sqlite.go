@@ -17,13 +17,15 @@ CREATE TABLE IF NOT EXISTS device_auths(device_code_hash TEXT PRIMARY KEY, user_
   attempts INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS device_auths_user_code ON device_auths(tenant_id, user_code);
 CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL,
-  public_key BLOB NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL);
+  public_key BLOB NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, e2ee_key TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS devices_owner ON devices(tenant_id, owner_id);
 CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL, device_id TEXT NOT NULL,
   model TEXT NOT NULL, state TEXT NOT NULL, request BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS tasks_updated ON tasks(state, updated_at);
 CREATE TABLE IF NOT EXISTS events(task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL, data BLOB, at INTEGER NOT NULL,
   PRIMARY KEY(task_id, seq));
+CREATE TABLE IF NOT EXISTS idempotency(tenant_id TEXT NOT NULL, owner_id TEXT NOT NULL, idem_key TEXT NOT NULL, task_id TEXT NOT NULL,
+  body_hash TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(tenant_id, owner_id, idem_key));
 `
 
 type SQLite struct {
@@ -109,17 +111,17 @@ func (s *SQLite) CreateDevice(ctx context.Context, d Device) error {
 func scanDev(r interface{ Scan(...any) error }) (Device, error) {
 	var d Device
 	var c int64
-	err := r.Scan(&d.ID, &d.TenantID, &d.OwnerID, &d.Name, &d.PublicKey, &d.Status, &c)
+	err := r.Scan(&d.ID, &d.TenantID, &d.OwnerID, &d.Name, &d.PublicKey, &d.Status, &c, &d.E2EEKey)
 	d.CreatedAt = time.Unix(c, 0)
 	return d, nf(err)
 }
 
 func (s *SQLite) GetDevice(ctx context.Context, id string) (Device, error) {
-	return scanDev(s.db.QueryRowContext(ctx, `SELECT id,tenant_id,owner_id,name,public_key,status,created_at FROM devices WHERE id=?`, id))
+	return scanDev(s.db.QueryRowContext(ctx, `SELECT id,tenant_id,owner_id,name,public_key,status,created_at,e2ee_key FROM devices WHERE id=?`, id))
 }
 
 func (s *SQLite) ListDevices(ctx context.Context, tenantID, ownerID string) ([]Device, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,tenant_id,owner_id,name,public_key,status,created_at FROM devices WHERE tenant_id=? AND owner_id=? ORDER BY created_at`, tenantID, ownerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,tenant_id,owner_id,name,public_key,status,created_at,e2ee_key FROM devices WHERE tenant_id=? AND owner_id=? ORDER BY created_at`, tenantID, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +145,32 @@ func (s *SQLite) SetDeviceStatus(ctx context.Context, id, status string) error {
 		}
 	}
 	return err
+}
+
+func (s *SQLite) SetDeviceE2EEKey(ctx context.Context, id, stmt string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE devices SET e2ee_key=? WHERE id=?`, stmt, id)
+	return err
+}
+
+func (s *SQLite) PutIdempotency(ctx context.Context, i Idempotency) error {
+	r, err := s.db.ExecContext(ctx, `INSERT INTO idempotency(tenant_id,owner_id,idem_key,task_id,body_hash,created_at) VALUES(?,?,?,?,?,?)
+		ON CONFLICT DO NOTHING`, i.TenantID, i.OwnerID, i.Key, i.TaskID, i.BodyHash, i.CreatedAt.UnixNano())
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		return ErrExists
+	}
+	return nil
+}
+
+func (s *SQLite) GetIdempotency(ctx context.Context, tenantID, ownerID, key string) (Idempotency, error) {
+	var i Idempotency
+	var c int64
+	err := s.db.QueryRowContext(ctx, `SELECT tenant_id,owner_id,idem_key,task_id,body_hash,created_at FROM idempotency WHERE tenant_id=? AND owner_id=? AND idem_key=?`,
+		tenantID, ownerID, key).Scan(&i.TenantID, &i.OwnerID, &i.Key, &i.TaskID, &i.BodyHash, &c)
+	i.CreatedAt = time.Unix(0, c)
+	return i, nf(err)
 }
 
 func (s *SQLite) CreateTask(ctx context.Context, t Task) error {
@@ -208,6 +236,9 @@ func (s *SQLite) Purge(ctx context.Context, cutoff time.Time) (int, error) {
 	}
 	r, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE state<>'RUNNING' AND updated_at<?`, c)
 	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE created_at<?`, time.Now().Add(-24*time.Hour).UnixNano()); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM device_auths WHERE expires_at<?`, cutoff.Unix()); err != nil {

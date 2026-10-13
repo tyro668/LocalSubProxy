@@ -22,23 +22,68 @@ const (
 	Version     = 2
 )
 
-// Message types. Device→gateway: hello, task.delta, task.done, task.error, pong.
-// Gateway→device: welcome, task.run, task.cancel, ping, error.
+// Message types. Data frames (sequenced, flow-controlled, resumable):
+// gateway→device task.run, blob.chunk; device→gateway task.delta, task.done,
+// task.error. Everything else is a control frame.
 const (
-	TypeHello      = "hello"
-	TypeWelcome    = "welcome"
-	TypeTaskRun    = "task.run"
-	TypeTaskDelta  = "task.delta"
-	TypeTaskDone   = "task.done"
-	TypeTaskError  = "task.error"
-	TypeTaskCancel = "task.cancel"
-	TypePing       = "ping"
-	TypePong       = "pong"
-	TypeError      = "error"
-	// TypeSessionToken (device→gateway, answered with the same type) swaps in a
-	// fresh access token mid-connection; TypeModelsUpdate re-announces models.
+	TypeHello        = "hello"
+	TypeWelcome      = "welcome"
+	TypeTaskRun      = "task.run"
+	TypeBlobChunk    = "blob.chunk"
+	TypeTaskDelta    = "task.delta"
+	TypeTaskDone     = "task.done"
+	TypeTaskError    = "task.error"
+	TypeTaskAck      = "task.ack"
+	TypeTaskCancel   = "task.cancel"
+	TypePing         = "ping"
+	TypePong         = "pong"
+	TypeError        = "error"
 	TypeSessionToken = "session.token"
 	TypeModelsUpdate = "models.update"
+)
+
+// IsDataFrame reports whether frames of this type carry a per-task seq, count
+// against flow-control windows and are retransmitted on resume.
+func IsDataFrame(t string) bool {
+	switch t {
+	case TypeTaskRun, TypeBlobChunk, TypeTaskDelta, TypeTaskDone, TypeTaskError:
+		return true
+	}
+	return false
+}
+
+// Capability names negotiated in hello/welcome.
+const (
+	CapSessionToken = "session.token"
+	CapModelsUpdate = "models.update"
+	CapResume       = "resume"
+	CapFlow         = "flow"
+	CapTools        = "tools"
+	CapMultimodal   = "multimodal"
+	CapE2EE         = "e2ee"
+)
+
+// Capabilities this implementation understands.
+var Capabilities = []string{CapSessionToken, CapModelsUpdate, CapResume, CapFlow, CapTools, CapMultimodal, CapE2EE}
+
+// Per-model capability flags (hello/models.update model_capabilities).
+const (
+	ModelCapTools  = "tools"
+	ModelCapVision = "vision"
+	ModelCapAudio  = "audio"
+)
+
+// Protocol defaults (docs/protocol-v2.md §10).
+const (
+	DefaultMaxFrameBytes = 256 << 10
+	DefaultTaskWindow    = 1 << 20
+	DefaultConnWindow    = 4 << 20
+	DefaultResumeSeconds = 30
+	BlobChunkBytes       = 96 << 10 // raw bytes per blob.chunk (base64url ≈128 KiB)
+	MaxBlobBytes         = 20 << 20
+	MaxTaskBlobBytes     = 32 << 20
+	InlineDataURIBytes   = 16 << 10 // data: URIs above this are moved to blobs
+	BlobScheme           = "lsp2-blob:"
 )
 
 // SessionToken carries a refreshed token plus a key proof over its jti.
@@ -49,8 +94,10 @@ type SessionToken struct {
 }
 
 type ModelsUpdate struct {
-	Models         []string `json:"models"`
-	MaxConcurrency int      `json:"max_concurrency,omitempty"`
+	Models            []string            `json:"models"`
+	ModelCapabilities map[string][]string `json:"model_capabilities,omitempty"`
+	MaxConcurrency    int                 `json:"max_concurrency,omitempty"`
+	E2EEKey           string              `json:"e2ee_key,omitempty"`
 }
 
 // Envelope is the single frame shape on the wire. task.run carries no Data;
@@ -66,47 +113,208 @@ type Envelope struct {
 	JWS    string          `json:"jws,omitempty"`
 }
 
+// Flow advertises the sender's receive windows (bytes of unacknowledged data
+// frames the peer may have outstanding).
+type Flow struct {
+	TaskWindow int `json:"task_window"`
+	ConnWindow int `json:"conn_window"`
+}
+
+// ResumeTask is one task's position in a resume exchange: RecvSeq is the
+// highest contiguous seq received from the peer for that task.
+type ResumeTask struct {
+	TaskID  string `json:"task_id"`
+	RecvSeq int64  `json:"recv_seq"`
+}
+
+type HelloResume struct {
+	Token string       `json:"token"`
+	Tasks []ResumeTask `json:"tasks"`
+}
+
 type Hello struct {
-	DeviceID       string   `json:"device_id"`
-	Client         string   `json:"client"`
-	Models         []string `json:"models"`
-	MaxConcurrency int      `json:"max_concurrency"`
-	Capabilities   []string `json:"capabilities,omitempty"`
+	DeviceID          string              `json:"device_id"`
+	Client            string              `json:"client"`
+	Models            []string            `json:"models"`
+	ModelCapabilities map[string][]string `json:"model_capabilities,omitempty"`
+	MaxConcurrency    int                 `json:"max_concurrency"`
+	Capabilities      []string            `json:"capabilities,omitempty"`
+	Flow              *Flow               `json:"flow,omitempty"`
+	Resume            *HelloResume        `json:"resume,omitempty"`
+	E2EEKey           string              `json:"e2ee_key,omitempty"`
 	// Proof is a proof JWT (aud "lsp2:hello", ath = hash of the access token).
 	Proof string `json:"proof"`
 }
 
-type Welcome struct {
-	SessionID        string   `json:"session_id"`
-	HeartbeatSeconds int      `json:"heartbeat_seconds"`
-	MaxFrameBytes    int      `json:"max_frame_bytes"`
-	TokenExpiresAt   int64    `json:"token_expires_at"`
-	Capabilities     []string `json:"capabilities"`
+type WelcomeResume struct {
+	Resumed bool         `json:"resumed"`
+	Tasks   []ResumeTask `json:"tasks"`
 }
 
-// Capabilities this implementation understands (negotiated in hello/welcome).
-var Capabilities = []string{"session.token", "models.update"}
+type Welcome struct {
+	SessionID        string         `json:"session_id"`
+	HeartbeatSeconds int            `json:"heartbeat_seconds"`
+	MaxFrameBytes    int            `json:"max_frame_bytes"`
+	TokenExpiresAt   int64          `json:"token_expires_at"`
+	Capabilities     []string       `json:"capabilities"`
+	MaxConcurrency   int            `json:"max_concurrency,omitempty"`
+	Flow             *Flow          `json:"flow,omitempty"`
+	ResumeToken      string         `json:"resume_token,omitempty"`
+	ResumeSeconds    int            `json:"resume_window_seconds,omitempty"`
+	Resume           *WelcomeResume `json:"resume,omitempty"`
+}
 
+// Message is an OpenAI Chat Completions message (text, content parts, tool calls).
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    Content    `json:"content"`
+	Name       string     `json:"name,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// Content is either a plain string, an array of content parts, or null.
+type Content struct {
+	Text  string
+	Parts []ContentPart
+	Null  bool
+}
+
+func Text(s string) Content { return Content{Text: s} }
+
+func (c Content) MarshalJSON() ([]byte, error) {
+	switch {
+	case c.Parts != nil:
+		return json.Marshal(c.Parts)
+	case c.Null:
+		return []byte("null"), nil
+	}
+	return json.Marshal(c.Text)
+}
+
+func (c *Content) UnmarshalJSON(b []byte) error {
+	*c = Content{}
+	t := strings.TrimSpace(string(b))
+	switch {
+	case t == "null":
+		c.Null = true
+		return nil
+	case strings.HasPrefix(t, "["):
+		c.Parts = []ContentPart{}
+		return json.Unmarshal(b, &c.Parts)
+	}
+	return json.Unmarshal(b, &c.Text)
+}
+
+// PlainText concatenates text content (parts of other types are skipped).
+func (c Content) PlainText() string {
+	if c.Parts == nil {
+		return c.Text
+	}
+	var b strings.Builder
+	for _, p := range c.Parts {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+type ContentPart struct {
+	Type       string      `json:"type"` // text | image_url | input_audio
+	Text       string      `json:"text,omitempty"`
+	ImageURL   *ImageURL   `json:"image_url,omitempty"`
+	InputAudio *InputAudio `json:"input_audio,omitempty"`
+}
+
+type ImageURL struct {
+	URL    string `json:"url"` // https://, data:<mime>;base64,..., or lsp2-blob:<id> on the tunnel
+	Detail string `json:"detail,omitempty"`
+}
+
+type InputAudio struct {
+	Data   string `json:"data"` // base64 (or lsp2-blob:<id> on the tunnel)
+	Format string `json:"format"`
+}
+
+type Tool struct {
+	Type     string      `json:"type"` // function
+	Function FunctionDef `json:"function"`
+}
+
+type FunctionDef struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
+}
+
+// ToolCall is used both in assistant messages and (with Index) in stream deltas.
+type ToolCall struct {
+	Index    *int         `json:"index,omitempty"`
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"`
+	Function FunctionCall `json:"function"`
+}
+
+type FunctionCall struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// BlobRef describes binary data delivered by blob.chunk frames; it is part of
+// the signed task.run payload so the device can verify integrity.
+type BlobRef struct {
+	ID        string `json:"id"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256"` // base64url
+	MediaType string `json:"media_type"`
+}
+
+// E2EERef points at the sealed request (a JWE compact serialization carried
+// as blob media type application/jose).
+type E2EERef struct {
+	Blob string `json:"blob"`
 }
 
 // TaskRun is the JWS payload of task.run.
 type TaskRun struct {
-	TaskID      string    `json:"task_id"`
-	Iat         int64     `json:"iat"`
-	DeviceID    string    `json:"device_id"`
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	Exp         int64     `json:"exp"`
-	Nonce       string    `json:"nonce"`
+	TaskID      string          `json:"task_id"`
+	Iat         int64           `json:"iat"`
+	DeviceID    string          `json:"device_id"`
+	Model       string          `json:"model"`
+	Messages    []Message       `json:"messages,omitempty"`
+	Tools       []Tool          `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	Blobs       []BlobRef       `json:"blobs,omitempty"`
+	E2EE        *E2EERef        `json:"e2ee,omitempty"`
+	Exp         int64           `json:"exp"`
+	Nonce       string          `json:"nonce"`
+}
+
+// BlobChunk (gateway→device data frame).
+type BlobChunk struct {
+	BlobID string `json:"blob_id"`
+	Offset int64  `json:"offset"`
+	Data   string `json:"data"` // base64url
+	Last   bool   `json:"last,omitempty"`
+}
+
+// TaskAck acknowledges every data frame of the task with seq <= Seq.
+type TaskAck struct {
+	Seq int64 `json:"seq"`
+}
+
+type TaskCancel struct {
+	Reason string `json:"reason,omitempty"`
 }
 
 type TaskDelta struct {
-	Text string `json:"text"`
+	Text      string     `json:"text,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	E2EE      string     `json:"e2ee,omitempty"` // sealed TaskDelta (E2EE mode)
 }
 
 type Usage struct {
@@ -117,6 +325,7 @@ type Usage struct {
 type TaskDone struct {
 	FinishReason string `json:"finish_reason"`
 	Usage        *Usage `json:"usage,omitempty"`
+	E2EE         string `json:"e2ee,omitempty"` // sealed {"finish_reason":...} (E2EE mode)
 }
 
 type ErrorBody struct {
@@ -140,6 +349,14 @@ const (
 	ErrVersion         = "VERSION_UNSUPPORTED"
 	ErrInternal        = "INTERNAL"
 	ErrRateLimited     = "RATE_LIMITED"
+	// Extensions (resume, flow control, tools/multimodal, E2EE, idempotency).
+	ErrFlowControl     = "FLOW_CONTROL"
+	ErrUnsupported     = "CAPABILITY_UNSUPPORTED"
+	ErrPayloadTooLarge = "PAYLOAD_TOO_LARGE"
+	ErrIdempotency     = "IDEMPOTENCY_KEY_REUSED"
+	ErrOutcomeUnknown  = "OUTCOME_UNKNOWN"
+	ErrDecrypt         = "E2EE_DECRYPT_FAILED"
+	ErrSlowConsumer    = "SLOW_CONSUMER"
 )
 
 func B64(b []byte) string            { return base64.RawURLEncoding.EncodeToString(b) }

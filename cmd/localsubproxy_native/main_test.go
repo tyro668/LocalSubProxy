@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,40 +10,24 @@ import (
 	"localsubproxy/internal/lsp2/client"
 )
 
-func TestLegacyIdentityRemoteURLMigration(t *testing.T) {
-	var identity localIdentity
-	if err := json.Unmarshal([]byte(`{"journal_key":"key","saas_url":"https://remote.example","gateway_url":"https://gateway.example"}`), &identity); err != nil {
-		t.Fatal(err)
-	}
-	if !identity.normalize() || identity.RemoteURL != "https://remote.example" {
-		t.Fatalf("legacy connection URL not restored: %#v", identity)
-	}
-	encoded, err := json.Marshal(identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), "saas_url") || !strings.Contains(string(encoded), `"remote_url":"https://remote.example"`) {
-		t.Fatalf("identity migration was not persisted under the new name: %s", encoded)
-	}
-}
-
-func TestV2KeyIsEncryptedAtRest(t *testing.T) {
+func TestDeviceKeysAreEncryptedAtRest(t *testing.T) {
 	dir := t.TempDir()
-	id := localIdentity{JournalKey: strings.Repeat("ab", 32), Protocol: "v2", V2DeviceID: "dev_1"}
-	v := client.Identity{GatewayURL: "https://gw.example", Tenant: "acme", DeviceID: "dev_1", PrivateKey: lsp2.B64(make([]byte, 64)), GatewayKey: lsp2.B64(make([]byte, 32))}
-	if err := saveV2(dir, id, v); err != nil {
+	id := localIdentity{DataKey: strings.Repeat("ab", 32), DeviceID: "dev_1"}
+	x, _ := lsp2.NewX25519()
+	v := client.Identity{GatewayURL: "https://gw.example", Tenant: "acme", DeviceID: "dev_1", PrivateKey: lsp2.B64(make([]byte, 64)), GatewayKey: lsp2.B64(make([]byte, 32)), E2EEKey: lsp2.B64(x)}
+	if err := saveDevice(dir, id, v); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := os.ReadFile(filepath.Join(dir, v2KeyFile))
-	if strings.Contains(string(raw), v.PrivateKey) || strings.Contains(string(raw), "gw.example") {
-		t.Fatal("device key stored in plaintext")
+	raw, _ := os.ReadFile(filepath.Join(dir, deviceKeyFile))
+	if strings.Contains(string(raw), v.PrivateKey) || strings.Contains(string(raw), v.E2EEKey) || strings.Contains(string(raw), "gw.example") {
+		t.Fatal("device keys stored in plaintext")
 	}
-	got, err := loadV2(dir, id)
-	if err != nil || got.DeviceID != "dev_1" {
+	got, err := loadDevice(dir, id)
+	if err != nil || got.DeviceID != "dev_1" || got.E2EEKey != v.E2EEKey {
 		t.Fatalf("roundtrip: %v %v", got, err)
 	}
-	id.JournalKey = strings.Repeat("cd", 32)
-	if _, err := loadV2(dir, id); err == nil {
+	id.DataKey = strings.Repeat("cd", 32)
+	if _, err := loadDevice(dir, id); err == nil {
 		t.Fatal("decrypted with the wrong key")
 	}
 }

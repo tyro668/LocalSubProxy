@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"localsubproxy/internal/durable"
-	"localsubproxy/internal/protocol"
 )
 
 // AdapterView is the local UI representation. It never contains an API key.
@@ -27,36 +26,31 @@ type AdapterView struct {
 	Enabled         bool     `json:"enabled"`
 	HasAPIKey       bool     `json:"has_api_key"`
 	SkipModelProbe  bool     `json:"skip_model_probe"`
+	Capabilities    []string `json:"capabilities"`
+	Concurrency     int      `json:"concurrency"`
 	Health          string   `json:"health"`
 	AuthState       string   `json:"auth_state"`
 }
 
 func viewAdapter(a AdapterConfig) AdapterView {
-	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe}
+	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a)}
 }
 
 func (x *Connector) Status() map[string]any {
 	x.mu.Lock()
-	running, journalBytes, connected := len(x.running), x.journalBytes, x.online
-	remoteConnected, gatewayConnected := x.remoteOK, x.heartbeatOK && !x.pollFailed
+	running, remoteOK, gatewayOK, lastErr := len(x.running), x.remoteOK, x.gatewayOK, x.lastErr
 	x.mu.Unlock()
-	transport := "offline"
-	protocolName, deviceID, serverURL, v2err := "v1", x.cfg.DeviceID, x.cfg.ServerURL, ""
-	if x.cfg.V2 != nil {
-		protocolName, deviceID, serverURL, transport = "v2", x.cfg.V2.DeviceID, x.cfg.V2.GatewayURL, "wss"
-		if strings.HasPrefix(serverURL, "http://") {
+	deviceID, gatewayURL, transport, e2ee := "", "", "offline", false
+	if id := x.cfg.Identity; id != nil {
+		deviceID, gatewayURL, e2ee = id.DeviceID, id.GatewayURL, id.E2EEKey != ""
+		transport = "wss"
+		if strings.HasPrefix(gatewayURL, "http://") {
 			transport = "ws"
 		}
-		x.v2.mu.Lock()
-		v2err = x.v2.lastErr
-		x.v2.mu.Unlock()
-	} else if x.cfg.ServerURL != "" {
-		transport = "http"
-		if strings.HasPrefix(x.cfg.ServerURL, "https://") {
-			transport = "https"
-		}
 	}
-	return map[string]any{"protocol": protocolName, "last_error": v2err, "device_id": deviceID, "device_name": localDeviceName(), "server_url": serverURL, "running_tasks": running, "journal_bytes": journalBytes, "transport": transport, "connected": connected, "remote_connected": remoteConnected, "gateway_connected": gatewayConnected}
+	return map[string]any{"protocol": "lsp2", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
+		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
+		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
 }
 
 func (x *Connector) ListAdapters() []AdapterView {
@@ -96,11 +90,8 @@ func (x *Connector) saveAdaptersLocked() error {
 }
 
 func (x *Connector) activeAdapterLocked(id string) bool {
-	if x.v2AdapterActive(id) {
-		return true
-	}
-	for _, t := range x.j.Tasks {
-		if t.Command.Request.Target.AdapterID == id && !isTerminal(t.State) {
+	for _, a := range x.running {
+		if a == id {
 			return true
 		}
 	}
@@ -241,14 +232,14 @@ func (x *Connector) DeleteAdapter(id string) error {
 }
 
 // TestAdapter checks a draft profile without changing the encrypted model list.
-func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (protocol.AdapterHealth, error) {
+func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHealth, error) {
 	x.mu.Lock()
 	if old, ok := x.adapters[a.ID]; ok && a.APIKey == "" && sameCredentialEndpoint(a, old) {
 		a.APIKey = old.APIKey
 	}
 	x.mu.Unlock()
 	if err := validateAdapter(&a); err != nil {
-		return protocol.AdapterHealth{}, err
+		return AdapterHealth{}, err
 	}
 	a.Enabled = true
 	a.SkipModelProbe = false
@@ -260,23 +251,8 @@ func sameCredentialEndpoint(a, old AdapterConfig) bool {
 }
 
 func (x *Connector) refreshHeartbeat() {
-	if x.cfg.V2 != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		x.probeAll(ctx)
-		cancel()
-		x.notifyV2Models()
-		return
-	}
-	if x.cfg.ServerURL == "" {
-		return
-	}
-	for attempt := 0; attempt < 5; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		err := x.heartbeat(ctx)
-		cancel()
-		if err == nil {
-			return
-		}
-		time.Sleep(time.Duration(1<<attempt) * 250 * time.Millisecond)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	x.probeAll(ctx)
+	cancel()
+	x.notifyModels()
 }

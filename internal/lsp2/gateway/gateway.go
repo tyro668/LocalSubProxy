@@ -1,12 +1,9 @@
-// Package gateway is the protocol-v2 reference gateway used by the mock stack.
-// It fixes the three P0 issues of the v1 reference gateway:
-//   - per-device Ed25519 identities, short-lived key-bound JWTs, and task.run
-//     frames signed by the gateway's own Ed25519 key (no shared HMAC secret);
-//   - multi-tenant device table + RFC 8628 device authorization (the user code
-//     is shown on the device and typed into the logged-in SaaS page, so no
-//     anonymous endpoint ever reveals a code);
-//   - a Store interface (SQLite reference) with retention purge and optional
-//     AES-GCM encryption of prompts/outputs at rest.
+// Package gateway is the Go reference implementation of an lsp2 gateway
+// (docs/protocol-v2.md): RFC 8628 pairing, key-bound EdDSA tokens, the
+// device WebSocket with resume and credit-window flow control, gateway-signed
+// task.run frames, binary blob transfer, tools/multimodal routing, blind
+// relaying of end-to-end encrypted tasks, idempotent task submission and an
+// OpenAI-compatible SSE surface with Last-Event-ID re-attachment.
 package gateway
 
 import (
@@ -27,8 +24,6 @@ import (
 
 	"localsubproxy/internal/lsp2"
 	"localsubproxy/internal/lsp2/store"
-
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -48,6 +43,11 @@ type Config struct {
 	Retention    time.Duration      // default 7 days; 0 keeps the default, <0 disables purge
 	TaskTimeout  time.Duration      // default 10m
 	PingInterval time.Duration      // default 20s; also the token-expiry check period
+	ResumeWindow time.Duration      // default 30s; how long tasks survive a device disconnect
+	AttachGrace  time.Duration      // default 30s; idempotent tasks survive a client disconnect this long
+	SlowConsumer time.Duration      // default 60s; a subscriber that stalls the stream this long fails the task
+	MaxConc      int                // gateway cap on per-device concurrency (default 16)
+	Flow         lsp2.Flow          // windows the gateway advertises (defaults DefaultTaskWindow/ConnWindow)
 	Logger       *log.Logger
 }
 
@@ -56,32 +56,19 @@ type Gateway struct {
 	kid       string
 	pub       ed25519.PublicKey
 	mu        sync.Mutex
-	sess      map[string]*session // device_id → live session
+	devs      map[string]*dstate // device_id → live or resumable device session
+	tasks     map[string]*gtask  // task_id → task (kept AttachGrace+10m after completion)
 	jtis      map[string]time.Time
 	fail      map[string][]time.Time // tenant → recent failed approvals
 	refreshes atomic.Int64
+	resumes   atomic.Int64
 }
+
+// Resumes counts accepted session resumptions.
+func (g *Gateway) Resumes() int64 { return g.resumes.Load() }
 
 // TokenRefreshes counts accepted mid-connection session.token swaps.
 func (g *Gateway) TokenRefreshes() int64 { return g.refreshes.Load() }
-
-type session struct {
-	deviceID, tenantID, ownerID string
-	models                      []string
-	maxConc                     int
-	conn                        *websocket.Conn
-	wmu                         sync.Mutex
-	mu                          sync.Mutex
-	runs                        map[string]chan lsp2.Envelope
-	closed                      chan struct{}
-	tokenExp                    int64 // guarded by mu; refreshed via session.token
-}
-
-func (s *session) modelList() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.models...)
-}
 
 func New(cfg Config) (*Gateway, error) {
 	if cfg.Store == nil {
@@ -112,8 +99,23 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.PingInterval == 0 {
 		cfg.PingInterval = 20 * time.Second
 	}
+	if cfg.ResumeWindow == 0 {
+		cfg.ResumeWindow = lsp2.DefaultResumeSeconds * time.Second
+	}
+	if cfg.AttachGrace == 0 {
+		cfg.AttachGrace = 30 * time.Second
+	}
+	if cfg.SlowConsumer == 0 {
+		cfg.SlowConsumer = 60 * time.Second
+	}
+	if cfg.MaxConc <= 0 || cfg.MaxConc > 16 {
+		cfg.MaxConc = 16
+	}
+	if cfg.Flow.TaskWindow == 0 {
+		cfg.Flow = lsp2.Flow{TaskWindow: lsp2.DefaultTaskWindow, ConnWindow: lsp2.DefaultConnWindow}
+	}
 	pub := cfg.SigningKey.Public().(ed25519.PublicKey)
-	return &Gateway{cfg: cfg, pub: pub, kid: lsp2.Thumbprint(pub), sess: map[string]*session{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}}, nil
+	return &Gateway{cfg: cfg, pub: pub, kid: lsp2.Thumbprint(pub), devs: map[string]*dstate{}, tasks: map[string]*gtask{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}}, nil
 }
 
 // PublicKey returns the key devices pin to verify task.run frames.
@@ -153,6 +155,7 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("/v2/tenant/device-approvals", g.approve)
 	m.HandleFunc("/v2/tenant/devices", g.listDevices)
 	m.HandleFunc("/v2/tenant/devices/", g.revoke)
+	m.HandleFunc("/v2/tenant/tasks/", g.taskEvents)
 	m.HandleFunc("/v1/models", g.models)
 	m.HandleFunc("/v1/chat/completions", g.chat)
 	return m
@@ -312,6 +315,7 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		UserCode string `json:"user_code"`
 		Deny     bool   `json:"deny"`
+		JKT      string `json:"jkt"` // device key thumbprint relayed by the user's browser (pins the key for E2EE)
 	}
 	if decode(r, &req, 4096) != nil {
 		httpError(w, r, 400, lsp2.ErrBadRequest, "invalid JSON")
@@ -328,6 +332,11 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 		httpError(w, r, 404, lsp2.ErrBadRequest, "code invalid, expired or already used")
 		return
 	}
+	if req.JKT != "" && req.JKT != lsp2.Thumbprint(d.PublicKey) {
+		g.recordFailure(t.ID)
+		httpError(w, r, 409, lsp2.ErrForbidden, "device key thumbprint does not match the pairing request")
+		return
+	}
 	if req.Deny {
 		d.Status = "denied"
 	} else {
@@ -341,7 +350,7 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": d.Status, "device_id": d.DeviceID, "device_name": d.DeviceName})
+	writeJSON(w, 200, map[string]string{"status": d.Status, "device_id": d.DeviceID, "device_name": d.DeviceName, "jkt": lsp2.Thumbprint(d.PublicKey)})
 }
 
 func (g *Gateway) allowAttempt(tenant string) bool {
@@ -475,10 +484,15 @@ func (g *Gateway) useJTI(j string, until time.Time) bool {
 
 // ---------- tenant device management ----------
 
-func (g *Gateway) online(id string) *session {
+// online returns the device's session if it is currently connected.
+func (g *Gateway) online(id string) *dstate {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.sess[id]
+	ds := g.devs[id]
+	g.mu.Unlock()
+	if ds == nil || !ds.connected() {
+		return nil
+	}
+	return ds
 }
 
 func (g *Gateway) listDevices(w http.ResponseWriter, r *http.Request) {
@@ -493,9 +507,14 @@ func (g *Gateway) listDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []map[string]any{}
 	for _, d := range ds {
-		item := map[string]any{"device_id": d.ID, "name": d.Name, "status": d.Status, "created_at": d.CreatedAt.UTC().Format(time.RFC3339), "online": false, "models": []string{}}
+		item := map[string]any{"device_id": d.ID, "name": d.Name, "status": d.Status, "created_at": d.CreatedAt.UTC().Format(time.RFC3339), "online": false, "models": []string{},
+			"public_key": lsp2.PublicJWK(d.PublicKey), "jkt": lsp2.Thumbprint(d.PublicKey)}
+		if d.E2EEKey != "" {
+			item["e2ee_key"] = d.E2EEKey
+		}
 		if s := g.online(d.ID); s != nil {
 			item["online"], item["models"] = true, s.modelList()
+			item["model_capabilities"], item["capabilities"], item["max_concurrency"] = s.modelCaps(), s.capabilities(), s.concurrency()
 		}
 		out = append(out, item)
 	}
@@ -521,158 +540,8 @@ func (g *Gateway) revoke(w http.ResponseWriter, r *http.Request) {
 		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
-	if s := g.online(id); s != nil {
-		_ = s.conn.Close()
-	}
+	g.dropDevice(id, lsp2.ErrUnauthenticated, "device revoked")
 	writeJSON(w, 200, map[string]string{"device_id": id, "status": "revoked"})
-}
-
-// ---------- device WebSocket ----------
-
-func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
-	if !contains(websocket.Subprotocols(r), lsp2.Subprotocol) {
-		httpError(w, r, 400, lsp2.ErrVersion, "WebSocket subprotocol lsp2 required")
-		return
-	}
-	if r.Header.Get("Origin") != "" {
-		httpError(w, r, 403, lsp2.ErrForbidden, "browser origins are not allowed")
-		return
-	}
-	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	claims, err := lsp2.VerifyJWT(g.pub, tok, lsp2.TypAccessToken, Audience, time.Now())
-	if err != nil {
-		httpError(w, r, 401, lsp2.ErrUnauthenticated, err.Error())
-		return
-	}
-	dev, err := g.cfg.Store.GetDevice(r.Context(), claims.Sub)
-	if err != nil || dev.Status != "active" || dev.TenantID != claims.Tenant || claims.Cnf["jkt"] != lsp2.Thumbprint(dev.PublicKey) {
-		httpError(w, r, 403, lsp2.ErrForbidden, "device revoked or token not bound to device key")
-		return
-	}
-	up := websocket.Upgrader{Subprotocols: []string{lsp2.Subprotocol}, CheckOrigin: func(*http.Request) bool { return true }}
-	conn, err := up.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	conn.SetReadLimit(maxFrame)
-	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	var env lsp2.Envelope
-	var hello lsp2.Hello
-	if conn.ReadJSON(&env) != nil || env.Type != lsp2.TypeHello || json.Unmarshal(env.Data, &hello) != nil {
-		return
-	}
-	if env.V != lsp2.Version {
-		writeErr(conn, env.ID, lsp2.ErrVersion, "unsupported protocol version")
-		return
-	}
-	pc, perr := lsp2.VerifyProof(dev.PublicKey, hello.Proof, dev.ID, lsp2.ProofHello, tok, time.Now())
-	if hello.DeviceID != dev.ID || perr != nil || !g.useJTI(pc.Jti, time.Now().Add(3*time.Minute)) {
-		writeErr(conn, env.ID, lsp2.ErrUnauthenticated, "invalid key proof")
-		return
-	}
-	if hello.MaxConcurrency < 1 {
-		hello.MaxConcurrency = 1
-	}
-	if hello.MaxConcurrency > 16 {
-		hello.MaxConcurrency = 16
-	}
-	s := &session{deviceID: dev.ID, tenantID: dev.TenantID, ownerID: dev.OwnerID, models: hello.Models, maxConc: hello.MaxConcurrency, conn: conn, runs: map[string]chan lsp2.Envelope{}, closed: make(chan struct{}), tokenExp: claims.Exp}
-	g.mu.Lock()
-	old := g.sess[dev.ID]
-	g.sess[dev.ID] = s
-	g.mu.Unlock()
-	if old != nil {
-		_ = old.conn.Close()
-	}
-	defer func() {
-		g.mu.Lock()
-		if g.sess[dev.ID] == s {
-			delete(g.sess, dev.ID)
-		}
-		g.mu.Unlock()
-		close(s.closed)
-	}()
-	wb, _ := json.Marshal(lsp2.Welcome{SessionID: lsp2.RandomID("sess_"), HeartbeatSeconds: 20, MaxFrameBytes: maxFrame, TokenExpiresAt: claims.Exp, Capabilities: intersect(hello.Capabilities, lsp2.Capabilities)})
-	if s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeWelcome, ID: env.ID, Data: wb}) != nil {
-		return
-	}
-	g.cfg.Logger.Printf("device %s (tenant %s, owner %s) online, models=%v", dev.ID, dev.TenantID, dev.OwnerID, hello.Models)
-	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(60 * time.Second)) })
-	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	go func() {
-		t := time.NewTicker(g.cfg.PingInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-s.closed:
-				return
-			case <-t.C:
-				s.mu.Lock()
-				expired := time.Now().Unix() > s.tokenExp+30
-				s.mu.Unlock()
-				if expired { // token not refreshed in time: drop the session
-					_ = conn.Close()
-					return
-				}
-				s.wmu.Lock()
-				_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
-				s.wmu.Unlock()
-			}
-		}
-	}()
-	for {
-		var in lsp2.Envelope
-		if err := conn.ReadJSON(&in); err != nil {
-			return
-		}
-		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		switch in.Type {
-		case lsp2.TypeTaskDelta, lsp2.TypeTaskDone, lsp2.TypeTaskError:
-			s.mu.Lock()
-			ch := s.runs[in.TaskID]
-			s.mu.Unlock()
-			if ch != nil {
-				select {
-				case ch <- in:
-				default: // consumer is far behind; drop the session rather than buffer unboundedly
-					return
-				}
-			}
-		case lsp2.TypeSessionToken:
-			if !g.refreshSession(context.Background(), s, dev, in) {
-				writeErr(conn, in.ID, lsp2.ErrUnauthenticated, "session token rejected")
-				return
-			}
-		case lsp2.TypeModelsUpdate:
-			var mu lsp2.ModelsUpdate
-			if json.Unmarshal(in.Data, &mu) == nil && len(mu.Models) <= 500 {
-				s.mu.Lock()
-				s.models = mu.Models
-				if mu.MaxConcurrency >= 1 && mu.MaxConcurrency <= 16 {
-					s.maxConc = mu.MaxConcurrency
-				}
-				s.mu.Unlock()
-			}
-		case lsp2.TypePing:
-			_ = s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypePong, ID: in.ID})
-		case lsp2.TypePong:
-		default:
-			writeErr(conn, in.ID, lsp2.ErrBadRequest, "unknown message type "+in.Type)
-		}
-	}
-}
-
-func writeErr(conn *websocket.Conn, id, code, msg string) {
-	b, _ := json.Marshal(lsp2.ErrorBody{Code: code, Message: msg})
-	_ = conn.WriteJSON(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeError, ID: id, Data: b})
-}
-
-func (s *session) send(e lsp2.Envelope) error {
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-	_ = s.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	return s.conn.WriteJSON(e)
 }
 
 func absI(n int64) int64 {
@@ -707,31 +576,4 @@ func (g *Gateway) RegisterTenant(ctx context.Context, id, name, apiKey string) e
 		return errors.New("tenant API key must be at least 32 characters")
 	}
 	return g.cfg.Store.PutTenant(ctx, store.Tenant{ID: id, Name: name, APIKeyHash: sha(apiKey)})
-}
-
-// refreshSession validates a mid-connection token (same checks as connect plus
-// a fresh key proof) and extends the session's token expiry.
-func (g *Gateway) refreshSession(ctx context.Context, s *session, dev store.Device, in lsp2.Envelope) bool {
-	var st lsp2.SessionToken
-	if json.Unmarshal(in.Data, &st) != nil {
-		return false
-	}
-	c, err := lsp2.VerifyJWT(g.pub, st.AccessToken, lsp2.TypAccessToken, Audience, time.Now())
-	if err != nil || c.Sub != dev.ID || c.Cnf["jkt"] != lsp2.Thumbprint(dev.PublicKey) {
-		return false
-	}
-	cur, err := g.cfg.Store.GetDevice(ctx, dev.ID)
-	if err != nil || cur.Status != "active" {
-		return false
-	}
-	pc, err := lsp2.VerifyProof(dev.PublicKey, st.Proof, dev.ID, lsp2.ProofSessionToken, st.AccessToken, time.Now())
-	if err != nil || !g.useJTI(pc.Jti, time.Now().Add(3*time.Minute)) {
-		return false
-	}
-	s.mu.Lock()
-	s.tokenExp = c.Exp
-	s.mu.Unlock()
-	g.refreshes.Add(1)
-	b, _ := json.Marshal(lsp2.SessionToken{ExpiresAt: c.Exp})
-	return s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeSessionToken, ID: in.ID, Data: b}) == nil
 }

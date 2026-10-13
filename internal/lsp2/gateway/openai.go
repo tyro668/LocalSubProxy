@@ -1,10 +1,16 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,24 +34,20 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	for _, d := range ds {
 		if s := g.online(d.ID); s != nil && d.Status == "active" {
 			for _, m := range s.modelList() {
-				data = append(data, map[string]any{"id": d.ID + "/" + m, "object": "model", "owned_by": d.Name})
+				caps := s.modelCaps()[m]
+				if caps == nil {
+					caps = []string{}
+				}
+				item := map[string]any{"id": d.ID + "/" + m, "object": "model", "owned_by": d.Name, "capabilities": caps}
+				data = append(data, item)
 			}
 		}
 	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
 
-type chatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []lsp2.Message `json:"messages"`
-	Stream      bool           `json:"stream"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	// Unknown OpenAI fields are ignored rather than rejected.
-}
-
 // resolve picks the caller's device for "device_id/model" or a bare model name.
-func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*session, string, string, int) {
+func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*dstate, string, string, int) {
 	ds, err := g.cfg.Store.ListDevices(ctx, tenant, user)
 	if err != nil {
 		return nil, "", lsp2.ErrInternal, 500
@@ -80,6 +82,116 @@ func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*ses
 	return nil, "", lsp2.ErrModelNotFound, 404
 }
 
+type chatRequest struct {
+	Model       string          `json:"model"`
+	Messages    []lsp2.Message  `json:"messages"`
+	Tools       []lsp2.Tool     `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
+	Stream      bool            `json:"stream"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	// E2EE is a JWE (compact) sealing an lsp2.E2EERequest to the device's
+	// X25519 key; when set, messages/tools MUST be absent (gateway is blind).
+	E2EE string `json:"lsp2_e2ee,omitempty"`
+	// Unknown OpenAI fields are ignored rather than rejected.
+}
+
+type blobData struct {
+	ref  lsp2.BlobRef
+	data []byte
+}
+
+var statusOf = map[string]int{
+	lsp2.ErrBadRequest: 400, lsp2.ErrUnsupported: 400, lsp2.ErrPayloadTooLarge: 413, lsp2.ErrIdempotency: 422,
+	lsp2.ErrModelNotFound: 404, lsp2.ErrDeviceOffline: 503, lsp2.ErrDeviceBusy: 429, lsp2.ErrTimeout: 504,
+	lsp2.ErrCancelled: 499, lsp2.ErrRateLimited: 429, lsp2.ErrUnauthenticated: 401, lsp2.ErrForbidden: 403,
+}
+
+func errStatus(code string) int {
+	if s, ok := statusOf[code]; ok {
+		return s
+	}
+	return 502
+}
+
+// extractBlobs moves large inline binaries (data: URIs, input_audio) out of
+// the messages into blobs and checks URL schemes and size limits.
+func extractBlobs(msgs []lsp2.Message) ([]blobData, bool, bool, string, string) {
+	var blobs []blobData
+	var total int64
+	vision, audio := false, false
+	add := func(data []byte, mt string) (string, string) {
+		if len(data) > lsp2.MaxBlobBytes {
+			return "", lsp2.ErrPayloadTooLarge
+		}
+		total += int64(len(data))
+		if total > lsp2.MaxTaskBlobBytes {
+			return "", lsp2.ErrPayloadTooLarge
+		}
+		h := sha256.Sum256(data)
+		id := lsp2.RandomID("blob_")
+		blobs = append(blobs, blobData{ref: lsp2.BlobRef{ID: id, Size: int64(len(data)), SHA256: lsp2.B64(h[:]), MediaType: mt}, data: data})
+		return lsp2.BlobScheme + id, ""
+	}
+	for i := range msgs {
+		for j := range msgs[i].Content.Parts {
+			p := &msgs[i].Content.Parts[j]
+			switch p.Type {
+			case "text":
+			case "image_url":
+				vision = true
+				if p.ImageURL == nil {
+					return nil, false, false, lsp2.ErrBadRequest, "image_url part without url"
+				}
+				u := p.ImageURL.URL
+				switch {
+				case strings.HasPrefix(u, "https://"):
+				case strings.HasPrefix(u, "data:"):
+					comma := strings.IndexByte(u, ',')
+					meta := u[5:max(comma, 5)]
+					if comma < 0 || !strings.HasSuffix(meta, ";base64") || !strings.HasPrefix(meta, "image/") {
+						return nil, false, false, lsp2.ErrBadRequest, "image data URI must be data:image/*;base64,"
+					}
+					if len(u) <= lsp2.InlineDataURIBytes {
+						continue
+					}
+					raw, err := base64.StdEncoding.DecodeString(u[comma+1:])
+					if err != nil {
+						return nil, false, false, lsp2.ErrBadRequest, "invalid base64 in image data URI"
+					}
+					ref, code := add(raw, strings.TrimSuffix(meta, ";base64"))
+					if code != "" {
+						return nil, false, false, code, "image exceeds size limits"
+					}
+					p.ImageURL.URL = ref
+				default:
+					return nil, false, false, lsp2.ErrBadRequest, "image_url must be https:// or a data: URI"
+				}
+			case "input_audio":
+				audio = true
+				if p.InputAudio == nil || (p.InputAudio.Format != "wav" && p.InputAudio.Format != "mp3") {
+					return nil, false, false, lsp2.ErrBadRequest, "input_audio needs data and format wav|mp3"
+				}
+				if len(p.InputAudio.Data) <= lsp2.InlineDataURIBytes {
+					continue
+				}
+				raw, err := base64.StdEncoding.DecodeString(p.InputAudio.Data)
+				if err != nil {
+					return nil, false, false, lsp2.ErrBadRequest, "invalid base64 in input_audio"
+				}
+				ref, code := add(raw, "audio/"+p.InputAudio.Format)
+				if code != "" {
+					return nil, false, false, code, "audio exceeds size limits"
+				}
+				p.InputAudio.Data = ref
+			default:
+				return nil, false, false, lsp2.ErrBadRequest, "unsupported content part " + p.Type
+			}
+		}
+	}
+	return blobs, vision, audio, "", ""
+}
+
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		apiError(w, 405, lsp2.ErrBadRequest, "POST required")
@@ -89,134 +201,296 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req chatRequest
-	if err := decode(r, &req, 1<<20); err != nil || req.Model == "" || len(req.Messages) == 0 || len(req.Messages) > 200 {
-		apiError(w, 400, lsp2.ErrBadRequest, "model and 1-200 messages required")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 48<<20+1))
+	if err != nil || len(body) > 48<<20 {
+		apiError(w, 413, lsp2.ErrPayloadTooLarge, "request body too large")
 		return
 	}
-	for _, m := range req.Messages {
-		if m.Role != "system" && m.Role != "user" && m.Role != "assistant" {
-			apiError(w, 400, lsp2.ErrBadRequest, "unsupported role "+m.Role)
+	var req chatRequest
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&req); err != nil || req.Model == "" {
+		apiError(w, 400, lsp2.ErrBadRequest, "invalid JSON body or missing model")
+		return
+	}
+	// Idempotent re-attach.
+	idemKey := r.Header.Get("Idempotency-Key")
+	if len(idemKey) > 255 {
+		apiError(w, 400, lsp2.ErrBadRequest, "Idempotency-Key too long")
+		return
+	}
+	bh := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(bh[:])
+	if idemKey != "" {
+		if rec, err := g.cfg.Store.GetIdempotency(r.Context(), t.ID, user, idemKey); err == nil {
+			if rec.BodyHash != bodyHash {
+				apiError(w, 422, lsp2.ErrIdempotency, "Idempotency-Key was used with a different request body")
+				return
+			}
+			g.reattach(w, r, rec.TaskID, req.Model, req.Stream)
 			return
 		}
 	}
-	s, model, code, status := g.resolve(r.Context(), t.ID, user, req.Model)
-	if s == nil {
-		apiError(w, status, code, map[string]string{lsp2.ErrDeviceOffline: "your device is offline", lsp2.ErrModelNotFound: "model not found on your devices"}[code])
+	if req.E2EE != "" {
+		if len(req.Messages) > 0 || len(req.Tools) > 0 {
+			apiError(w, 400, lsp2.ErrBadRequest, "lsp2_e2ee requests must not carry cleartext messages or tools")
+			return
+		}
+	} else {
+		if len(req.Messages) == 0 || len(req.Messages) > 500 {
+			apiError(w, 400, lsp2.ErrBadRequest, "1-500 messages required")
+			return
+		}
+		for _, m := range req.Messages {
+			switch m.Role {
+			case "system", "user", "assistant", "tool", "developer":
+			default:
+				apiError(w, 400, lsp2.ErrBadRequest, "unsupported role "+m.Role)
+				return
+			}
+			if m.Role == "tool" && m.ToolCallID == "" {
+				apiError(w, 400, lsp2.ErrBadRequest, "tool messages need tool_call_id")
+				return
+			}
+		}
+	}
+	ds, model, code, status := g.resolve(r.Context(), t.ID, user, req.Model)
+	if ds == nil {
+		apiError(w, status, code, map[string]string{lsp2.ErrDeviceOffline: "your device is offline", lsp2.ErrModelNotFound: "model not found on your devices", lsp2.ErrInternal: "storage error"}[code])
 		return
 	}
+	run := lsp2.TaskRun{DeviceID: ds.deviceID, Model: model, MaxTokens: req.MaxTokens, Temperature: req.Temperature}
+	var blobs []blobData
+	if req.E2EE != "" {
+		if !ds.has(lsp2.CapE2EE) {
+			apiError(w, 400, lsp2.ErrUnsupported, "device does not support end-to-end encryption")
+			return
+		}
+		if strings.Count(req.E2EE, ".") != 4 || len(req.E2EE) > lsp2.MaxTaskBlobBytes {
+			apiError(w, 400, lsp2.ErrBadRequest, "lsp2_e2ee must be a compact JWE")
+			return
+		}
+		h := sha256.Sum256([]byte(req.E2EE))
+		id := lsp2.RandomID("blob_")
+		blobs = []blobData{{ref: lsp2.BlobRef{ID: id, Size: int64(len(req.E2EE)), SHA256: lsp2.B64(h[:]), MediaType: "application/jose"}, data: []byte(req.E2EE)}}
+		run.E2EE = &lsp2.E2EERef{Blob: id}
+	} else {
+		var vision, audio bool
+		var msg string
+		blobs, vision, audio, code, msg = extractBlobs(req.Messages)
+		if code != "" {
+			apiError(w, errStatus(code), code, msg)
+			return
+		}
+		if len(req.Tools) > 0 || len(req.ToolChoice) > 0 {
+			if !ds.has(lsp2.CapTools) || !ds.modelHas(model, lsp2.ModelCapTools) {
+				apiError(w, 400, lsp2.ErrUnsupported, "model "+model+" does not support tools")
+				return
+			}
+			for _, tl := range req.Tools {
+				if tl.Type != "function" || tl.Function.Name == "" {
+					apiError(w, 400, lsp2.ErrBadRequest, "tools must be type function with a name")
+					return
+				}
+			}
+		}
+		if (vision || audio) && !ds.has(lsp2.CapMultimodal) {
+			apiError(w, 400, lsp2.ErrUnsupported, "device does not support multimodal input")
+			return
+		}
+		if vision && !ds.modelHas(model, lsp2.ModelCapVision) {
+			apiError(w, 400, lsp2.ErrUnsupported, "model "+model+" does not accept images")
+			return
+		}
+		if audio && !ds.modelHas(model, lsp2.ModelCapAudio) {
+			apiError(w, 400, lsp2.ErrUnsupported, "model "+model+" does not accept audio")
+			return
+		}
+		run.Messages, run.Tools, run.ToolChoice = req.Messages, req.Tools, req.ToolChoice
+	}
+	for _, b := range blobs {
+		run.Blobs = append(run.Blobs, b.ref)
+	}
+
 	taskID := lsp2.RandomID("task_")
-	ch := make(chan lsp2.Envelope, 1024)
-	s.mu.Lock()
-	if len(s.runs) >= s.maxConc {
-		s.mu.Unlock()
+	if idemKey != "" {
+		err := g.cfg.Store.PutIdempotency(r.Context(), store.Idempotency{TenantID: t.ID, OwnerID: user, Key: idemKey, TaskID: taskID, BodyHash: bodyHash, CreatedAt: time.Now()})
+		if err == store.ErrExists { // lost a race with a concurrent identical request
+			if rec, err := g.cfg.Store.GetIdempotency(r.Context(), t.ID, user, idemKey); err == nil && rec.BodyHash == bodyHash {
+				g.reattach(w, r, rec.TaskID, req.Model, req.Stream)
+				return
+			}
+			apiError(w, 422, lsp2.ErrIdempotency, "Idempotency-Key was used with a different request body")
+			return
+		} else if err != nil {
+			apiError(w, 500, lsp2.ErrInternal, "storage error")
+			return
+		}
+	}
+	// What is stored: the routed request without large binaries; for E2EE only
+	// cleartext metadata (the sealed request is never persisted).
+	stored, _ := json.Marshal(run)
+	if run.E2EE != nil {
+		stored, _ = json.Marshal(map[string]any{"model": model, "e2ee": true, "max_tokens": req.MaxTokens})
+	}
+	now := time.Now()
+	if err := g.cfg.Store.CreateTask(r.Context(), store.Task{ID: taskID, TenantID: t.ID, OwnerID: user, DeviceID: ds.deviceID, Model: model, State: "QUEUED", Request: stored, CreatedAt: now, UpdatedAt: now}); err != nil {
+		apiError(w, 500, lsp2.ErrInternal, "storage error")
+		return
+	}
+	// Fair FIFO wait for one of the device's negotiated concurrency slots.
+	wctx, wcancel := context.WithTimeout(r.Context(), 15*time.Second)
+	got := ds.acquire(wctx)
+	wcancel()
+	if !got || !ds.connected() {
+		if got {
+			ds.release()
+		}
+		_ = g.cfg.Store.SetTaskState(context.Background(), taskID, "FAILED")
+		if !ds.connected() {
+			apiError(w, 503, lsp2.ErrDeviceOffline, "device disconnected")
+			return
+		}
 		w.Header().Set("Retry-After", "2")
 		apiError(w, 429, lsp2.ErrDeviceBusy, "device is at max concurrency")
 		return
 	}
-	s.runs[taskID] = ch
-	s.mu.Unlock()
-	defer func() { s.mu.Lock(); delete(s.runs, taskID); s.mu.Unlock() }()
-
-	run := lsp2.TaskRun{TaskID: taskID, Iat: time.Now().Unix(), DeviceID: s.deviceID, Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Temperature: req.Temperature,
-		Exp: time.Now().Add(time.Minute).Unix(), Nonce: lsp2.RandomID("n_")}
-	data, _ := json.Marshal(run)
-	ctx := context.WithoutCancel(r.Context())
-	now := time.Now()
-	if err := g.cfg.Store.CreateTask(ctx, store.Task{ID: taskID, TenantID: t.ID, OwnerID: user, DeviceID: s.deviceID, Model: model, State: "RUNNING", Request: data, CreatedAt: now, UpdatedAt: now}); err != nil {
-		apiError(w, 500, lsp2.ErrInternal, "storage error")
-		return
-	}
+	task := g.newTask(ds, taskID, t.ID, user, req.Model, run.E2EE != nil, idemKey != "")
+	task.mu.Lock()
+	task.slot = true
+	task.mu.Unlock()
+	_ = g.cfg.Store.SetTaskState(context.Background(), taskID, "RUNNING")
+	run.TaskID, run.Iat, run.Exp, run.Nonce = taskID, now.Unix(), now.Add(time.Minute).Unix(), lsp2.RandomID("n_")
 	jws := lsp2.SignTaskRun(g.cfg.SigningKey, g.kid, run)
-	if err := s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeTaskRun, TaskID: taskID, JWS: jws}); err != nil {
-		_ = g.cfg.Store.SetTaskState(ctx, taskID, "FAILED")
-		apiError(w, 503, lsp2.ErrDeviceOffline, "device disconnected")
+	go g.dispatch(task, jws, blobs)
+	w.Header().Set("X-Task-Id", taskID)
+	g.serve(w, r, task, 0, req.Stream)
+}
+
+// dispatch sends task.run and then the blob chunks through the flow-controlled
+// outbox (they block while the device's windows are full).
+func (g *Gateway) dispatch(t *gtask, jws string, blobs []blobData) {
+	t.sentRun.Store(true)
+	if _, err := t.ds.out.Send(t.ctx, lsp2.Envelope{Type: lsp2.TypeTaskRun, TaskID: t.id, JWS: jws}); err != nil {
+		t.sentRun.Store(false)
+		t.failOffline(lsp2.ErrDeviceOffline, "device disconnected")
 		return
 	}
-	w.Header().Set("X-Task-Id", taskID)
+	for _, b := range blobs {
+		for off := 0; off < len(b.data) || off == 0; off += lsp2.BlobChunkBytes {
+			end := min(off+lsp2.BlobChunkBytes, len(b.data))
+			data, _ := json.Marshal(lsp2.BlobChunk{BlobID: b.ref.ID, Offset: int64(off), Data: lsp2.B64(b.data[off:end]), Last: end == len(b.data)})
+			if _, err := t.ds.out.Send(t.ctx, lsp2.Envelope{Type: lsp2.TypeBlobChunk, TaskID: t.id, Data: data}); err != nil {
+				return // task ended or device gone (handled elsewhere)
+			}
+			if end == len(b.data) {
+				break
+			}
+		}
+	}
+}
 
-	created := now.Unix()
-	chunk := func(delta map[string]any, finish any, usage *lsp2.Usage) []byte {
-		m := map[string]any{"id": "chatcmpl-" + taskID, "object": "chat.completion.chunk", "created": created, "model": req.Model,
+// reattach serves an existing task (Idempotency-Key replay / Last-Event-ID).
+func (g *Gateway) reattach(w http.ResponseWriter, r *http.Request, taskID, reqModel string, stream bool) {
+	g.mu.Lock()
+	t := g.tasks[taskID]
+	g.mu.Unlock()
+	if t == nil {
+		st, err := g.cfg.Store.GetTask(r.Context(), taskID)
+		if err != nil {
+			apiError(w, 404, lsp2.ErrBadRequest, "task no longer available")
+			return
+		}
+		if t, err = g.finishedTask(st, reqModel); err != nil {
+			apiError(w, 500, lsp2.ErrInternal, "storage error")
+			return
+		}
+	}
+	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
+	w.Header().Set("X-Task-Id", taskID)
+	g.serve(w, r, t, after, stream)
+}
+
+// taskEvents is GET /v2/tenant/tasks/{id}/events: SSE re-attachment.
+func (g *Gateway) taskEvents(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v2/tenant/tasks/")
+	id, ok := strings.CutSuffix(rest, "/events")
+	if !ok || r.Method != http.MethodGet || id == "" {
+		apiError(w, 404, lsp2.ErrBadRequest, "not found")
+		return
+	}
+	t, user, ok := g.tenantAuth(w, r)
+	if !ok {
+		return
+	}
+	st, err := g.cfg.Store.GetTask(r.Context(), id)
+	if err != nil || st.TenantID != t.ID || st.OwnerID != user {
+		apiError(w, 404, lsp2.ErrBadRequest, "task not found")
+		return
+	}
+	g.reattach(w, r, id, st.DeviceID+"/"+st.Model, true)
+}
+
+// serve renders a task's events as an OpenAI response (SSE or aggregated JSON).
+func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after int64, stream bool) {
+	created := t.created
+	chunk := func(delta map[string]any, finish any, usage *lsp2.Usage, extra map[string]any) []byte {
+		m := map[string]any{"id": "chatcmpl-" + t.id, "object": "chat.completion.chunk", "created": created, "model": t.reqModel,
 			"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}}
 		if usage != nil {
 			m["usage"] = usage
 		}
+		for k, v := range extra {
+			m[k] = v
+		}
 		b, _ := json.Marshal(m)
 		return b
 	}
-	var flusher http.Flusher
-	if req.Stream {
+	sealed := func(e event, field string) map[string]any {
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(e.Data, &raw)
+		var s string
+		_ = json.Unmarshal(raw[field], &s)
+		if s == "" {
+			return nil
+		}
+		return map[string]any{"lsp2_e2ee": map[string]any{"seq": e.Seq, "type": e.Type, "data": s}}
+	}
+	if stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
-		flusher, _ = w.(http.Flusher)
-		fmt.Fprintf(w, "data: %s\n\n", chunk(map[string]any{"role": "assistant", "content": ""}, nil, nil))
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-	var text strings.Builder
-	var lastSeq int64
-	timeout := time.NewTimer(g.cfg.TaskTimeout)
-	defer timeout.Stop()
-	keep := time.NewTicker(15 * time.Second)
-	defer keep.Stop()
-	fail := func(state string, eb lsp2.ErrorBody, status int) {
-		_ = g.cfg.Store.SetTaskState(ctx, taskID, state)
-		if req.Stream {
-			b, _ := json.Marshal(map[string]any{"error": map[string]any{"message": eb.Message, "type": "lsp2_error", "code": eb.Code}})
-			fmt.Fprintf(w, "data: %s\n\n", b) // no [DONE] after an error
+		flusher, _ := w.(http.Flusher)
+		flush := func() {
 			if flusher != nil {
 				flusher.Flush()
 			}
-			return
 		}
-		apiError(w, status, eb.Code, eb.Message)
-	}
-	cancel := func(reason string) {
-		b, _ := json.Marshal(map[string]string{"reason": reason})
-		_ = s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeTaskCancel, TaskID: taskID, Data: b})
-	}
-	for {
-		select {
-		case <-r.Context().Done():
-			cancel("client_disconnected")
-			_ = g.cfg.Store.SetTaskState(ctx, taskID, "CANCELLED")
-			return
-		case <-timeout.C:
-			cancel("timeout")
-			fail("FAILED", lsp2.ErrorBody{Code: lsp2.ErrTimeout, Message: "task timed out"}, 504)
-			return
-		case <-s.closed:
-			fail("FAILED", lsp2.ErrorBody{Code: lsp2.ErrDeviceOffline, Message: "device disconnected mid-task", Retryable: true}, 503)
-			return
-		case <-keep.C:
-			if req.Stream {
-				fmt.Fprint(w, ": keep-alive\n\n")
-				if flusher != nil {
-					flusher.Flush()
-				}
-			}
-		case e := <-ch:
-			if e.Seq != lastSeq+1 {
-				cancel("protocol_error")
-				fail("FAILED", lsp2.ErrorBody{Code: lsp2.ErrInternal, Message: "sequence gap from device"}, 502)
-				return
-			}
-			lastSeq = e.Seq
-			_ = g.cfg.Store.AppendEvent(ctx, store.Event{TaskID: taskID, Seq: e.Seq, Kind: e.Type, Data: e.Data, At: time.Now()})
+		if after == 0 {
+			fmt.Fprintf(w, "id: 0\ndata: %s\n\n", chunk(map[string]any{"role": "assistant", "content": ""}, nil, nil, nil))
+			flush()
+		}
+		_ = t.stream(r.Context(), after, func() error {
+			_, err := fmt.Fprint(w, ": keep-alive\n\n")
+			flush()
+			return err
+		}, func(e event) error {
+			var b []byte
+			tail := ""
 			switch e.Type {
 			case lsp2.TypeTaskDelta:
 				var d lsp2.TaskDelta
 				_ = json.Unmarshal(e.Data, &d)
-				if req.Stream {
-					fmt.Fprintf(w, "data: %s\n\n", chunk(map[string]any{"content": d.Text}, nil, nil))
-					if flusher != nil {
-						flusher.Flush()
-					}
+				if t.e2ee {
+					b = chunk(map[string]any{}, nil, nil, sealed(e, "e2ee"))
 				} else {
-					text.WriteString(d.Text)
+					delta := map[string]any{}
+					if d.Text != "" {
+						delta["content"] = d.Text
+					}
+					if len(d.ToolCalls) > 0 {
+						delta["tool_calls"] = d.ToolCalls
+					}
+					b = chunk(delta, nil, nil, nil)
 				}
 			case lsp2.TypeTaskDone:
 				var d lsp2.TaskDone
@@ -224,31 +498,93 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 				if d.FinishReason == "" {
 					d.FinishReason = "stop"
 				}
-				_ = g.cfg.Store.SetTaskState(ctx, taskID, "SUCCEEDED")
-				if req.Stream {
-					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk(map[string]any{}, d.FinishReason, d.Usage))
-					if flusher != nil {
-						flusher.Flush()
-					}
-					return
+				var extra map[string]any
+				if t.e2ee {
+					extra = sealed(e, "e2ee")
 				}
-				resp := map[string]any{"id": "chatcmpl-" + taskID, "object": "chat.completion", "created": created, "model": req.Model,
-					"choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": text.String()}, "finish_reason": d.FinishReason}}}
-				if d.Usage != nil {
-					resp["usage"] = d.Usage
-				}
-				writeJSON(w, 200, resp)
-				return
+				b, tail = chunk(map[string]any{}, d.FinishReason, d.Usage, extra), "data: [DONE]\n\n"
 			case lsp2.TypeTaskError:
 				var eb lsp2.ErrorBody
 				_ = json.Unmarshal(e.Data, &eb)
-				state := "FAILED"
-				if eb.Code == lsp2.ErrCancelled {
-					state = "CANCELLED"
-				}
-				fail(state, eb, 502)
-				return
+				b, _ = json.Marshal(map[string]any{"error": map[string]any{"message": eb.Message, "type": "lsp2_error", "code": eb.Code, "retryable": eb.Retryable}})
 			}
+			if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n%s", e.Seq, b, tail); err != nil {
+				return err
+			}
+			flush()
+			return nil
+		})
+		return
+	}
+	// Non-streaming aggregation.
+	var text strings.Builder
+	var calls []lsp2.ToolCall
+	var sealedFrames []any
+	var done *lsp2.TaskDone
+	var fail *lsp2.ErrorBody
+	err := t.stream(r.Context(), after, nil, func(e event) error {
+		switch e.Type {
+		case lsp2.TypeTaskDelta:
+			if t.e2ee {
+				sealedFrames = append(sealedFrames, sealed(e, "e2ee")["lsp2_e2ee"])
+				return nil
+			}
+			var d lsp2.TaskDelta
+			_ = json.Unmarshal(e.Data, &d)
+			text.WriteString(d.Text)
+			for _, c := range d.ToolCalls {
+				idx := 0
+				if c.Index != nil {
+					idx = *c.Index
+				}
+				for len(calls) <= idx {
+					calls = append(calls, lsp2.ToolCall{Type: "function"})
+				}
+				if c.ID != "" {
+					calls[idx].ID = c.ID
+				}
+				calls[idx].Function.Name += c.Function.Name
+				calls[idx].Function.Arguments += c.Function.Arguments
+			}
+		case lsp2.TypeTaskDone:
+			done = &lsp2.TaskDone{}
+			_ = json.Unmarshal(e.Data, done)
+			if t.e2ee {
+				if s := sealed(e, "e2ee"); s != nil {
+					sealedFrames = append(sealedFrames, s["lsp2_e2ee"])
+				}
+			}
+		case lsp2.TypeTaskError:
+			fail = &lsp2.ErrorBody{}
+			_ = json.Unmarshal(e.Data, fail)
+		}
+		return nil
+	})
+	if err != nil {
+		return
+	}
+	if fail != nil {
+		apiError(w, errStatus(fail.Code), fail.Code, fail.Message)
+		return
+	}
+	if done.FinishReason == "" {
+		done.FinishReason = "stop"
+	}
+	msg := map[string]any{"role": "assistant", "content": text.String()}
+	if len(calls) > 0 {
+		msg["tool_calls"] = calls
+		if text.Len() == 0 {
+			msg["content"] = nil
 		}
 	}
+	resp := map[string]any{"id": "chatcmpl-" + t.id, "object": "chat.completion", "created": created, "model": t.reqModel,
+		"choices": []any{map[string]any{"index": 0, "message": msg, "finish_reason": done.FinishReason}}}
+	if t.e2ee {
+		resp["choices"] = []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": nil}, "finish_reason": done.FinishReason}}
+		resp["lsp2_e2ee"] = sealedFrames
+	}
+	if done.Usage != nil {
+		resp["usage"] = done.Usage
+	}
+	writeJSON(w, 200, resp)
 }

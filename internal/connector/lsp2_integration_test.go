@@ -23,7 +23,9 @@ import (
 
 // The desktop core pairs over RFC 8628, connects via lsp2 and serves a
 // streaming completion through its managed OpenAI-compatible adapter.
-func TestDesktopCoreV2EndToEnd(t *testing.T) {
+const dataKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+func TestDesktopCoreEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	model := httptest.NewServer((&fakemodel.Server{Models: []string{"m1", "m2"}}).Handler())
@@ -64,7 +66,7 @@ func TestDesktopCoreV2EndToEnd(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	c, err := connector.New(connector.Config{V2: &id, RemoteURL: remote.URL, JournalFile: filepath.Join(dir, "journal.enc"), JournalKey: journalKey, AdapterFile: filepath.Join(dir, "adapters.enc")})
+	c, err := connector.New(connector.Config{Identity: &id, RemoteURL: remote.URL, DataKey: dataKey, AdapterFile: filepath.Join(dir, "adapters.enc")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +89,7 @@ func TestDesktopCoreV2EndToEnd(t *testing.T) {
 		t.Fatalf("model %s never appeared", want)
 	}
 	waitModels(id.DeviceID + "/lm/m1")
-	if s := c.Status(); s["protocol"] != "v2" || s["gateway_connected"] != true {
+	if s := c.Status(); s["protocol"] != "lsp2" || s["gateway_connected"] != true {
 		t.Fatalf("status %v", s)
 	}
 
