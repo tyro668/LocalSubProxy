@@ -1,0 +1,80 @@
+package gateway
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"localsubproxy/internal/lsp2"
+	"localsubproxy/internal/lsp2/store"
+)
+
+// ServeOptions configures a standalone gateway process. Secrets come from the
+// environment: LSP_SIGNING_SEED (32-byte hex Ed25519 seed; required unless
+// AllowEphemeralKey), LSP_DATA_KEY (optional 32-byte hex AES key for data at
+// rest) and one env var per tenant API key.
+type ServeOptions struct {
+	Listen            string
+	DB                string
+	Tenants           string // "acme:ENV_VAR,beta:ENV_VAR2"
+	Retention         time.Duration
+	AllowEphemeralKey bool
+}
+
+func Serve(ctx context.Context, o ServeOptions) error {
+	var c *store.Cipher
+	if k := os.Getenv("LSP_DATA_KEY"); k != "" {
+		kb, err := hex.DecodeString(k)
+		if err != nil {
+			return errors.New("LSP_DATA_KEY must be 64 hex characters")
+		}
+		if c, err = store.NewCipher(kb); err != nil {
+			return err
+		}
+	}
+	var sk ed25519.PrivateKey
+	if k := os.Getenv("LSP_SIGNING_SEED"); k != "" {
+		kb, err := hex.DecodeString(k)
+		if err != nil || len(kb) != ed25519.SeedSize {
+			return errors.New("LSP_SIGNING_SEED must be 64 hex characters")
+		}
+		sk = ed25519.NewKeyFromSeed(kb)
+	} else if !o.AllowEphemeralKey {
+		return errors.New("set LSP_SIGNING_SEED (devices pin the gateway key; an ephemeral key would force re-pairing on restart)")
+	} else {
+		log.Print("warning: ephemeral gateway signing key; paired devices must re-pair after restart")
+	}
+	st, err := store.OpenSQLite(o.DB, c)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	g, err := New(Config{Store: st, SigningKey: sk, Retention: o.Retention})
+	if err != nil {
+		return err
+	}
+	for _, t := range strings.Split(o.Tenants, ",") {
+		id, env, ok := strings.Cut(strings.TrimSpace(t), ":")
+		if !ok || id == "" {
+			return fmt.Errorf("bad tenant spec %q (want id:ENV_VAR)", t)
+		}
+		if err := g.RegisterTenant(ctx, id, id, os.Getenv(env)); err != nil {
+			return fmt.Errorf("tenant %s: %w (set %s)", id, err, env)
+		}
+	}
+	go g.RunRetention(ctx, time.Hour)
+	log.Printf("lsp2 gateway listening on %s (gateway key %s, encryption at rest: %v)", o.Listen, lsp2.B64(g.PublicKey()), c != nil)
+	s := &http.Server{Addr: o.Listen, Handler: g.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() { <-ctx.Done(); _ = s.Close() }()
+	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}

@@ -3,8 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -14,10 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"localsubproxy/internal/lsp2"
 	"localsubproxy/internal/lsp2/client"
 	"localsubproxy/internal/lsp2/gateway"
-	"localsubproxy/internal/lsp2/store"
 	"localsubproxy/mock/demo"
 	"localsubproxy/mock/fakemodel"
 	"localsubproxy/mock/saas"
@@ -50,43 +46,7 @@ func main() {
 		tenants := f.String("tenants", "acme:LSP_TENANT_KEY_ACME", "comma list of tenant:ENV_VAR_WITH_API_KEY")
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
 		f.Parse(os.Args[2:])
-		var c *store.Cipher
-		if k := os.Getenv("LSP_DATA_KEY"); k != "" { // 64 hex chars → AES-256-GCM at rest
-			kb, e := hex.DecodeString(k)
-			if e != nil {
-				log.Fatal("LSP_DATA_KEY must be hex")
-			}
-			if c, err = store.NewCipher(kb); err != nil {
-				log.Fatal(err)
-			}
-		}
-		var sk ed25519.PrivateKey
-		if k := os.Getenv("LSP_SIGNING_SEED"); k != "" { // 64 hex chars; otherwise ephemeral
-			kb, e := hex.DecodeString(k)
-			if e != nil || len(kb) != ed25519.SeedSize {
-				log.Fatal("LSP_SIGNING_SEED must be 32 bytes hex")
-			}
-			sk = ed25519.NewKeyFromSeed(kb)
-		} else {
-			log.Print("warning: LSP_SIGNING_SEED unset; using an ephemeral signing key (paired devices must re-pair after restart)")
-		}
-		st, e := store.OpenSQLite(*db, c)
-		if e != nil {
-			log.Fatal(e)
-		}
-		g, e := gateway.New(gateway.Config{Store: st, SigningKey: sk, Retention: *retention})
-		if e != nil {
-			log.Fatal(e)
-		}
-		for _, t := range strings.Split(*tenants, ",") {
-			id, env, _ := strings.Cut(t, ":")
-			if e := g.RegisterTenant(ctx, id, id, os.Getenv(env)); e != nil {
-				log.Fatalf("tenant %s: %v (set %s)", id, e, env)
-			}
-		}
-		go g.RunRetention(ctx, time.Hour)
-		log.Printf("lsp2 gateway on http://%s (gateway key %s)", *listen, lsp2.B64(g.PublicKey()))
-		err = serve(ctx, *listen, g.Handler())
+		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, AllowEphemeralKey: true})
 	case "saas":
 		f := flag.NewFlagSet("saas", flag.ExitOnError)
 		listen := f.String("listen", "127.0.0.1:3000", "")
