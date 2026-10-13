@@ -7,11 +7,12 @@
 | 包 | 作用 |
 |---|---|
 | `saas/` | Mock 业务服务：登录、`/link` 配对页、设备列表、聊天页（转发网关的 SSE 流） |
-| `fakemodel/` | 一个假的 OpenAI 兼容模型，支持流式输出 |
+| `fakemodel/` | 一个假的模型：OpenAI 兼容 `/v1` 与 Ollama 原生 `/api/chat`、`/api/tags`，都支持流式输出 |
 | `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
 | `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
 | `node/` | Node.js 版完整网关（与参考网关等价，通过 63 项 `lsp2-conformance`），见 [node/README.md](node/README.md) |
 | `python/` | Python（aiohttp）版完整网关，同上，见 [python/README.md](python/README.md) |
+| `web/` | 三种网关共用的模拟 SaaS 聊天页（`/`、`/chat`）：配对、设备、流式对话、图片、停止、用量与耗时，见 [web/README.md](web/README.md) |
 | `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LSP2_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑三种实现 |
 
 ## 一条命令看完整流程

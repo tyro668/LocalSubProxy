@@ -5,6 +5,9 @@
 //   - after a tool result: answers from the tool output;
 //   - image_url parts: describes the image (media type and decoded size);
 //   - "长" in the prompt: a long answer; "超长" a very long, fast stream.
+//
+// It also speaks the Ollama-native /api/tags and /api/chat (NDJSON stream)
+// that the desktop connector's ollama_http adapter calls.
 package fakemodel
 
 import (
@@ -33,6 +36,15 @@ func (s *Server) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 	})
 	m.HandleFunc("/v1/chat/completions", s.chat)
+	// Ollama-native API (what the desktop connector's ollama_http adapter calls).
+	m.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
+		data := []map[string]string{}
+		for _, id := range s.Models {
+			data = append(data, map[string]string{"name": id, "model": id})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": data})
+	})
+	m.HandleFunc("/api/chat", s.ollamaChat)
 	return m
 }
 
@@ -116,4 +128,52 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		n++
 	}
 	finish("stop", n)
+}
+
+// ollamaChat is a minimal Ollama /api/chat: NDJSON stream, images as raw
+// base64 in "images", usage in prompt_eval_count/eval_count.
+func (s *Server) ollamaChat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model    string `json:"model"`
+		Messages []struct {
+			Role    string   `json:"role"`
+			Content string   `json:"content"`
+			Images  []string `json:"images"`
+		} `json:"messages"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Messages) == 0 {
+		http.Error(w, `{"error":"bad request"}`, 400)
+		return
+	}
+	if req.Model == "broken" {
+		http.Error(w, `{"error":"model crashed"}`, 500)
+		return
+	}
+	last := req.Messages[len(req.Messages)-1]
+	reply := fmt.Sprintf("你好，我是本机模型 %s（第 %d 轮）。你说的是：%s", req.Model, (len(req.Messages)+1)/2, last.Content)
+	if strings.Contains(last.Content, "长") {
+		reply = strings.Repeat("这是一段很长的回答。", 50)
+	}
+	for _, img := range last.Images {
+		raw, _ := base64.StdEncoding.DecodeString(img)
+		reply = fmt.Sprintf("我看到了一张图片，%d 字节。", len(raw)) + reply
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	f, _ := w.(http.Flusher)
+	enc := json.NewEncoder(w)
+	n := 0
+	for _, ch := range reply {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(s.Delay):
+		}
+		_ = enc.Encode(map[string]any{"model": req.Model, "message": map[string]string{"role": "assistant", "content": string(ch)}, "done": false})
+		if f != nil {
+			f.Flush()
+		}
+		n++
+	}
+	_ = enc.Encode(map[string]any{"model": req.Model, "message": map[string]string{"role": "assistant", "content": ""}, "done": true,
+		"done_reason": "stop", "prompt_eval_count": len([]rune(last.Content)), "eval_count": n})
 }

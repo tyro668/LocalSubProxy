@@ -22,16 +22,18 @@ node gateway.mjs --listen 127.0.0.1:8080 --tenant-profiles ../tenant-profiles.ex
 | `--tenant-profiles F` / `LSP2_TENANT_PROFILES` | 租户 JSON 文件，格式见 `../tenant-profiles.example.json` |
 | `LSP2_SIGNING_SEED` | 32 字节十六进制 Ed25519 种子；不设置则每次启动随机生成 |
 | `--max-concurrency` | 每设备并发上限，默认 16 |
+| `--web-dir` / `LSP2_WEB_DIR` | 聊天页目录，默认 `../web`；在 `/` 与 `/chat` 提供，见 [../web/README.md](../web/README.md) |
+| `--no-chat-ui` | 不提供聊天页 |
 
 Docker：
 
 ```bash
-docker build -t lsp2-mock-node mock/node
+docker build -f mock/node/Dockerfile -t lsp2-mock-node .   # 在仓库根目录构建，镜像内含聊天页
 docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mock-node \
   --issuer http://127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
 ```
 
-连接 Go 连接器：`localsubproxy connector -pair-link 'lsp2://pair?v=2&gateway=http://127.0.0.1:8080&tenant=acme' ...`，然后用租户 Key 调用 `POST /v2/tenant/device-approvals` 批准显示的配对码（或用 `go run ./mock/cmd/lspmock saas -gateway http://127.0.0.1:8080 -tenant acme` 的网页）。
+连接 Go 连接器：`localsubproxy connector -pair-link 'lsp2://pair?v=2&gateway=http://127.0.0.1:8080&tenant=acme' ...`，然后用租户 Key 调用 `POST /v2/tenant/device-approvals` 批准显示的配对码（或直接打开本网关自带的聊天页 http://127.0.0.1:8080/chat ，见 [../web/README.md](../web/README.md)）。
 
 单元测试：`npm test`（JWS、origin、发送/接收端流控状态机）。
 

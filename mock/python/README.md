@@ -14,17 +14,17 @@ export LSP2_SIGNING_SEED=$(openssl rand -hex 32)     # 可选：固定网关签�
 .venv/bin/python gateway.py --listen 127.0.0.1:8080 --tenant-profiles ../tenant-profiles.example.json
 ```
 
-参数与 Node 版相同：`--listen`、`--issuer`、`--tenant id:ENV`（可重复）、`--tenant-profiles`、`--signing-key-env`（默认读 `LSP2_SIGNING_SEED`）、`--max-concurrency`；对应环境变量 `LSP2_LISTEN`、`LSP2_ISSUER`、`LSP2_TENANT_PROFILES`。
+参数与 Node 版相同：`--listen`、`--issuer`、`--tenant id:ENV`（可重复）、`--tenant-profiles`、`--signing-key-env`（默认读 `LSP2_SIGNING_SEED`）、`--max-concurrency`、`--web-dir`（聊天页目录，默认 `../web`，见 [../web/README.md](../web/README.md)）、`--no-chat-ui`；对应环境变量 `LSP2_LISTEN`、`LSP2_ISSUER`、`LSP2_TENANT_PROFILES`。
 
 Docker：
 
 ```bash
-docker build -t lsp2-mock-python mock/python
+docker build -f mock/python/Dockerfile -t lsp2-mock-python .   # 在仓库根目录构建，镜像内含聊天页
 docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mock-python \
   --issuer http://127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
 ```
 
-单元测试：`.venv/bin/python -m unittest test_lsp2`。
+单元测试：`.venv/bin/python -m unittest test_lsp2 test_web`。
 
 ## 实现要点
 
