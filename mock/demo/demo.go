@@ -354,7 +354,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	if r := []rune(res.ImageReply); len(r) > 40 {
 		res.ImageReply = string(r[:40]) + "…"
 	}
-	say("⑦d 图片输入：120 KiB data: URI 被网关移入 blob（2 个 96 KiB blob.chunk，sha256 签入 task.run）→ 设备重组后交给模型：%q", res.ImageReply)
+	say("⑦d 图片输入：120 KiB data: URI 被网关移入 blob（task.run 签入 size+sha256，随后 2 个 ≤96 KiB 的 blob.chunk）→ 设备重组后交给模型：%q", res.ImageReply)
 
 	// ── 端到端加密 ──
 	secret := "机密：项目代号青鸾，预算 4200 万"
