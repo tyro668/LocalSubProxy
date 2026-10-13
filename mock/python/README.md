@@ -24,7 +24,7 @@ docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LSP2_SIGNING_SEED lsp2-mo
   --issuer http://127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
 ```
 
-单元测试：`.venv/bin/python -m pytest test_web.py`（聊天页与 CSP）；协议单元测试在 `sdk/python`（`cd sdk/python && .venv/bin/pytest`）。
+单元测试：`.venv/bin/python -m unittest test_web`（聊天页与 CSP）；协议单元测试在 `sdk/python`（`cd sdk/python && .venv/bin/pytest`）。
 
 ## 实现要点
 
