@@ -352,12 +352,105 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 	_ = send("message_start", map[string]any{"type": "message_start", "message": map[string]any{"id": msgID, "type": "message", "role": "assistant",
 		"model": t.reqModel, "content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": map[string]any{"input_tokens": 0, "output_tokens": 0}}})
 	_ = flush()
-	idx, open := -1, ""
-	tools := map[int]int{} // OpenAI tool index → content block index
-	closeOpen := func() {
-		if open != "" {
-			_ = send("content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
-			open = ""
+	// Content-block state (audit finding 5). Anthropic blocks are strictly
+	// sequential: one open block, no delta after content_block_stop. OpenAI
+	// tool_call deltas may interleave, so a live tool block stays open until
+	// task.done (its arguments may continue later); content for any other
+	// block arriving meanwhile is buffered and emitted, complete, at done.
+	// A text block can always be closed: later text starts a new text block.
+	type ablock struct {
+		tool     bool
+		id, name string
+		buf      strings.Builder
+	}
+	idx, liveKind, liveTI := -1, "", -1
+	var pending []*ablock
+	pendingTool := map[int]*ablock{}
+	toolID := func(ti int, id string) string {
+		if id == "" {
+			id = fmt.Sprintf("toolu_%s_%d", strings.TrimPrefix(t.id, "task_"), ti)
+		}
+		return id
+	}
+	start := func(cb map[string]any) {
+		idx++
+		_ = send("content_block_start", map[string]any{"type": "content_block_start", "index": idx, "content_block": cb})
+	}
+	textDelta := func(s string) {
+		_ = send("content_block_delta", map[string]any{"type": "content_block_delta", "index": idx, "delta": map[string]any{"type": "text_delta", "text": s}})
+	}
+	argsDelta := func(s string) {
+		_ = send("content_block_delta", map[string]any{"type": "content_block_delta", "index": idx, "delta": map[string]any{"type": "input_json_delta", "partial_json": s}})
+	}
+	stop := func() {
+		_ = send("content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
+	}
+	closeLive := func() {
+		if liveKind != "" {
+			stop()
+			liveKind, liveTI = "", -1
+		}
+	}
+	finishBlocks := func() {
+		closeLive()
+		for _, b := range pending {
+			if b.tool {
+				start(map[string]any{"type": "tool_use", "id": b.id, "name": b.name, "input": map[string]any{}})
+				if b.buf.Len() > 0 {
+					argsDelta(b.buf.String())
+				}
+			} else {
+				start(map[string]any{"type": "text", "text": ""})
+				textDelta(b.buf.String())
+			}
+			stop()
+		}
+		pending = nil
+	}
+	onText := func(s string) {
+		switch liveKind {
+		case "text":
+		case "":
+			start(map[string]any{"type": "text", "text": ""})
+			liveKind = "text"
+		default: // a tool is live: buffer
+			if n := len(pending); n > 0 && !pending[n-1].tool {
+				pending[n-1].buf.WriteString(s)
+			} else {
+				b := &ablock{}
+				b.buf.WriteString(s)
+				pending = append(pending, b)
+			}
+			return
+		}
+		textDelta(s)
+	}
+	onTool := func(ti int, c lmbp.ToolCall) {
+		if liveKind == "tool" && liveTI == ti {
+			if c.Function.Arguments != "" {
+				argsDelta(c.Function.Arguments)
+			}
+			return
+		}
+		if b := pendingTool[ti]; b != nil {
+			if b.name == "" {
+				b.name = c.Function.Name
+			}
+			b.buf.WriteString(c.Function.Arguments)
+			return
+		}
+		if liveKind == "tool" { // another tool is live: buffer this one
+			b := &ablock{tool: true, id: toolID(ti, c.ID), name: c.Function.Name}
+			b.buf.WriteString(c.Function.Arguments)
+			pending = append(pending, b)
+			pendingTool[ti] = b
+			return
+		}
+		closeLive()
+		start(map[string]any{"type": "tool_use", "id": toolID(ti, c.ID), "name": c.Function.Name, "input": map[string]any{}})
+		liveKind, liveTI = "tool", ti
+		if c.Function.Arguments != "" {
+			argsDelta(c.Function.Arguments)
 		}
 	}
 	ping := func() error {
@@ -375,38 +468,19 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 			var d lmbp.TaskDelta
 			_ = json.Unmarshal(e.Data, &d)
 			if d.Text != "" {
-				if open != "text" {
-					closeOpen()
-					idx++
-					open = "text"
-					_ = send("content_block_start", map[string]any{"type": "content_block_start", "index": idx, "content_block": map[string]any{"type": "text", "text": ""}})
-				}
-				_ = send("content_block_delta", map[string]any{"type": "content_block_delta", "index": idx, "delta": map[string]any{"type": "text_delta", "text": d.Text}})
+				onText(d.Text)
 			}
 			for _, c := range d.ToolCalls {
 				ti := 0
 				if c.Index != nil {
 					ti = *c.Index
 				}
-				bi, seen := tools[ti]
-				if !seen {
-					closeOpen()
-					idx++
-					bi, tools[ti], open = idx, idx, fmt.Sprintf("tool%d", ti)
-					id := c.ID
-					if id == "" {
-						id = fmt.Sprintf("toolu_%s_%d", strings.TrimPrefix(t.id, "task_"), ti)
-					}
-					_ = send("content_block_start", map[string]any{"type": "content_block_start", "index": bi, "content_block": map[string]any{"type": "tool_use", "id": id, "name": c.Function.Name, "input": map[string]any{}}})
-				}
-				if c.Function.Arguments != "" {
-					_ = send("content_block_delta", map[string]any{"type": "content_block_delta", "index": bi, "delta": map[string]any{"type": "input_json_delta", "partial_json": c.Function.Arguments}})
-				}
+				onTool(ti, c)
 			}
 		case lmbp.TypeTaskDone:
 			var d lmbp.TaskDone
 			_ = json.Unmarshal(e.Data, &d)
-			closeOpen()
+			finishBlocks()
 			usage := map[string]any{"output_tokens": 0}
 			if d.Usage != nil {
 				usage = map[string]any{"input_tokens": d.Usage.PromptTokens, "output_tokens": d.Usage.CompletionTokens}

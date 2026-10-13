@@ -232,10 +232,82 @@ async def serve(req: Any, t: Any, after: int, stream: bool, headers: dict, json_
         if out:
             await resp.write("".join(out).encode())
 
-    def close_open():
-        if state["open"]:
-            send("content_block_stop", {"type": "content_block_stop", "index": state["idx"]})
-            state["open"] = ""
+    # Content-block state (audit finding 5): Anthropic blocks are strictly
+    # sequential (one open block, no delta after content_block_stop) while
+    # OpenAI tool_call deltas may interleave. A live tool block stays open
+    # until task.done; content for other blocks arriving meanwhile is buffered
+    # and emitted, complete, at done. A text block can always be closed.
+    blk = {"live": "", "ti": -1, "pending": [], "ptool": {}}
+
+    def tool_id(ti, cid):
+        return cid or f"toolu_{t.id.removeprefix('task_')}_{ti}"
+
+    def start(cb):
+        state["idx"] += 1
+        send("content_block_start", {"type": "content_block_start", "index": state["idx"], "content_block": cb})
+
+    def text_delta(x):
+        send("content_block_delta", {"type": "content_block_delta", "index": state["idx"], "delta": {"type": "text_delta", "text": x}})
+
+    def args_delta(x):
+        send("content_block_delta", {"type": "content_block_delta", "index": state["idx"], "delta": {"type": "input_json_delta", "partial_json": x}})
+
+    def stop():
+        send("content_block_stop", {"type": "content_block_stop", "index": state["idx"]})
+
+    def close_live():
+        if blk["live"]:
+            stop()
+            blk["live"], blk["ti"] = "", -1
+
+    def finish_blocks():
+        close_live()
+        for b in blk["pending"]:
+            if b["tool"]:
+                start({"type": "tool_use", "id": b["id"], "name": b["name"], "input": {}})
+                if b["buf"]:
+                    args_delta(b["buf"])
+            else:
+                start({"type": "text", "text": ""})
+                text_delta(b["buf"])
+            stop()
+        blk["pending"] = []
+
+    def on_text(x):
+        if blk["live"] == "tool":
+            p = blk["pending"]
+            if p and not p[-1]["tool"]:
+                p[-1]["buf"] += x
+            else:
+                p.append({"tool": False, "id": "", "name": "", "buf": x})
+            return
+        if not blk["live"]:
+            start({"type": "text", "text": ""})
+            blk["live"] = "text"
+        text_delta(x)
+
+    def on_tool(ti, c):
+        fn = c.get("function") or {}
+        args = fn.get("arguments") or ""
+        if blk["live"] == "tool" and blk["ti"] == ti:
+            if args:
+                args_delta(args)
+            return
+        p = blk["ptool"].get(ti)
+        if p is not None:
+            p["name"] = p["name"] or fn.get("name") or ""
+            p["buf"] += args
+            return
+        if blk["live"] == "tool":
+            b = {"tool": True, "id": tool_id(ti, c.get("id")), "name": fn.get("name") or "", "buf": args}
+            blk["pending"].append(b)
+            blk["ptool"][ti] = b
+            return
+        close_live()
+        start({"type": "tool_use", "id": tool_id(ti, c.get("id")), "name": fn.get("name") or "", "input": {}})
+        blk["live"], blk["ti"] = "tool", ti
+        if args:
+            args_delta(args)
 
     send("message_start", {"type": "message_start", "message": {"id": msg_id, "type": "message", "role": "assistant", "model": t.req_model,
                                                                 "content": [], "stop_reason": None, "stop_sequence": None,
@@ -250,28 +322,11 @@ async def serve(req: Any, t: Any, after: int, stream: bool, headers: dict, json_
         d = e.get("data") or {}
         if e["type"] == "task.delta":
             if d.get("text"):
-                if state["open"] != "text":
-                    close_open()
-                    state["idx"] += 1
-                    state["open"] = "text"
-                    send("content_block_start", {"type": "content_block_start", "index": state["idx"], "content_block": {"type": "text", "text": ""}})
-                send("content_block_delta", {"type": "content_block_delta", "index": state["idx"], "delta": {"type": "text_delta", "text": d["text"]}})
+                on_text(d["text"])
             for c in d.get("tool_calls") or []:
-                ti = c.get("index") if _is_int(c.get("index")) else 0
-                bi = state["tools"].get(ti)
-                fn = c.get("function") or {}
-                if bi is None:
-                    close_open()
-                    state["idx"] += 1
-                    bi = state["tools"][ti] = state["idx"]
-                    state["open"] = f"tool{ti}"
-                    tid = c.get("id") or f"toolu_{t.id.removeprefix('task_')}_{ti}"
-                    send("content_block_start", {"type": "content_block_start", "index": bi,
-                                                 "content_block": {"type": "tool_use", "id": tid, "name": fn.get("name") or "", "input": {}}})
-                if fn.get("arguments"):
-                    send("content_block_delta", {"type": "content_block_delta", "index": bi, "delta": {"type": "input_json_delta", "partial_json": fn["arguments"]}})
+                on_tool(c.get("index") if _is_int(c.get("index")) else 0, c)
         elif e["type"] == "task.done":
-            close_open()
+            finish_blocks()
             u = d.get("usage")
             send("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop_reason(d.get("finish_reason")), "stop_sequence": None},
                                    "usage": _usage(u) if u else {"output_tokens": 0}})

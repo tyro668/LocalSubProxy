@@ -169,29 +169,62 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
   send('message_start', { type: 'message_start', message: { id: msgID, type: 'message', role: 'assistant', model: t.reqModel, content: [],
     stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
   flush();
-  let idx = -1, open = '';
-  const tools = new Map<number, number>();
-  const closeOpen = () => { if (open) { send('content_block_stop', { type: 'content_block_stop', index: idx }); open = ''; } };
+  // Content-block state (audit finding 5): Anthropic blocks are strictly
+  // sequential (one open block, no delta after content_block_stop) while
+  // OpenAI tool_call deltas may interleave. A live tool block stays open until
+  // task.done; content for other blocks arriving meanwhile is buffered and
+  // emitted, complete, at done. A text block can always be closed.
+  type Block = { tool: boolean; id: string; name: string; buf: string };
+  let idx = -1, liveKind = '', liveTI = -1;
+  let pending: Block[] = [];
+  const pendingTool = new Map<number, Block>();
+  const toolID = (ti: number, id?: string) => id || `toolu_${t.id.replace(/^task_/, '')}_${ti}`;
+  const start = (cb: unknown) => { idx++; send('content_block_start', { type: 'content_block_start', index: idx, content_block: cb }); };
+  const textDelta = (s: string) => send('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: s } });
+  const argsDelta = (s: string) => send('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: s } });
+  const stop = () => send('content_block_stop', { type: 'content_block_stop', index: idx });
+  const closeLive = () => { if (liveKind) { stop(); liveKind = ''; liveTI = -1; } };
+  const finishBlocks = () => {
+    closeLive();
+    for (const b of pending) {
+      if (b.tool) { start({ type: 'tool_use', id: b.id, name: b.name, input: {} }); if (b.buf) argsDelta(b.buf); }
+      else { start({ type: 'text', text: '' }); textDelta(b.buf); }
+      stop();
+    }
+    pending = [];
+  };
+  const onText = (s: string) => {
+    if (liveKind === 'tool') {
+      const last = pending.at(-1);
+      if (last && !last.tool) last.buf += s; else pending.push({ tool: false, id: '', name: '', buf: s });
+      return;
+    }
+    if (!liveKind) { start({ type: 'text', text: '' }); liveKind = 'text'; }
+    textDelta(s);
+  };
+  const onTool = (ti: number, c: Obj) => {
+    const fn = (c.function || {}) as Obj;
+    const args = (fn.arguments as string) || '';
+    if (liveKind === 'tool' && liveTI === ti) { if (args) argsDelta(args); return; }
+    const p = pendingTool.get(ti);
+    if (p) { if (!p.name) p.name = (fn.name as string) || ''; p.buf += args; return; }
+    if (liveKind === 'tool') {
+      const b = { tool: true, id: toolID(ti, c.id as string), name: (fn.name as string) || '', buf: args };
+      pending.push(b); pendingTool.set(ti, b); return;
+    }
+    closeLive();
+    start({ type: 'tool_use', id: toolID(ti, c.id as string), name: (fn.name as string) || '', input: {} });
+    liveKind = 'tool'; liveTI = ti;
+    if (args) argsDelta(args);
+  };
   await t.stream(0, signal, () => res.write('event: ping\ndata: {"type":"ping"}\n\n'), (e) => {
     cur = e.seq;
     if (e.type === 'task.delta') {
       const d = e.data || {};
-      if (d.text) {
-        if (open !== 'text') { closeOpen(); idx++; open = 'text'; send('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } }); }
-        send('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: d.text } });
-      }
-      for (const c of d.tool_calls || []) {
-        const ti = Number.isInteger(c.index) ? c.index : 0;
-        let bi = tools.get(ti);
-        if (bi === undefined) {
-          closeOpen(); idx++; bi = idx; tools.set(ti, bi); open = 'tool' + ti;
-          const id = c.id || `toolu_${t.id.replace(/^task_/, '')}_${ti}`;
-          send('content_block_start', { type: 'content_block_start', index: bi, content_block: { type: 'tool_use', id, name: c.function?.name || '', input: {} } });
-        }
-        if (c.function?.arguments) send('content_block_delta', { type: 'content_block_delta', index: bi, delta: { type: 'input_json_delta', partial_json: c.function.arguments } });
-      }
+      if (d.text) onText(d.text);
+      for (const c of d.tool_calls || []) onTool(Number.isInteger(c.index) ? c.index : 0, c);
     } else if (e.type === 'task.done') {
-      closeOpen();
+      finishBlocks();
       const u = e.data?.usage;
       send('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason(e.data?.finish_reason), stop_sequence: null },
         usage: u ? usageOf(u) : { output_tokens: 0 } });

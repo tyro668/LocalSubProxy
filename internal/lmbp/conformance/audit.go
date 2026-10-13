@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,6 +23,109 @@ import (
 func (r *runner) runAudit(ctx context.Context, dev *extDev, full func(string) string, mTools string) {
 	r.auditIdempotency(ctx, dev, full(mTools))
 	r.auditResumeBounds(ctx, dev, full(mTools))
+	r.auditAnthropicInterleave(ctx, dev, full(mTools))
+}
+
+// anthropicLifecycle checks the strict Messages streaming lifecycle:
+// message_start first; blocks are started with consecutive indices 0..n-1,
+// at most one open at a time; deltas and stops only for the open block;
+// message_delta after every block is stopped; message_stop last. It returns
+// the reconstructed text and tool inputs (name → concatenated partial_json).
+func anthropicLifecycle(evs []namedEvent) (string, map[string]string, error) {
+	text, tools := "", map[string]string{}
+	open, next := -1, 0
+	names := map[int]string{}
+	if len(evs) == 0 || evs[0].event != "message_start" {
+		return "", nil, errors.New("first event is not message_start")
+	}
+	for i, e := range evs[1:] {
+		idx := -1
+		if f, ok := e.data["index"].(float64); ok {
+			idx = int(f)
+		}
+		switch e.event {
+		case "content_block_start":
+			if open != -1 {
+				return "", nil, fmt.Errorf("event %d: block %d started while block %d is open", i+1, idx, open)
+			}
+			if idx != next {
+				return "", nil, fmt.Errorf("event %d: block index %d, want %d", i+1, idx, next)
+			}
+			open, next = idx, next+1
+			if cb, _ := e.data["content_block"].(map[string]any); cb["type"] == "tool_use" {
+				n, _ := cb["name"].(string)
+				names[idx] = n
+				tools[n] += ""
+			}
+		case "content_block_delta":
+			if idx != open {
+				return "", nil, fmt.Errorf("event %d: delta for block %d but open block is %d", i+1, idx, open)
+			}
+			d, _ := e.data["delta"].(map[string]any)
+			switch d["type"] {
+			case "text_delta":
+				t, _ := d["text"].(string)
+				text += t
+			case "input_json_delta":
+				pj, _ := d["partial_json"].(string)
+				tools[names[idx]] += pj
+			}
+		case "content_block_stop":
+			if idx != open {
+				return "", nil, fmt.Errorf("event %d: stop for block %d but open block is %d", i+1, idx, open)
+			}
+			open = -1
+		case "message_delta":
+			if open != -1 {
+				return "", nil, fmt.Errorf("event %d: message_delta while block %d is open", i+1, open)
+			}
+		case "message_stop":
+			if i+1 != len(evs)-1 {
+				return "", nil, errors.New("message_stop is not the last event")
+			}
+		}
+	}
+	if evs[len(evs)-1].event != "message_stop" {
+		return "", nil, errors.New("stream does not end with message_stop")
+	}
+	return text, tools, nil
+}
+
+// Z5: interleaved OpenAI-style tool_call deltas (and text between them) are
+// converted into a valid Anthropic event lifecycle without losing any
+// argument bytes (audit finding 5).
+func (r *runner) auditAnthropicInterleave(ctx context.Context, dev *extDev, model string) {
+	ix := func(i int) *int { return &i }
+	body := map[string]any{"model": model, "stream": true, "max_tokens": 64, "messages": []any{map[string]any{"role": "user", "content": "interleave"}},
+		"tools": []any{map[string]any{"name": "fa", "input_schema": map[string]any{"type": "object"}}, map[string]any{"name": "fb", "input_schema": map[string]any{"type": "object"}},
+			map[string]any{"name": "fc", "input_schema": map[string]any{"type": "object"}}}}
+	ch := make(chan []byte, 1)
+	go func() { _, _, b := r.messagesRaw(ctx, body, nil); ch <- b }()
+	f, _, err := dev.await(lmbp.TypeTaskRun, nil)
+	if err != nil {
+		r.check("Z5", "anthropic interleaved tools", err)
+		return
+	}
+	tc := func(i int, id, name, args string) lmbp.ToolCall {
+		return lmbp.ToolCall{Index: ix(i), ID: id, Type: map[bool]string{true: "function"}[id != ""], Function: lmbp.FunctionCall{Name: name, Arguments: args}}
+	}
+	deltas := []lmbp.TaskDelta{
+		{Text: "Hi"},
+		{ToolCalls: []lmbp.ToolCall{tc(0, "call_a", "fa", `{"a"`)}},
+		{ToolCalls: []lmbp.ToolCall{tc(1, "call_b", "fb", `{"b"`)}},
+		{ToolCalls: []lmbp.ToolCall{tc(0, "", "", `:1}`)}},
+		{Text: " there"},
+		{ToolCalls: []lmbp.ToolCall{tc(2, "call_c", "fc", `{}`), tc(1, "", "", `:2}`)}},
+	}
+	for i, d := range deltas {
+		_ = dev.send(lmbp.TypeTaskDelta, f.TaskID, int64(i+1), d)
+	}
+	_ = dev.send(lmbp.TypeTaskDone, f.TaskID, int64(len(deltas)+1), lmbp.TaskDone{FinishReason: "tool_calls"})
+	b := <-ch
+	text, tools, lerr := anthropicLifecycle(parseNamedSSE(b))
+	r.check("Z5", "interleaved tool_call deltas for three tools plus text produce a valid Anthropic lifecycle (one open block, no delta after content_block_stop) with all arguments intact",
+		want(lerr == nil && text == "Hi there" && tools["fa"] == `{"a":1}` && tools["fb"] == `{"b":2}` && tools["fc"] == `{}`,
+			"lifecycle %v text %q tools %v\n%s", lerr, text, tools, b))
 }
 
 // Z3: re-attaching to a finished stream with Last-Event-ID below, equal to
