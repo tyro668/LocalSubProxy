@@ -318,7 +318,7 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !g.allowAttempt(t.ID) {
-		httpError(w, r, 429, lsp2.ErrForbidden, "too many failed codes; wait a minute")
+		httpError(w, r, 429, lsp2.ErrRateLimited, "too many failed codes; wait a minute")
 		return
 	}
 	code := normCode(req.UserCode)
