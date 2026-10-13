@@ -230,7 +230,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 				apiError(w, 422, lmbp.ErrIdempotency, "Idempotency-Key was used with a different request body")
 				return
 			}
-			g.reattach(w, r, rec.TaskID, req.Model, req.Stream)
+			g.reattach(w, r, t.ID, user, rec.TaskID, req.Model, req.Stream)
 			return
 		}
 	}
@@ -320,7 +320,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		err := g.cfg.Store.PutIdempotency(r.Context(), store.Idempotency{TenantID: t.ID, OwnerID: user, Key: idemKey, TaskID: taskID, BodyHash: bodyHash, CreatedAt: time.Now()})
 		if err == store.ErrExists { // lost a race with a concurrent identical request
 			if rec, err := g.cfg.Store.GetIdempotency(r.Context(), t.ID, user, idemKey); err == nil && rec.BodyHash == bodyHash {
-				g.reattach(w, r, rec.TaskID, req.Model, req.Stream)
+				g.reattach(w, r, t.ID, user, rec.TaskID, req.Model, req.Stream)
 				return
 			}
 			apiError(w, 422, lmbp.ErrIdempotency, "Idempotency-Key was used with a different request body")
@@ -394,16 +394,19 @@ func (g *Gateway) dispatch(t *gtask, jws string, blobs []blobData) {
 }
 
 // reattach serves an existing task (Idempotency-Key replay / Last-Event-ID).
-func (g *Gateway) reattach(w http.ResponseWriter, r *http.Request, taskID, reqModel string, stream bool) {
+// reattach serves an existing task to a re-attaching caller. Every replay
+// re-verifies that the stored task belongs to (tenantID, owner): an
+// idempotency record or task id alone never grants access.
+func (g *Gateway) reattach(w http.ResponseWriter, r *http.Request, tenantID, owner, taskID, reqModel string, stream bool) {
+	st, err := g.cfg.Store.GetTask(r.Context(), taskID)
+	if err != nil || st.TenantID != tenantID || st.OwnerID != owner {
+		httpError(w, r, 404, lmbp.ErrBadRequest, "task no longer available")
+		return
+	}
 	g.mu.Lock()
 	t := g.tasks[taskID]
 	g.mu.Unlock()
 	if t == nil {
-		st, err := g.cfg.Store.GetTask(r.Context(), taskID)
-		if err != nil {
-			httpError(w, r, 404, lmbp.ErrBadRequest, "task no longer available")
-			return
-		}
 		if t, err = g.finishedTask(st, reqModel); err != nil {
 			httpError(w, r, 500, lmbp.ErrInternal, "storage error")
 			return
@@ -431,7 +434,7 @@ func (g *Gateway) taskEvents(w http.ResponseWriter, r *http.Request) {
 		httpError(w, r, 404, lmbp.ErrBadRequest, "task not found")
 		return
 	}
-	g.reattach(w, r, id, st.DeviceID+"/"+st.Model, true)
+	g.reattach(w, r, t.ID, user, id, st.DeviceID+"/"+st.Model, true)
 }
 
 // serve renders a task's events as an OpenAI response (SSE or aggregated JSON).

@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,5 +51,29 @@ func TestEncryptionAndPurge(t *testing.T) {
 	defer s2.Close()
 	if _, err := s2.GetTask(ctx, "t_run"); err == nil {
 		t.Fatal("encrypted row decoded without key")
+	}
+}
+
+// Audit finding 1: (owner a, key "b|c") and (owner "a|b", key "c") are distinct records.
+func TestIdempotencyKeysUnambiguous(t *testing.T) {
+	sq, err := OpenSQLite(":memory:", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sq.Close()
+	for name, st := range map[string]Store{"memory": NewMemory(), "sqlite": sq} {
+		ctx := context.Background()
+		if err := st.PutIdempotency(ctx, Idempotency{TenantID: "acme", OwnerID: "a", Key: "b|c", TaskID: "task_a", BodyHash: "h", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(name, err)
+		}
+		if _, err := st.GetIdempotency(ctx, "acme", "a|b", "c"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: (a|b, c) collided with (a, b|c): %v", name, err)
+		}
+		if err := st.PutIdempotency(ctx, Idempotency{TenantID: "acme", OwnerID: "a|b", Key: "c", TaskID: "task_ab", BodyHash: "h", CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("%s: distinct record refused: %v", name, err)
+		}
+		if i, _ := st.GetIdempotency(ctx, "acme", "a", "b|c"); i.TaskID != "task_a" {
+			t.Fatalf("%s: got %+v", name, i)
+		}
 	}
 }

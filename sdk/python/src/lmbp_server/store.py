@@ -34,8 +34,9 @@ class Store(Protocol):
     def get_device(self, id: str) -> Optional[Device]: ...
     def list_devices(self, tenant: str, owner: Optional[str] = None) -> list[Device]: ...
 
-    def get_idempotency(self, key: str) -> Optional[dict]: ...
-    def put_idempotency(self, key: str, rec: dict) -> None: ...
+    # Records are keyed by the (tenant, owner, key) triple; never join the parts ambiguously.
+    def get_idempotency(self, tenant: str, owner: str, key: str) -> Optional[dict]: ...
+    def put_idempotency(self, tenant: str, owner: str, key: str, rec: dict) -> None: ...  # first writer wins
 
     def put_task(self, t: TaskRecord) -> None: ...
     def get_task(self, id: str) -> Optional[TaskRecord]: ...
@@ -51,7 +52,7 @@ class MemoryStore:
         self.secrets: dict[str, bytes] = {}
         self.auths: dict[str, DeviceAuth] = {}
         self.devices: dict[str, Device] = {}
-        self.idem: dict[str, dict] = {}
+        self.idem: dict[tuple[str, str, str], dict] = {}
         self.tasks: dict[str, TaskRecord] = {}
 
     def get_secret(self, name):
@@ -78,11 +79,11 @@ class MemoryStore:
     def list_devices(self, tenant, owner=None):
         return [d for d in self.devices.values() if d["tenant"] == tenant and (owner is None or d["owner"] == owner)]
 
-    def get_idempotency(self, key):
-        return self.idem.get(key)
+    def get_idempotency(self, tenant, owner, key):
+        return self.idem.get((tenant, owner, key))
 
-    def put_idempotency(self, key, rec):
-        self.idem.setdefault(key, rec)
+    def put_idempotency(self, tenant, owner, key, rec):
+        self.idem.setdefault((tenant, owner, key), rec)
 
     def put_task(self, t):
         cur = self.tasks.get(t["id"])
@@ -137,7 +138,7 @@ class SQLiteStore:
           CREATE INDEX IF NOT EXISTS lmbp_device_auths_code ON lmbp_device_auths (tenant, user_code);
           CREATE TABLE IF NOT EXISTS lmbp_devices (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, owner TEXT NOT NULL, doc TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS lmbp_devices_owner ON lmbp_devices (tenant, owner);
-          CREATE TABLE IF NOT EXISTS lmbp_idempotency (key TEXT PRIMARY KEY, doc TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS lmbp_idempotency (tenant TEXT NOT NULL, owner TEXT NOT NULL, idem_key TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, owner, idem_key));
           CREATE TABLE IF NOT EXISTS lmbp_tasks (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS lmbp_events (task_id TEXT NOT NULL, seq INTEGER NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (task_id, seq));
         """)
@@ -180,11 +181,11 @@ class SQLiteStore:
             rows = self._x("SELECT doc FROM lmbp_devices WHERE tenant = ? AND owner = ? ORDER BY rowid", tenant, owner)
         return [_dec(r[0]) for r in rows]
 
-    def get_idempotency(self, key):
-        return self._one("SELECT doc FROM lmbp_idempotency WHERE key = ?", key)
+    def get_idempotency(self, tenant, owner, key):
+        return self._one("SELECT doc FROM lmbp_idempotency WHERE tenant = ? AND owner = ? AND idem_key = ?", tenant, owner, key)
 
-    def put_idempotency(self, key, rec):
-        self._x("INSERT OR IGNORE INTO lmbp_idempotency (key, doc) VALUES (?, ?)", key, _enc(rec))
+    def put_idempotency(self, tenant, owner, key, rec):
+        self._x("INSERT OR IGNORE INTO lmbp_idempotency (tenant, owner, idem_key, doc) VALUES (?, ?, ?, ?)", tenant, owner, key, _enc(rec))
 
     def put_task(self, t):
         self._x("INSERT OR REPLACE INTO lmbp_tasks (id, doc) VALUES (?, ?)", t["id"], _enc({**t, "events": []}))

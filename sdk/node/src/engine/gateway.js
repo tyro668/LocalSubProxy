@@ -544,11 +544,11 @@ export class Gateway {
     const idemKey = req.headers['idempotency-key'] || '';
     if (idemKey.length > 255) return err(400, 'BAD_REQUEST', 'Idempotency-Key too long');
     const bodyHash = L.sha256(body).toString('hex');
-    const ikey = `${a.t.id}|${a.user}|${idemKey}`;
-    const prior = idemKey ? this.store.getIdempotency(ikey) : null;
+    const prior = idemKey ? this.store.getIdempotency(a.t.id, a.user, idemKey) : null;
+    if (prior && (prior.tenant !== a.t.id || prior.owner !== a.user)) return err(500, 'INTERNAL', 'idempotency store returned a foreign record');
     if (prior) {
       if (prior.bodyHash !== bodyHash) return err(422, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency-Key was used with a different request body');
-      return this.reattach(req, res, err, prior.taskID, r.model, !!r.stream, anthropic);
+      return this.reattach(req, res, err, a.t.id, a.user, prior.taskID, r.model, !!r.stream, anthropic);
     }
     const msgs = Array.isArray(r.messages) ? r.messages : [];
     const tools = Array.isArray(r.tools) ? r.tools : [];
@@ -595,7 +595,7 @@ export class Gateway {
     if (blobs.length) run.blobs = blobs.map((b) => b.ref);
 
     const taskID = L.randomID('task_');
-    if (idemKey) this.store.putIdempotency(ikey, { taskID, bodyHash });
+    if (idemKey) this.store.putIdempotency(a.t.id, a.user, idemKey, { tenant: a.t.id, owner: a.user, taskID, bodyHash });
     this.store.putTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] });
     const abort = new AbortController();
     res.on('close', () => abort.abort());
@@ -642,13 +642,12 @@ export class Gateway {
     }
   }
 
-  reattach(req, res, err, taskID, reqModel, stream, anthropic = false) {
+  // Every replay re-verifies the stored task's tenant and owner.
+  reattach(req, res, err, tenant, owner, taskID, reqModel, stream, anthropic = false) {
+    const rec = this.store.getTask(taskID);
+    if (!rec || rec.tenant !== tenant || rec.owner !== owner) return err(404, 'BAD_REQUEST', 'task no longer available');
     let t = this.tasks.get(taskID);
-    if (!t) {
-      const rec = this.store.getTask(taskID);
-      if (!rec) return err(404, 'BAD_REQUEST', 'task no longer available');
-      t = Task.finished(this, rec, reqModel);
-    }
+    if (!t) t = Task.finished(this, rec, reqModel);
     const after = parseInt(req.headers['last-event-id'] || '0', 10) || 0;
     const abort = new AbortController();
     res.on('close', () => abort.abort());
@@ -661,7 +660,7 @@ export class Gateway {
     if (!a) return;
     const rec = this.store.getTask(id);
     if (!rec || rec.tenant !== a.t.id || rec.owner !== a.user) return err(404, 'BAD_REQUEST', 'task not found');
-    return this.reattach(req, res, err, id, `${rec.device}/${rec.model}`, true);
+    return this.reattach(req, res, err, a.t.id, a.user, id, `${rec.device}/${rec.model}`, true);
   }
 
   async serve(req, res, t, after, stream, signal, anthropic = false) {

@@ -1168,12 +1168,13 @@ class Gateway:
         if len(idem_key) > 255:
             return err(400, "BAD_REQUEST", "Idempotency-Key too long")
         body_hash = L.sha256(body).hex()
-        ikey = f"{t['id']}|{user}|{idem_key}"
-        rec = self.store.get_idempotency(ikey) if idem_key else None
+        rec = self.store.get_idempotency(t["id"], user, idem_key) if idem_key else None
+        if rec is not None and (rec.get("tenant") != t["id"] or rec.get("owner") != user):
+            return err(500, "INTERNAL", "idempotency store returned a foreign record")
         if rec is not None:
             if rec["body_hash"] != body_hash:
                 return err(422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was used with a different request body")
-            return await self.reattach(req, rec["task_id"], r["model"], bool(r.get("stream")))
+            return await self.reattach(req, t["id"], user, rec["task_id"], r["model"], bool(r.get("stream")))
         msgs = r.get("messages") if isinstance(r.get("messages"), list) else []
         tools = r.get("tools") if isinstance(r.get("tools"), list) else []
         has_tc = r.get("tool_choice") is not None
@@ -1235,7 +1236,7 @@ class Gateway:
 
         task_id = L.random_id("task_")
         if idem_key:
-            self.store.put_idempotency(ikey, {"task_id": task_id, "body_hash": body_hash})
+            self.store.put_idempotency(t["id"], user, idem_key, {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash})
         self.store.put_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []})
         got = await ds.acquire(15)  # fair FIFO wait for a negotiated concurrency slot
         if not got or not ds.connected():
@@ -1287,12 +1288,13 @@ class Gateway:
                     break
                 off = end
 
-    async def reattach(self, req, task_id, req_model, stream):
+    async def reattach(self, req, tenant, owner, task_id, req_model, stream):
+        """Serve an existing task again; every replay re-verifies tenant and owner."""
+        rec = self.store.get_task(task_id)
+        if rec is None or rec["tenant"] != tenant or rec["owner"] != owner:
+            return self.err_for(req)(404, "BAD_REQUEST", "task no longer available")
         t = self.tasks.get(task_id)
         if t is None:
-            rec = self.store.get_task(task_id)
-            if rec is None:
-                return self.err_for(req)(404, "BAD_REQUEST", "task no longer available")
             t = Task.finished(self, rec, req_model)
         try:
             after = int(req.headers.get("Last-Event-ID", "0") or 0)
@@ -1309,7 +1311,7 @@ class Gateway:
         rec = self.store.get_task(id)
         if rec is None or rec["tenant"] != t["id"] or rec["owner"] != user:
             return problem(404, "BAD_REQUEST", "task not found")
-        return await self.reattach(req, id, f"{rec['device']}/{rec['model']}", True)
+        return await self.reattach(req, t["id"], user, id, f"{rec['device']}/{rec['model']}", True)
 
     async def serve(self, req, t, after, stream, headers):
         """Render a task's events as an OpenAI response (SSE or aggregated JSON)."""

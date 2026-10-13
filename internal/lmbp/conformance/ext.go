@@ -301,6 +301,7 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 	s2, _, b2 := r.chatRaw(ctx, map[string]any{"model": full(mPlain), "tools": tools, "messages": []any{map[string]any{"role": "user", "content": "x"}}}, nil)
 	r.check("X-T4", "tools sent to a model without the tools capability fail with 400 CAPABILITY_UNSUPPORTED", want(s2 == 400 && errCode(b2) == lmbp.ErrUnsupported, "status %d %s", s2, b2))
 	r.runAnthropic(ctx, dev, full, mTools)
+	r.runAudit(ctx, dev, full, mTools)
 
 	// image → blob.chunk
 	img := make([]byte, 40<<10)

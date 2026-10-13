@@ -33,7 +33,8 @@ export interface Device {
   e2eeKey: string;
 }
 
-export interface Idempotency { taskID: string; bodyHash: string }
+/** An Idempotency-Key record; tenant and owner are re-verified on every replay. */
+export interface Idempotency { tenant: string; owner: string; taskID: string; bodyHash: string }
 
 export interface TaskEvent { seq: number; type: string; data: unknown }
 
@@ -59,9 +60,10 @@ export interface Store {
   getDevice(id: string): Device | undefined;
   listDevices(tenant: string, owner?: string): Device[];
 
-  /** key is `${tenant}|${owner}|${Idempotency-Key}`. */
-  getIdempotency(key: string): Idempotency | undefined;
-  putIdempotency(key: string, rec: Idempotency): void;
+  /** Records are keyed by the (tenant, owner, key) triple; implementations MUST NOT join the parts ambiguously. */
+  getIdempotency(tenant: string, owner: string, key: string): Idempotency | undefined;
+  /** First writer wins: an existing (tenant, owner, key) record is kept. */
+  putIdempotency(tenant: string, owner: string, key: string, rec: Idempotency): void;
 
   /** putTask writes the task's metadata; events are written with appendEvent. */
   putTask(t: TaskRecord): void;
@@ -92,8 +94,11 @@ export class MemoryStore implements Store {
   listDevices(tenant: string, owner?: string) {
     return [...this.devices.values()].filter((d) => d.tenant === tenant && (owner === undefined || d.owner === owner));
   }
-  getIdempotency(k: string) { return this.idem.get(k); }
-  putIdempotency(k: string, r: Idempotency) { this.idem.set(k, r); }
+  getIdempotency(t: string, o: string, k: string) { return this.idem.get(JSON.stringify([t, o, k])); }
+  putIdempotency(t: string, o: string, k: string, r: Idempotency) {
+    const id = JSON.stringify([t, o, k]);   // unambiguous encoding of the triple
+    if (!this.idem.has(id)) this.idem.set(id, r);
+  }
   putTask(t: TaskRecord) {
     const cur = this.tasks.get(t.id);
     if (cur && cur !== t) Object.assign(cur, { ...t, events: cur.events });
@@ -140,7 +145,7 @@ export class SqliteStore implements Store {
       CREATE INDEX IF NOT EXISTS lmbp_device_auths_code ON lmbp_device_auths (tenant, user_code);
       CREATE TABLE IF NOT EXISTS lmbp_devices (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, owner TEXT NOT NULL, doc TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS lmbp_devices_owner ON lmbp_devices (tenant, owner);
-      CREATE TABLE IF NOT EXISTS lmbp_idempotency (key TEXT PRIMARY KEY, doc TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS lmbp_idempotency (tenant TEXT NOT NULL, owner TEXT NOT NULL, idem_key TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (tenant, owner, idem_key));
       CREATE TABLE IF NOT EXISTS lmbp_tasks (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lmbp_events (task_id TEXT NOT NULL, seq INTEGER NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (task_id, seq));`);
   }
@@ -173,8 +178,12 @@ export class SqliteStore implements Store {
       : this.db.prepare('SELECT doc FROM lmbp_devices WHERE tenant = ? AND owner = ? ORDER BY rowid').all(t, o);
     return rows.map((r) => this.dev(r.doc));
   }
-  getIdempotency(k: string) { return this.one<Idempotency>('SELECT doc FROM lmbp_idempotency WHERE key = ?', k); }
-  putIdempotency(k: string, r: Idempotency) { this.db.prepare('INSERT OR IGNORE INTO lmbp_idempotency (key, doc) VALUES (?, ?)').run(k, enc(r)); }
+  getIdempotency(t: string, o: string, k: string) {
+    return this.one<Idempotency>('SELECT doc FROM lmbp_idempotency WHERE tenant = ? AND owner = ? AND idem_key = ?', t, o, k);
+  }
+  putIdempotency(t: string, o: string, k: string, r: Idempotency) {
+    this.db.prepare('INSERT OR IGNORE INTO lmbp_idempotency (tenant, owner, idem_key, doc) VALUES (?, ?, ?, ?)').run(t, o, k, enc(r));
+  }
   putTask(t: TaskRecord) { this.db.prepare('INSERT OR REPLACE INTO lmbp_tasks (id, doc) VALUES (?, ?)').run(t.id, enc({ ...t, events: [] })); }
   getTask(id: string) {
     const t = this.one<TaskRecord>('SELECT doc FROM lmbp_tasks WHERE id = ?', id);
