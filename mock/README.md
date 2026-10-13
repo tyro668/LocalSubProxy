@@ -10,6 +10,9 @@
 | `fakemodel/` | 一个假的 OpenAI 兼容模型，支持流式输出 |
 | `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
 | `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
+| `node/` | Node.js 版完整网关（与参考网关等价，通过 63 项 `lsp2-conformance`），见 [node/README.md](node/README.md) |
+| `python/` | Python（aiohttp）版完整网关，同上，见 [python/README.md](python/README.md) |
+| `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LSP2_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑三种实现 |
 
 ## 一条命令看完整流程
 
