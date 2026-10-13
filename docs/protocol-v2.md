@@ -1,234 +1,454 @@
-# LocalSubProxy 协议 v2（lsp2）：一页看懂
+# LocalSubProxy 协议 v2（lsp2）规范
 
-> 状态：**v2 是默认协议**。实现位置：
-> - 协议、网关、存储、设备端分别在 `internal/lsp2`、`internal/lsp2/gateway`、`internal/lsp2/store`、`internal/lsp2/client`。
-> - `localsubproxy server` 默认启动 v2 网关。
-> - 桌面内核 `internal/connector` 与 `cmd/localsubproxy_native` 默认走 v2。
-> - `mock/` 只保留业务服务模拟、假模型和演示。
->
-> v1（`connector.v1`）保留为显式开启的兼容模式，见文末“迁移”。标注 **[规范]** 的内容只有文档，还没有代码实现。
-
-## 1. 三个角色，两条连接
-
-```mermaid
-flowchart LR
-  subgraph 用户电脑
-    C[桌面连接器<br/>持有 Ed25519 私钥]
-    M[本机模型<br/>LM Studio / Ollama /v1 / 第三方 API]
-    C -- OpenAI 兼容 HTTP --> M
-  end
-  subgraph 云端
-    S[SaaS 业务服务<br/>用户登录、配对页面]
-    G[lsp2 网关<br/>设备表、任务、签名]
-  end
-  B[浏览器] -- 会话 Cookie --> S
-  S -- 租户 API Key + X-End-User<br/>OpenAI 兼容 /v1/chat/completions --> G
-  C == 出站 WebSocket（子协议 lsp2）==> G
-```
-
-- **浏览器永远不连本机**，所以不涉及 NAT、CORS、混合内容。
-- **连接器只做出站连接**：先用 HTTPS 配对，之后保持一条 WebSocket。
-- **SaaS 只需要会说 OpenAI 协议**：调用 `/v1/models`、`/v1/chat/completions`，再加一个“批准设备”接口。
-
-## 2. 只有三步
-
-| 步骤 | 谁 → 谁 | 接口 | 一句话说明 |
-|---|---|---|---|
-| ① 配对 | 连接器 → 网关 | `POST /v2/device/authorize`、`POST /v2/token` | 走 OAuth 2.0 设备授权（RFC 8628）：连接器显示配对码，用户在已登录的 SaaS 页面输入 |
-| ② 连接 | 连接器 → 网关 | `GET /v2/connect`（WebSocket，子协议 `lsp2`） | 用短期令牌连上来，发 `hello`，收到 `welcome` |
-| ③ 跑任务 | 网关 ⇄ 连接器 | `task.run` → `task.delta`… → `task.done`/`task.error` | 网关签名后下发，本机流式回传 |
-
-## 3. 消息一览（共 12 种）
-
-所有 WebSocket 帧都使用同一个信封：
-
-```json
-{"v":2, "type":"task.delta", "id":"可选，用于请求/响应关联", "task_id":"task_…", "seq":3, "data":{…}, "sig":"只有 task.run 带"}
-```
-
-| type | 方向 | data | 说明 |
-|---|---|---|---|
-| `hello` | 连接器→网关 | `device_id, client, models[], max_concurrency, ts, proof` | 声明能力，并证明持有设备私钥 |
-| `welcome` | 网关→连接器 | `session_id, heartbeat_seconds, max_frame_bytes, token_expires_at` | 握手成功 |
-| `task.run` | 网关→连接器 | `device_id, model, messages[], max_tokens?, temperature?, exp, nonce` | **带网关 Ed25519 签名** |
-| `task.delta` | 连接器→网关 | `text` | 流式片段；`seq` 从 1 开始连续递增 |
-| `task.done` | 连接器→网关 | `finish_reason, usage?` | 成功结束（终态） |
-| `task.error` | 连接器→网关 | `code, message, retryable` | 失败或已取消（终态） |
-| `task.cancel` | 网关→连接器 | `reason` | 请求取消；连接器以 `task.error{code:"CANCELLED"}` 收尾 |
-| `ping` / `pong` | 双向 | — | 应用层心跳；网关另外每 20 秒发一次 WebSocket 原生 ping |
-| `error` | 网关→连接器 | `code, message` | 连接级错误，比如握手失败、未知消息类型 |
-
-**只有三条规则：**
-1. 每个任务先有若干 `task.delta`，最后**恰好一个** `task.done` 或 `task.error`。
-2. `seq` 必须连续（1, 2, 3…）。出现缺口时网关判定任务失败，并发出 `task.cancel`。
-3. 连接器只执行同时满足以下条件的 `task.run`：签名正确、`device_id` 是自己、没过期、`nonce` 没见过、模型在本机白名单里、没超过并发上限。
-
-## 4. 安全模型
-
-| 问题 | v2 的做法 |
+| 项目 | 内容 |
 |---|---|
-| 设备凭据 | 连接器在本机生成 **Ed25519 密钥对**，私钥不离开本机；网关只保存公钥 |
-| 访问令牌 | 网关签发 **15 分钟有效的 EdDSA JWT**，其中 `cnf.jkt` 是设备公钥指纹，令牌与密钥绑定。续期时，连接器用私钥签一个 60 秒有效的断言来换新令牌（`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`），用 `jti` 防重放 |
-| 持钥证明 | `hello.proof = Ed25519("lsp2.hello\n<device_id>\n<token jti>\n<ts>")`，`ts` 允许 ±60 秒误差。只偷到令牌、没有私钥的人连不上 |
-| 命令完整性 | `task.run.sig = Ed25519_gateway("lsp2.task.run\n<task_id>\n" + data 原始字节)`。签名覆盖的是**实际传输的字节**，与编程语言和 JSON 编码细节无关。网关公钥在配对时就固定在连接器里 |
-| 多租户 | 每台设备归属于 `(tenant, owner)`。SaaS 调用网关时带**租户 API Key**（网关只存它的 SHA-256），并用 `X-End-User` 指明当前用户；网关只会路由到这个用户自己的设备 |
-| 配对码泄露 | 配对码只显示在设备上，由用户在**已登录**的页面输入，没有任何匿名接口会返回配对码。配对码 10 分钟过期、只能用一次；每个租户每分钟最多允许 10 次输错 |
-| 吊销 | `POST /v2/tenant/devices/{id}/revoke` 会立即关闭该设备的会话，之后的续期请求也会被拒绝 |
+| 状态 | 草案（Draft），版本 2.0 |
+| 线上标识 | WebSocket 子协议 `lsp2`；信封字段 `v: 2` |
+| 机器可读契约 | [`spec/schemas/`](../spec/schemas)（JSON Schema 2020-12）、[`spec/asyncapi.yaml`](../spec/asyncapi.yaml)（AsyncAPI 3.0）、[`spec/openapi.yaml`](../spec/openapi.yaml)（OpenAPI 3.1） |
+| 测试向量 | [`spec/testvectors/vectors.json`](../spec/testvectors/vectors.json) |
+| 一致性测试 | `go run ./cmd/lsp2-conformance`（黑盒测试任意语言实现的网关） |
+| 参考实现 | Go：`internal/lsp2`（协议与 JOSE）、`internal/lsp2/gateway`（网关）、`internal/lsp2/client`（设备端） |
+| 实现指南 | [`docs/implementers-guide.md`](implementers-guide.md)：Java、Node.js、Python、Go、Rust |
 
-## 5. 完整示例
+本文规定 lsp2 的线上行为。任何语言实现的网关或设备端，只要满足本文的 MUST 要求，就能与其他实现互通。本文刻意不引用任何语言或库的行为：所有编码、签名和时间格式都由下文列出的 IETF/W3C 标准定义。
 
-### 5.1 配对（RFC 8628）
+**目录**
+1. 约定与术语
+2. 引用的标准与设计决策
+3. 角色与总体流程
+4. 编码规则
+5. 密钥、令牌与证明（JOSE 配置）
+6. HTTP 接口
+7. WebSocket 通道
+8. 状态机
+9. 错误
+10. 超时与限制
+11. 版本与能力协商
+12. 安全要求
+13. 一致性等级与测试
+14. 尚未定义的内容
 
-```http
-GET https://saas.example.com/.well-known/lsp-connector
-→ {"gateway_url":"https://gw.example.com","tenant":"acme","link_url":"https://saas.example.com/link","protocol":"lsp2"}
+---
 
-POST /v2/device/authorize
-{"tenant":"acme","public_key":"<base64url 32 字节>","device_name":"Alice-MacBook"}
-→ {"device_code":"dc_…","user_code":"BCDF-GHJK","expires_in":600,"interval":2}
-```
+## 1. 约定与术语
 
-连接器显示 `BCDF-GHJK`。用户登录 SaaS，打开 `/link` 输入这个码，SaaS 后端随即调用：
+本文中的 **MUST**、**MUST NOT**、**REQUIRED**、**SHALL**、**SHALL NOT**、**SHOULD**、**SHOULD NOT**、**RECOMMENDED**、**NOT RECOMMENDED**、**MAY**、**OPTIONAL**，仅在全部大写时按 [BCP 14](https://www.rfc-editor.org/info/bcp14)（RFC 2119、RFC 8174）解释。
 
-```http
-POST /v2/tenant/device-approvals
-Authorization: Bearer <租户 API Key>
-X-End-User: alice
-{"user_code":"BCDF-GHJK"}
-→ {"status":"approved","device_id":"dev_570c…","device_name":"Alice-MacBook"}
-```
+| 术语 | 含义 |
+|---|---|
+| 设备（device / connector） | 运行在用户电脑上的程序。持有设备私钥，负责调用本机模型。 |
+| 网关（gateway） | 公网服务。负责配对、签发令牌、维持设备的 WebSocket 会话、下发任务，并对外提供 OpenAI 兼容接口。 |
+| 租户后端（tenant back end / SaaS） | 业务方服务器。持有租户 API Key，代表已登录的终端用户调用网关。 |
+| 终端用户（end user） | 租户里的一个人，由租户后端通过 `X-End-User` 告知网关。一台设备只属于一个终端用户。 |
+| 任务（task） | 一次模型调用。网关以 `task.run` 下发，设备以 `task.delta`/`task.done`/`task.error` 回报。 |
+| 帧（frame） | 一条 WebSocket 文本消息，正好包含一个 JSON 对象。 |
 
-与此同时，连接器按 `interval` 间隔轮询：
+---
 
-```http
-POST /v2/token
-{"grant_type":"urn:ietf:params:oauth:grant-type:device_code","device_code":"dc_…","proof":"<Ed25519('lsp2.token\n'+device_code)>"}
-→ 400 {"error":"authorization_pending"}   // 也可能是 slow_down（轮询间隔 +5 秒）、access_denied、expired_token
-→ 200 {"access_token":"eyJ…","token_type":"Bearer","expires_in":900,"device_id":"dev_570c…",
-       "gateway_key":{"kid":"…","alg":"EdDSA","x":"<网关公钥>"}}
-```
+## 2. 引用的标准与设计决策
 
-### 5.2 连接与握手
-
-```
-GET /v2/connect   Upgrade: websocket   Sec-WebSocket-Protocol: lsp2   Authorization: Bearer eyJ…
-→ {"v":2,"type":"hello","id":"h1","data":{"device_id":"dev_570c…","client":"lspmock-connector/0.1",
-     "models":["qwen3-8b"],"max_concurrency":2,"ts":1791886877,"proof":"…"}}
-← {"v":2,"type":"welcome","id":"h1","data":{"session_id":"sess_…","heartbeat_seconds":20,"max_frame_bytes":262144,"token_expires_at":1791887777}}
-```
-
-### 5.3 跑一个流式任务
-
-SaaS 发起 `POST /v1/chat/completions {"model":"qwen3-8b","stream":true,"messages":[…]}` 后，网关和连接器之间的消息如下：
-
-```
-← {"v":2,"type":"task.run","task_id":"task_87c9…","data":{"device_id":"dev_570c…","model":"qwen3-8b",
-     "messages":[{"role":"user","content":"帮我写一句问候"}],"exp":1791886940,"nonce":"n_…"},"sig":"…"}
-→ {"v":2,"type":"task.delta","task_id":"task_87c9…","seq":1,"data":{"text":"你"}}
-→ {"v":2,"type":"task.delta","task_id":"task_87c9…","seq":2,"data":{"text":"好"}}
-→ {"v":2,"type":"task.done","task_id":"task_87c9…","seq":32,"data":{"finish_reason":"stop","usage":{"prompt_tokens":7,"completion_tokens":31}}}
-```
-
-SaaS 收到的是标准 OpenAI 格式的 SSE：
-
-```
-data: {"id":"chatcmpl-task_87c9…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
-data: {"id":"chatcmpl-task_87c9…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
-…
-data: {"id":"chatcmpl-task_87c9…","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":31}}
-data: [DONE]
-```
-
-### 5.4 取消
-
-用户关闭浏览器页面后，SaaS 断开它到网关的请求，网关随即：
-
-```
-← {"v":2,"type":"task.cancel","task_id":"task_12b3…","data":{"reason":"client_disconnected"}}
-→ {"v":2,"type":"task.error","task_id":"task_12b3…","seq":11,"data":{"code":"CANCELLED","message":"cancelled","retryable":false}}
-```
-
-任务状态记为 `CANCELLED`。
-
-### 5.5 出错
-
-本机模型返回 HTTP 500 时：
-
-```
-→ {"v":2,"type":"task.error","task_id":"task_…","seq":1,"data":{"code":"UPSTREAM_ERROR","message":"local model returned HTTP 500","retryable":false}}
-```
-
-SaaS 侧 SSE 的最后一帧是 `data: {"error":{"code":"UPSTREAM_ERROR","message":"…","type":"lsp2_error"}}`，**出错之后不会再发 `[DONE]`**。因此收到 `[DONE]` 就一定代表成功。如果请求在开始流式输出之前就失败了，则返回普通的 HTTP 错误，body 采用 OpenAI 风格：`{"error":{"message","type":"lsp2_error","code"}}`。
-
-## 6. 错误码
-
-| code | HTTP | 可重试 | 含义 |
-|---|---|---|---|
-| `UNAUTHENTICATED` | 401 | 否 | 租户 Key、令牌或持钥证明无效 |
-| `FORBIDDEN` | 403/404 | 否 | 设备不属于你、已被吊销，或被本机策略拒绝 |
-| `BAD_REQUEST` | 400 | 否 | 参数错误，或配对码无效、已过期 |
-| `MODEL_NOT_FOUND` | 404 | 否 | 你名下的设备上都没有这个模型 |
-| `DEVICE_OFFLINE` | 503 | 是 | 设备不在线，或任务进行中设备断开 |
-| `DEVICE_BUSY` | 429 | 是 | 设备已达到 `max_concurrency` 上限（响应带 `Retry-After`） |
-| `UPSTREAM_ERROR` | 502 | 视情况 | 本机模型出错或连不上 |
-| `TIMEOUT` | 504 | 是 | 任务超时（默认 10 分钟） |
-| `CANCELLED` | — | 否 | 任务已取消 |
-| `BAD_SIGNATURE` | — | 否 | 连接器拒绝了签名不对的 `task.run` |
-| `VERSION_UNSUPPORTED` | 400 | 否 | 缺少 `lsp2` 子协议，或 `v` 版本不支持 |
-| `INTERNAL` | 500 | 是 | 网关内部错误，或 `seq` 出现缺口 |
-
-OAuth 接口（`/v2/token`）使用 RFC 8628 / RFC 6749 的标准错误：`authorization_pending`、`slow_down`、`access_denied`、`expired_token`、`invalid_grant`、`unsupported_grant_type`。
-
-## 7. 模型命名与路由
-
-- `GET /v1/models` 只返回**当前用户名下在线设备**上的模型，id 格式为 `dev_xxx/<model>`。
-- `model` 字段可以写全名 `dev_xxx/qwen3-8b`，也可以只写 `qwen3-8b`，此时选用第一台在线且有这个模型的设备。
-- 目前支持 `model, messages, stream, max_tokens, temperature` 这几个字段，其他 OpenAI 字段**会被忽略，不会报错**。
-
-## 8. 存储
-
-- 存储层是 `store.Store` 接口，参考实现为 SQLite（`modernc.org/sqlite`，纯 Go，开启 WAL）。表有 `tenants / device_auths / devices / tasks / events`。
-- 设置 `LSP_DATA_KEY`（32 字节，hex 编码）后，提示词和输出会用 AES-256-GCM 加密后再落盘（前缀 `enc1:`）。没有配置密钥时，读取加密行会直接报错，不会悄悄返回密文。
-- 保留期通过 `-retention 168h` 设置（默认 7 天），网关每小时清理一次已结束的任务及其事件，以及过期的配对记录。
-- 要换成 Postgres，实现同一个接口即可（SQL 基本可以复用，把 `BLOB` 换成 `BYTEA`）。
-
-## 9. [规范] 尚未实现
-
-- **v1 任务 API 的 v2 等价物**：包括 `/v1/llm-tasks`、`Idempotency-Key`、文本附件、按 `Last-Event-ID` 重放事件。
-- **桌面端的执行租约与本地 journal 对账**：v2 路径没有使用 v1 的 `UNKNOWN`/对账机制，断线时任务直接以 `DEVICE_OFFLINE` 失败。
-- **系统钥匙串**：设备私钥用本机密钥加密保存在文件里，还没有接入 macOS Keychain 或 Windows DPAPI。
-- **桌面端并发**：v2 下固定为 1，与 v1 一致。
-
-- **断线续传**：现在设备一断开，任务就失败（`DEVICE_OFFLINE`，可重试）。规划是连接器在 `hello` 里带上 `resume:[{task_id, last_seq}]`，网关补齐缺失部分后继续推送。
-- **流控**：规划是由 `welcome` 或 `task.run` 授予 `credits`，再通过 `task.ack{task_id, ack_seq, credits}` 补充。目前依靠 WebSocket 自身的背压，加上网关为每个任务预留的 1024 帧缓冲，溢出时直接断开会话。
-- **工具调用、多模态、Responses API**：目前消息内容只支持字符串。
-- **多实例网关**：会话保存在单个进程的内存里，多实例部署需要按 `device_id` 做粘性路由，或者引入消息总线。
-- **端到端加密**（SaaS 用设备公钥加密 messages，网关看不到明文）：未实现。
-
-## 10. 从 v1 迁移
-
-### 10.1 兼容开关
-
-| 组件 | 默认 | 回到 v1 |
+| 需求 | 采用的标准 | 理由 |
 |---|---|---|
-| 网关 `localsubproxy server` | v2（`-db`、`-tenants`，环境变量 `LSP_SIGNING_SEED` 必填） | `-protocol v1`（原有 `-data/-device-id/-require-binding` 参数不变） |
-| 命令行连接器 `localsubproxy connector` | v2（`-remote-url`、`-identity`） | `-protocol v1`（原有 `-server-url` + `LOCALSUBPROXY_DEVICE_TOKEN`） |
-| 桌面内核 `LSP_Start` | v2（`pair_start / pair_status / pair_cancel`） | `LSP_Start {"protocol":"v1"}` 或环境变量 `LOCALSUBPROXY_PROTOCOL=v1`，之后可用 `prepare_connection / claim` |
+| 数据格式 | JSON，RFC 8259（I-JSON，RFC 7493 子集） | 所有语言都有可靠实现 |
+| 二进制转文本 | base64url，**不带填充**，RFC 4648 §5 | 与 JOSE 一致 |
+| 签名算法 | Ed25519，RFC 8032；在 JOSE 中写作 `alg: "EdDSA"`，RFC 8037 | 确定性签名，密钥短，无参数选择问题 |
+| 签名封装 | **JWS 紧凑序列化**，RFC 7515，载荷内嵌 | 见下面的决策 D1 |
+| 令牌 | JWT，RFC 7519；访问令牌采用 RFC 9068 配置（`typ: at+jwt`） | 标准声明 iss/sub/aud/iat/exp/jti |
+| 令牌与密钥绑定 | `cnf.jkt`，RFC 7800 / RFC 9449；指纹按 RFC 7638 计算 | 被盗的令牌离开设备私钥就无法使用 |
+| 持钥证明 | DPoP 风格的证明 JWT（借鉴 RFC 9449 的 `ath` 和 `jti`） | 见决策 D2 |
+| 显式类型 | 每种 JWS 都有不同的 `typ`，遵循 RFC 8725 §3.11 | 防止把一种令牌冒充成另一种 |
+| 配对 | OAuth 2.0 设备授权流程，RFC 8628 | 设备上不需要浏览器，也不需要输入密码 |
+| 令牌刷新 | JWT Bearer 授权，RFC 7523 §2.1 | 设备私钥是唯一的长期凭据，不需要 refresh token |
+| 公钥发布 | JWK Set，RFC 7517，路径 `/.well-known/jwks.json` | 支持密钥轮换 |
+| HTTP 错误 | OAuth 接口按 RFC 6749 §5.2；管理接口按 RFC 9457 Problem Details；OpenAI 接口使用 OpenAI 错误对象 | 每个接口沿用其生态的惯例 |
+| 实时通道 | WebSocket，RFC 6455，子协议 `lsp2`，强制 TLS | 双向、可穿透 NAT |
+| 流式输出 | Server-Sent Events（WHATWG HTML §9.2），OpenAI `chat.completion.chunk` 格式 | 现有 OpenAI SDK 可以直接使用 |
+| 时间 | JWT 和帧内统一用 NumericDate（整数秒，RFC 7519 §2）；HTTP 管理接口的时间字段用 RFC 3339 UTC 字符串 | 整数没有时区和格式问题 |
+| 标识符 | 不透明字符串，见 §4.4；RECOMMENDED 使用 UUIDv7（RFC 9562）或 ULID | 按时间排序，便于建立索引 |
 
-### 10.2 已配对的旧设备
+**D1：签名封装采用 JWS 紧凑序列化，不使用 JSON 规范化（JCS）。**
+`task.run` 的载荷直接放在 JWS 里：先把载荷序列化成 UTF-8 JSON 字节，再签名；接收方按收到的字节验证，然后才解析 JSON。这样，各语言的 JSON 序列化差异（键顺序、数字格式、Unicode 转义、`<` 是否转义成 `\u003c`）都不会影响验签。也就不需要 RFC 8785（JCS）：JCS 实现少，对数字的处理也容易出错。分离式载荷（RFC 7797，`b64: false`）同样**不使用**。
 
-- 升级后，如果 `identity.json` 里只有 v1 凭据，**v2 模式下不会再用它连接**。旧凭据保留在磁盘上，界面提示需要重新配对；以 v1 模式启动仍可继续使用。
-- v1 的静态设备 token 无法转换成 v2 身份，**每台设备需要重新配对一次**。重新配对会生成新的 Ed25519 私钥，保存在 `device_key.enc` 中（用安装时生成的本机密钥做 AES-GCM 加密）。`identity.json` 只记录 `protocol:"v2"` 和 `v2_device_id`。
-- 本机模型方案（`adapters.enc`）和 journal 不受影响。
-- 断开连接时会删除 `device_key.enc`。
+**D2：持钥证明采用证明 JWT。**
+本协议中，访问令牌不止用于 HTTP 请求，还要在 WebSocket 握手和会话期间使用。RFC 9449 的 `htm`/`htu` 是为 HTTP 请求设计的，不适用于这些场景。因此本协议定义了自己的 `typ: lsp2-proof+jwt`，用 `aud` 区分用途，用 `ath` 绑定具体凭据。它的结构和校验方法与 DPoP 相同，主流 JOSE 库都能直接处理。
 
-### 10.3 服务端迁移步骤
+---
 
-1. 部署 v2 网关。它可以和 v1 网关并行，v2 的路径都在 `/v2/*` 下。
-2. SaaS 提供 `/.well-known/lsp-connector` 和 `/link` 页面（参考 `mock/saas`），配对改为调用 `/v2/tenant/device-approvals`。
-3. 业务调用仍是 `/v1/chat/completions`，鉴权从全局 remote token 改为**租户 Key + `X-End-User`**。
-4. v1 的任务 API（`/v1/llm-tasks`、附件、`Idempotency-Key`、事件重放）在 v2 网关里**没有等价实现**。依赖这些功能的集成暂时需要留在 v1，见第 9 节。
+## 3. 角色与总体流程
 
-### 10.4 v2 中模型 ID 的格式
+```
+ 终端用户浏览器 ── 登录 ──▶ 租户后端（持租户 API Key）
+                               │  HTTPS：/v2/tenant/*、/v1/*（Bearer 租户 Key + X-End-User）
+                               ▼
+ 设备 ── HTTPS：/v2/device/authorize、/v2/token ──▶ 网关
+ 设备 ══ WSS：/v2/connect（子协议 lsp2）══════════▶ 网关
+```
 
-桌面端以 `<adapter_id>/<model_id>` 声明模型，所以对外完整 ID 是 `dev_xxx/<adapter_id>/<model_id>`，也可以只写 `<adapter_id>/<model_id>`。Codex 订阅方案在 v2 中也通过 `chat/completions` 调用，内核会在本地把它转换成 `agent.run`。
+1. **配对（RFC 8628）**：设备生成 Ed25519 密钥对，把公钥发到 `/v2/device/authorize`，拿到 `user_code`。用户在已登录的租户页面输入 `user_code`，租户后端调用 `/v2/tenant/device-approvals` 确认。设备带上证明 JWT 轮询 `/v2/token`，得到 `device_id` 和第一个访问令牌。
+2. **连接**：设备用访问令牌建立 WebSocket 连接，第一帧发送 `hello`，其中包含证明 JWT。网关回复 `welcome`。
+3. **执行**：租户后端调用 `/v1/chat/completions`，网关向设备下发 `task.run`（JWS 签名），设备流式回报结果，网关转换成 SSE 返回。
+4. **续期**：令牌到期前，设备用 jwt-bearer 断言换取新令牌，并通过 `session.token` 交给网关，连接不中断。
+
+---
+
+## 4. 编码规则
+
+### 4.1 JSON
+- 所有 JSON 文本 MUST 是 UTF-8 编码的 RFC 8259 JSON，SHOULD 符合 I-JSON（RFC 7493）。
+- 发送方 MUST NOT 产生重复的成员名。接收方 SHOULD 拒绝含重复成员名的消息。签名内容总是按收到的字节验证，所以重复成员名不会绕过签名；但不同解析器可能取不同的值。Go 参考实现目前不做这项检查。
+- 接收方 MUST 忽略不认识的成员（前向兼容）。
+- 整数 MUST 落在 [-(2^53-1), 2^53-1] 内。本协议中的整数（时间戳、seq、计数）都是非负整数，MUST NOT 带小数点或指数（`1.0`、`1e3` 不是合法整数）。
+- 字符串 MUST 是合法 Unicode，MUST NOT 包含单独的代理项（lone surrogate）。
+
+### 4.2 base64url
+- 采用 RFC 4648 §5 字母表，**MUST NOT 带 `=` 填充**。
+- 接收方 MUST 拒绝含填充、空白或字母表以外字符的输入。测试向量 `padded_base64url` 覆盖这一点。
+
+### 4.3 时间
+- 帧和 JWT 中的时间字段（`iat`、`exp`、`token_expires_at`）是 NumericDate：自 1970-01-01T00:00:00Z 起的整数秒。
+- HTTP 管理接口中名为 `*_at` 的字符串字段使用 RFC 3339 格式，时区 MUST 为 `Z`，例如 `2026-01-01T00:00:00Z`。
+- 时钟偏差：访问令牌和断言允许 30 秒偏差，证明 JWT 允许 60 秒（§5.4）。实现 SHOULD 使用 NTP 同步时钟。
+
+### 4.4 标识符
+- `device_id`、`task_id`、`session_id`、`jti`、`nonce`、帧的 `id` 都是不透明字符串：长度 1–128，字符集 `[A-Za-z0-9._~-]`。
+- 网关 MAY 给标识符加类型前缀（参考实现用 `dev_`、`task_`、`sess_`）。`device_id` MUST NOT 包含 `/`，因为它会出现在模型 ID 里（§6.6）。
+- 每个标识符 MUST 至少有 122 比特随机性，或者是 UUIDv7/ULID。
+
+---
+
+## 5. 密钥、令牌与证明（JOSE 配置）
+
+### 5.1 密钥
+- 设备密钥和网关密钥都是 Ed25519 密钥（RFC 8032）。
+- 在 JSON 中，公钥以 RFC 8037 OKP JWK 表示：`{"kty":"OKP","crv":"Ed25519","x":"<base64url 32 字节>"}`。在设备授权请求中，公钥以裸 32 字节的 base64url 传输。
+- **指纹**：按 RFC 7638 计算，即 `base64url(SHA-256('{"crv":"Ed25519","kty":"OKP","x":"' + x + '"}'))`。成员按字典序排列，不含空白。指纹用作 `cnf.jkt` 和 `kid`。
+- 设备私钥 MUST NOT 离开设备，SHOULD 保存在系统密钥库（Keychain、DPAPI、Secret Service）中，至少 MUST 加密存储。
+- 网关 MUST 在 `/.well-known/jwks.json` 发布当前签名公钥。轮换期间 MUST 同时发布新旧两把公钥，时长不少于访问令牌 TTL。
+
+### 5.2 JWS 通用规则
+所有 JWS 都使用紧凑序列化，受保护头 MUST 包含 `alg: "EdDSA"` 和 `typ`，MAY 包含 `kid`。验证方 MUST 依次：
+1. 确认正好有三段，且每段都是合法 base64url（§4.2）；
+2. 确认 `alg` 恰好为 `EdDSA`，**拒绝 `none`、`HS*`、`RS*` 等其他值**；
+3. 确认 `typ` 等于预期值（下表）；
+4. 遇到 `crit` 头，或 `b64: false`，MUST 拒绝；
+5. 对 ASCII 字节串 `protected || "." || payload` 验证 Ed25519 签名，SHOULD 使用严格验证（拒绝小阶公钥和非规范 S 值）；
+6. 签名通过后，才解析载荷 JSON。
+
+| 用途 | `typ` | 签名方 | `kid` |
+|---|---|---|---|
+| 访问令牌 | `at+jwt` | 网关 | 网关公钥指纹（REQUIRED） |
+| 客户端断言（刷新） | `JWT` | 设备 | 设备公钥指纹（OPTIONAL） |
+| 证明 JWT | `lsp2-proof+jwt` | 设备 | 无 |
+| 任务签名 | `lsp2-task+jws` | 网关 | 网关公钥指纹（REQUIRED） |
+
+### 5.3 访问令牌（RFC 9068 配置）
+| 声明 | 要求 |
+|---|---|
+| `iss` | 网关的签发者标识（参考实现为 `lsp2-gateway`） |
+| `sub` | `device_id` |
+| `aud` | 网关受众（参考实现为 `lsp2-gateway`） |
+| `tenant` | 租户 ID |
+| `iat`、`exp` | NumericDate；`exp - iat` SHOULD ≤ 900 秒，MUST ≤ 3600 秒 |
+| `jti` | 唯一 ID |
+| `cnf.jkt` | 设备公钥的 RFC 7638 指纹 |
+
+网关验证访问令牌时，除 §5.2 的步骤外，MUST 检查：`aud`；`exp + 30 ≥ now`；`iat - 30 ≤ now`；`sub` 对应的设备存在、状态为 `active`、属于 `tenant`；`cnf.jkt` 等于该设备公钥的指纹。
+
+### 5.4 证明 JWT（`typ: lsp2-proof+jwt`）
+载荷：
+
+| 声明 | 要求 |
+|---|---|
+| `iss` | `device_id`。在配对阶段还没有 `device_id`，此时 MUST 为空字符串 `""` |
+| `aud` | 用途：`lsp2:token`、`lsp2:hello` 或 `lsp2:session.token` |
+| `iat` | 签名时刻 |
+| `jti` | 唯一 ID |
+| `ath` | `base64url(SHA-256(UTF-8(凭据)))`。被绑定的凭据：`lsp2:token` 绑定 `device_code`；`lsp2:hello` 绑定当前连接使用的访问令牌；`lsp2:session.token` 绑定新的访问令牌 |
+
+验证方 MUST 检查：签名使用该设备登记的公钥；`aud`、`iss`、`ath` 都符合预期；`|now - iat| ≤ 60`；`jti` 在 120 秒内没有出现过。重复的 `jti` MUST 拒绝，这一点在网关多实例部署时同样 MUST 成立。
+
+### 5.5 客户端断言（RFC 7523）
+设备刷新令牌时提交 JWT：`typ: JWT`，`iss = sub = device_id`，`aud = <网关受众> + "/token"`，`exp - iat ≤ 300`，`jti` 唯一。网关 MUST 用该设备登记的公钥验证签名；在 `exp + 60` 秒之前，同一 `jti` 只能使用一次。
+
+### 5.6 任务签名（`typ: lsp2-task+jws`）
+载荷（[`task.run.payload.json`](../spec/schemas/task.run.payload.json)）：
+
+| 字段 | 要求 |
+|---|---|
+| `task_id` | MUST 等于信封中的 `task_id`（防止把签名挪到别的任务上） |
+| `iat`、`exp` | `exp - iat` SHOULD ≤ 60 秒。设备 MUST 拒绝 `now > exp` 的任务 |
+| `nonce` | ≥ 16 字符。在 `exp + 60` 秒之前，设备 MUST 拒绝重复的 `nonce` |
+| `device_id` | MUST 等于本设备的 ID |
+| `model` | 本设备在 `hello`/`models.update` 中声明过的模型 ID（不带 `device_id/` 前缀） |
+| `messages` | 1–200 条，`role ∈ {system, user, assistant}`，`content` 为字符串 |
+| `max_tokens`、`temperature` | OPTIONAL |
+
+设备 MUST 用配对时得到的网关公钥（或 JWKS 中 `kid` 对应的公钥）验证签名。验证失败时，MUST 回复 `task.error`（`BAD_SIGNATURE`），MUST NOT 调用模型。
+
+---
+
+## 6. HTTP 接口
+
+完整定义见 [`spec/openapi.yaml`](../spec/openapi.yaml)。所有接口 MUST 通过 TLS 1.2 及以上版本提供；仅在开发环境的回环地址上可以例外。
+
+### 6.1 发现
+- 租户后端 SHOULD 在 `GET /.well-known/lsp-connector` 返回 `{gateway_url, tenant, link_url, protocol: "lsp2"}`，供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+- 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
+
+### 6.2 设备授权：`POST /v2/device/authorize`
+- 请求 MUST 支持 `application/x-www-form-urlencoded`（RFC 8628 §3.1），MAY 同时接受 JSON。参数：`tenant`（必填）、`public_key`（必填，base64url 32 字节）、`device_name`（≤ 100 字符）。
+- 响应字段：`device_code`、`user_code`、`expires_in`、`interval`（≥ 1）。响应头 MUST 带 `Cache-Control: no-store`。`verification_uri` 是 OPTIONAL：确认页由租户提供，地址通过发现文档的 `link_url` 告知设备，这是本协议对 RFC 8628 的唯一偏离。
+- `user_code` MUST 为 `XXXX-XXXX` 格式，字母表 `BCDFGHJKLMNPQRSTVWXZ`（20 个辅音字母，约 34.6 比特）。比较时 MUST 忽略大小写和分隔符。
+- `device_code` 是不透明的高熵字符串。网关 SHOULD 只保存其哈希。
+
+### 6.3 令牌：`POST /v2/token`
+请求为表单编码（同样 MAY 接受 JSON）。
+
+**device_code 授权**：`grant_type=urn:ietf:params:oauth:grant-type:device_code`、`device_code`、`proof`（证明 JWT，`aud=lsp2:token`，`iss=""`，`ath` 绑定 `device_code`，用配对时提交的公钥签名）。网关 MUST 按以下顺序处理：
+1. `device_code` 未知 → `invalid_grant`；
+2. 证明无效或 `jti` 重复 → `invalid_grant`（**先验证证明，再透露授权状态**）；
+3. 已过期 → `expired_token`；已拒绝 → `access_denied`；已使用过 → `invalid_grant`；
+4. 尚未确认：轮询间隔小于 `interval` 时返回 `slow_down`，并把 `interval` 加 5 秒；否则返回 `authorization_pending`；
+5. 已确认：把 `device_code` 标记为已使用（一次性），返回令牌。
+
+**jwt-bearer 授权**：`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`、`assertion`（§5.5）。设备不存在或已吊销时返回 `invalid_grant`。设备收到 `invalid_grant` 后 MUST 停止重试，提示用户重新配对。
+
+**成功响应**：`{access_token, token_type: "Bearer", expires_in, device_id, gateway_key: <JWK>}`，响应头带 `Cache-Control: no-store`。错误响应为 RFC 6749 §5.2 格式的 `{"error": "..."}`，HTTP 状态码 400。
+
+### 6.4 租户管理接口
+认证：`Authorization: Bearer <租户 API Key>`，加上 `X-End-User: <终端用户 ID>`（1–128 字符）。租户 API Key MUST 只在服务器之间使用，MUST NOT 出现在浏览器或设备上。网关 MUST 只存储 Key 的哈希，比较时 SHOULD 使用常数时间比较。
+
+| 接口 | 作用 |
+|---|---|
+| `POST /v2/tenant/device-approvals` `{user_code, deny?}` | 确认或拒绝配对码；设备归属于 `X-End-User` |
+| `GET /v2/tenant/devices` | 列出该终端用户的设备，字段含 `created_at`（RFC 3339） |
+| `POST /v2/tenant/devices/{device_id}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
+
+- 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://localsubproxy.dev/problems/<code 的小写连字符形式>`。
+- 访问不属于该租户或该终端用户的设备，MUST 返回 404（不透露设备是否存在）。
+- 同一租户每分钟确认失败超过 10 次时，网关 MUST 返回 429（`RATE_LIMITED`），用于防止暴力猜测配对码。
+
+### 6.5 OpenAI 兼容接口
+认证方式同 §6.4。错误使用 OpenAI 错误对象：`{"error":{"message","type":"lsp2_error","code"}}`。
+- `GET /v1/models`：只列出该终端用户**在线**设备上的模型，`id` 格式为 `<device_id>/<model>`。
+- `POST /v1/chat/completions`：请求体 ≤ 1 MiB；不认识的 OpenAI 字段 MUST 忽略。
+  - `stream: false`：返回一个 `chat.completion` 对象。
+  - `stream: true`：返回 `text/event-stream`。第一个事件 SHOULD 是 `delta: {role: "assistant", content: ""}`；每个 `task.delta` 对应一个 `chat.completion.chunk` 事件；结束时发送带 `finish_reason`（以及 `usage`，如有）的块，然后发送 `data: [DONE]`。中途出错时 MUST 发送 `data: {"error":{...}}` 后关闭连接，MUST NOT 再发送 `[DONE]`。网关 SHOULD 每 15 秒发送一次注释行 `: keep-alive`。
+  - 响应头 `X-Task-Id` 给出 `task_id`。
+  - 调用方断开 HTTP 连接时，网关 MUST 向设备发送 `task.cancel`（`reason: "client_disconnected"`）。
+
+### 6.6 模型路由
+`model` 为 `<device_id>/<model>` 时，路由到该设备（必须属于调用方）。`model` 不带设备前缀时，网关 MAY 选择调用方任意一台声明了该模型的在线设备。设备离线时返回 503（`DEVICE_OFFLINE`）；没有任何设备声明该模型时返回 404（`MODEL_NOT_FOUND`）；设备已达并发上限时返回 429（`DEVICE_BUSY`），并带 `Retry-After` 头。
+
+---
+
+## 7. WebSocket 通道
+
+完整定义见 [`spec/asyncapi.yaml`](../spec/asyncapi.yaml) 和 [`spec/schemas/envelope.json`](../spec/schemas/envelope.json)。
+
+### 7.1 建立连接
+- `GET /v2/connect`，请求头：`Authorization: Bearer <访问令牌>`、`Sec-WebSocket-Protocol: lsp2`。
+- 网关在升级前 MUST 验证令牌（§5.3）。缺少子协议时返回 400；令牌无效时返回 401；设备已吊销或令牌未绑定该设备时返回 403。错误响应使用 RFC 9457 格式。
+- 网关 MUST 在响应中选择子协议 `lsp2`；设备看到其他值 MUST 断开。
+- 带 `Origin` 头的请求（来自浏览器）MUST 拒绝（403），以防跨站 WebSocket 劫持。
+- 同一设备建立新会话时，网关 MUST 关闭该设备的旧会话。
+
+### 7.2 帧
+- 每条 WebSocket **文本**消息正好包含一个 JSON 对象。MUST NOT 发送二进制消息；收到二进制消息时 SHOULD 以关闭码 1003 断开。
+- 单帧 MUST ≤ `welcome.max_frame_bytes`（参考实现为 262144 字节）。超限时接收方 MUST 以 1009 断开。
+
+信封：
+
+| 成员 | 类型 | 说明 |
+|---|---|---|
+| `v` | 整数 | MUST 为 `2` |
+| `type` | 字符串 | 消息类型，格式 `^[a-z][a-z0-9._]{0,63}$` |
+| `id` | 字符串 | 请求/响应关联 ID；`hello`、`session.token` 必填，响应 MUST 原样带回 |
+| `task_id` | 字符串 | 任务相关消息必填 |
+| `seq` | 整数 ≥ 1 | 设备回报任务结果时必填 |
+| `data` | 对象 | 消息体，结构由 `type` 决定 |
+| `jws` | 字符串 | 只用于 `task.run`；此时 MUST NOT 出现 `data` |
+
+### 7.3 消息
+| `type` | 方向 | `data` 模式 | 说明 |
+|---|---|---|---|
+| `hello` | 设备→网关 | `hello.json` | 必须是第一帧，含证明 JWT（`aud=lsp2:hello`） |
+| `welcome` | 网关→设备 | `welcome.json` | 握手成功，`id` 与 `hello` 相同 |
+| `task.run` | 网关→设备 | 无；`jws` 载荷符合 `task.run.payload.json` | 下发任务 |
+| `task.delta` | 设备→网关 | `task.delta.json` | 增量文本 |
+| `task.done` | 设备→网关 | `task.done.json` | 任务成功结束（终止消息） |
+| `task.error` | 设备→网关 | `task.error.json` | 任务失败结束（终止消息） |
+| `task.cancel` | 网关→设备 | `task.cancel.json` | 要求停止任务 |
+| `session.token` | 设备→网关；网关以同名消息回复 | 请求 `session.token.request.json`，回复 `session.token.response.json` | 连接内续期令牌 |
+| `models.update` | 设备→网关 | `models.update.json` | 重新声明模型列表和并发数 |
+| `ping` / `pong` | 双向 | 无 | 应用层心跳；`pong` 带回 `ping` 的 `id` |
+| `error` | 双向 | `error.json` | 连接级错误 |
+
+### 7.4 握手
+1. 连接建立后，设备 MUST 在 15 秒内发送 `hello`。超时，或第一帧不是 `hello`，网关 MUST 断开连接。
+2. 网关检查：`v == 2`（否则回复 `error` `VERSION_UNSUPPORTED` 并断开）；`data.device_id == token.sub`；证明 JWT 有效（`ath` 绑定**本次连接使用的访问令牌**），且 `jti` 未用过。失败时回复 `error`（`UNAUTHENTICATED`）并断开。
+3. `max_concurrency` 取值 1–16，超出范围时网关 MUST 截断到边界值。
+4. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）。
+
+### 7.5 任务与顺序
+- 网关收到 OpenAI 请求后，创建 `task_id`，发送 `task.run`。
+- 设备收到 `task.run` 后，依次检查签名（§5.6）、`device_id`、`exp`、`nonce`、模型是否在本机允许列表中、并发数是否已满，任一不满足即回复 `task.error`：签名错误为 `BAD_SIGNATURE`；不属于本设备、已过期或重放为 `FORBIDDEN` 或 `BAD_REQUEST`；并发已满为 `DEVICE_BUSY`。拒绝时 MUST NOT 调用模型。
+- 同一 `task_id` 的设备回报帧中，`seq` MUST 从 1 开始、严格加 1；终止消息（`task.done` 或 `task.error`）的 `seq` 是最后一个。终止消息之后 MUST NOT 再发送该任务的帧。
+- 网关发现 `seq` 不连续时，MUST 让该任务失败（`INTERNAL`，HTTP 502），并向设备发送 `task.cancel`（`reason: "protocol_error"`）。
+- WebSocket 保证顺序，因此本协议没有重传机制。连接断开时，网关 MUST 让所有进行中的任务失败（`DEVICE_OFFLINE`，`retryable: true`）。
+
+### 7.6 取消
+- 网关在以下情况发送 `task.cancel`：调用方断开连接（`client_disconnected`）、任务超时（`timeout`）、协议错误（`protocol_error`）。
+- 设备收到后 SHOULD 尽快中止模型调用，并发送 `task.error`（`CANCELLED`）作为终止消息。如果任务已经结束，或者 `task_id` 未知，MUST 忽略这条取消。
+- 发出取消后，该任务后续到达的帧，网关 MUST 静默丢弃，MUST NOT 把它们当作协议错误。
+
+### 7.7 心跳与续期
+- 网关每 `heartbeat_seconds` 发送一次 WebSocket 控制帧 ping，设备 MUST 回复 pong（RFC 6455 §5.5.2）。60 秒内没有收到任何数据，任一方都 MAY 断开。应用层 `ping` 帧 OPTIONAL。
+- 设备 SHOULD 在 `max(token_expires_at - 60, 剩余有效期的一半)` 时刻用 jwt-bearer 授权取得新令牌，然后发送 `session.token`，`data` 为 `{access_token, proof}`，其中证明的 `aud=lsp2:session.token`，`ath` 绑定**新**令牌。
+- 网关按握手的标准验证新令牌（`sub` 必须相同，设备必须仍为 `active`）。通过后回复 `session.token`，`data` 为 `{token_expires_at}`，`id` 与请求相同；失败时回复 `error`（`UNAUTHENTICATED`）并断开。
+- 当前令牌过期超过 30 秒仍未续期时，网关 MUST 断开会话。
+
+---
+
+## 8. 状态机
+
+### 8.1 配对（网关侧，每个 device_code）
+```
+pending ──确认──▶ approved ──令牌已签发──▶ consumed
+   │  └──拒绝──▶ denied
+   └──超过 expires_in──▶ expired
+```
+
+### 8.2 设备记录
+`active ──吊销──▶ revoked`（终态）。被吊销的设备 MUST 立即被断开，并且 MUST NOT 再取得令牌。
+
+### 8.3 会话（网关侧）
+```
+UPGRADED ──hello 有效──▶ OPEN ──关闭/吊销/令牌过期/错误──▶ CLOSED
+    └──15 秒超时或 hello 无效──▶ CLOSED
+OPEN 状态下：session.token 只延长令牌有效期，不改变状态
+```
+
+### 8.4 任务（网关侧）
+```
+RUNNING ──task.done──▶ SUCCEEDED
+   ├──task.error(CANCELLED) 或调用方断开──▶ CANCELLED
+   └──task.error / 超时 / 断线 / seq 不连续──▶ FAILED
+```
+设备侧：`RECEIVED → (验证失败 → REJECTED) | EXECUTING → DONE | ERROR | CANCELLED`。
+
+### 8.5 设备连接（设备侧）
+`IDLE → TOKEN → CONNECTING → HANDSHAKE → OPEN`。断开后按指数退避重连：1 秒起，翻倍，上限 30 秒，SHOULD 加随机抖动。收到 `invalid_grant` 时进入 `REVOKED`，停止重连。
+
+---
+
+## 9. 错误
+
+`error` 和 `task.error` 的 `data` 为 `{code, message, retryable?}`。`code` 格式为 `^[A-Z][A-Z0-9_]{1,63}$`。对于不认识的 `code`，接收方 MUST 按不可重试处理，除非 `retryable` 为 `true`。
+
+| code | 含义 | 建议 HTTP 状态码 | 默认可重试 |
+|---|---|---|---|
+| `UNAUTHENTICATED` | 令牌或证明无效 | 401 | 否 |
+| `FORBIDDEN` | 无权访问，或被本机策略拒绝 | 403（资源归属问题用 404） | 否 |
+| `BAD_REQUEST` | 消息格式或参数错误 | 400 | 否 |
+| `BAD_SIGNATURE` | `task.run` 签名无效 | 502 | 否 |
+| `VERSION_UNSUPPORTED` | 协议版本不支持 | 400 | 否 |
+| `DEVICE_OFFLINE` | 设备不在线或中途断开 | 503 | 是 |
+| `DEVICE_BUSY` | 设备已达并发上限 | 429 | 是 |
+| `MODEL_NOT_FOUND` | 模型不存在 | 404 | 否 |
+| `UPSTREAM_ERROR` | 本机模型出错 | 502 | 视情况 |
+| `TIMEOUT` | 任务超时 | 504 | 是 |
+| `CANCELLED` | 任务已取消 | —（流已关闭） | 否 |
+| `RATE_LIMITED` | 请求过于频繁 | 429 | 是 |
+| `INTERNAL` | 网关内部错误或协议违规 | 500 / 502 | 视情况 |
+
+OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_grant`、`unsupported_grant_type`、`authorization_pending`、`slow_down`、`access_denied`、`expired_token`、`server_error`。
+
+---
+
+## 10. 超时与限制
+
+| 项目 | 值 | 级别 |
+|---|---|---|
+| hello 截止时间 | 连接后 15 秒 | MUST |
+| 读超时（无任何数据） | 60 秒 | SHOULD |
+| 心跳间隔 | 20 秒（以 `welcome.heartbeat_seconds` 为准） | SHOULD |
+| 单帧大小 | ≤ 256 KiB（以 `welcome.max_frame_bytes` 为准，且 ≥ 64 KiB） | MUST |
+| 访问令牌 TTL | ≤ 15 分钟（推荐），≤ 60 分钟（上限） | SHOULD / MUST |
+| 令牌过期后的宽限 | 30 秒 | MUST |
+| 证明 JWT 时钟偏差 | ±60 秒 | MUST |
+| 断言有效期 | ≤ 300 秒 | MUST |
+| device_code 有效期 | 10 分钟（推荐） | SHOULD |
+| 初始轮询间隔 | ≥ 1 秒；每次 `slow_down` 加 5 秒 | MUST |
+| `task.run` 有效期（exp - iat） | ≤ 60 秒 | SHOULD |
+| 任务总时长 | 10 分钟（推荐） | SHOULD |
+| `max_concurrency` | 1–16 | MUST |
+| 模型列表 | ≤ 500 项 | MUST |
+| `messages` | 1–200 条 | MUST |
+| chat 请求体 | ≤ 1 MiB | SHOULD |
+
+**背压**：网关 MUST NOT 为单个任务无限缓冲数据。下游（SSE 客户端）跟不上时，网关 SHOULD 取消该任务，或断开设备会话。参考实现在每个任务的缓冲队列写满时断开会话。
+
+---
+
+## 11. 版本与能力协商
+
+- **主版本**：由 WebSocket 子协议名（`lsp2`）和信封的 `v` 表示。不兼容的变更 MUST 使用新的子协议名（`lsp3`）。设备 MAY 同时提供多个子协议，网关从中选择一个。
+- **兼容扩展**（新增可选成员、新增消息类型、新增错误码）不改变主版本。接收方 MUST 忽略不认识的成员。收到不认识的 `type` 时，网关 MUST 回复 `error`（`BAD_REQUEST`）且 MUST NOT 断开连接；设备 MUST 忽略不认识的 `type`。
+- **能力**：`hello.capabilities` 列出设备支持的能力，`welcome.capabilities` MUST 是它与网关所支持能力的交集。双方 MUST 只使用交集中的能力。本版本定义的能力：
+
+| 能力 | 含义 |
+|---|---|
+| `session.token` | 连接内续期令牌（§7.7） |
+| `models.update` | 连接内更新模型列表 |
+
+- 厂商私有的能力名和消息类型 SHOULD 以 `x-` 开头（消息类型用 `x.`），以免与将来的标准名冲突。
+
+---
+
+## 12. 安全要求
+
+1. **传输**：生产环境 MUST 使用 TLS（`https`/`wss`）。设备 MUST 验证证书。
+2. **最小凭据**：设备只持有自己的私钥。访问令牌短期有效，并与私钥绑定；令牌泄露后，没有私钥也无法建立会话或续期。
+3. **网关被冒充**：设备 MUST 只执行用固定的网关公钥（配对时得到，或来自 TLS 保护的 JWKS）签名的 `task.run`。
+4. **重放**：证明 JWT 的 `jti`、断言的 `jti`、`task.run` 的 `nonce` 都 MUST 做去重；`device_code` 只能使用一次。
+5. **租户隔离**：每个查询 MUST 同时按 `tenant` 和 `X-End-User` 过滤。访问别人的资源返回 404。
+6. **配对码**：只有已登录的终端用户才能通过租户后端确认配对码；网关 MUST NOT 提供匿名查询配对码的接口。确认失败 MUST 限速（§6.4）。
+7. **本机策略**：设备 MUST 只执行用户允许的模型，并 MUST 执行本地并发上限。
+8. **静态数据**：网关 SHOULD 加密存储提示词和输出（参考实现使用 AES-256-GCM），并按保留期清理；`device_code` 和租户 Key 只保存哈希。
+9. **日志**：MUST NOT 记录访问令牌、证明、断言、`device_code`、租户 Key 或提示词原文。
+10. **浏览器**：`/v2/connect` 拒绝带 `Origin` 的请求；租户 Key 不得出现在前端代码中。
+
+---
+
+## 13. 一致性等级与测试
+
+| 等级 | 要求 |
+|---|---|
+| **lsp2-core 网关** | §4–§10 中所有 MUST；能通过 `lsp2-conformance` 的全部检查 |
+| **lsp2-core 设备** | 能验证 `spec/testvectors` 中所有正例、拒绝所有反例；实现 §7.4–§7.7 |
+| **lsp2-openai** | §6.5 的 OpenAI 兼容接口与 SSE 行为 |
+
+验证方法：
+```bash
+# 1) 你的 JOSE 实现对照测试向量（Go/Python/Node/Rust 示例见 spec/examples）
+spec/validate.sh
+# 2) 黑盒测试你的网关
+LSP2_TENANT_KEY=<租户 key> go run ./cmd/lsp2-conformance \
+  -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas
+```
+`lsp2-conformance` 依次扮演设备和租户后端，共 31 项检查，覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
+
+---
+
+## 14. 尚未定义的内容
+
+以下内容不在 2.0 范围内，今后将以能力或新子协议的形式加入：
+
+- 断线续传（resume）：目前断线即任务失败；
+- 基于额度的流量控制；
+- tools / function calling、多模态输入、附件；
+- 异步任务 API：`Idempotency-Key`、按 `Last-Event-ID` 重放事件；
+- 端到端加密（让网关看不到提示词）；
+- 网关多实例部署时的会话路由和共享去重存储（规范已要求去重，参考实现只在单进程内存中实现）；
+- `/v2/device/authorize` 返回租户级 `verification_uri`。

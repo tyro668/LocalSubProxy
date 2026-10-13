@@ -5,8 +5,8 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 ## 使用流程
 
 1. 打开应用，在底部的「远端服务地址」输入服务地址，点击「连接」。按联调说明启动参考网关和模拟服务后，本机可填写 `http://127.0.0.1:3000`；远端地址使用 HTTPS。
-2. 保持远端服务的「本地模型」页面处于已登录状态。连接请求到达时，页面会自动弹出 8 位数字验证码。
-3. 将验证码输入应用，点击「完成连接」。界面会显示本机设备名称、服务地址和连接状态；连接信息会在本机保存。远端服务或网关停止时会显示「未连接」，服务恢复后自动重连，无需重新输入验证码。
+2. 应用显示一个 `XXXX-XXXX` 配对码和确认链接。
+3. 在已登录的远端服务页面输入配对码并确认，应用会自动完成连接。界面会显示本机设备名称、服务地址和连接状态；设备私钥加密保存在本机。远端服务或网关停止时会显示「未连接」，服务恢复后自动重连，无需重新配对。
 4. 点击「添加方案」配置模型。你也可以先添加方案，再连接远端服务。
 
 ![输入远端服务地址](design/screenshots/connect.png)
@@ -37,17 +37,24 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。构建环境与联调见 [实现与集成设计](design/实现与集成设计.md)；服务端接口见 [远端服务接入协议](design/远端服务接入协议.md)；原始架构方案见 [详细设计方案](design/SaaS本地大模型连接器详细设计方案.html)。
 
-## 协议 v2（默认）与兼容模式
+## 协议 lsp2 与其他语言实现
 
-从这个版本开始，网关、命令行连接器和桌面内核默认使用协议 v2（lsp2）：
-- 每台设备有独立的 Ed25519 身份和短期令牌；
-- 网关用 Ed25519 签名下发任务；
-- 支持多租户和按用户的访问控制；
-- 采用 RFC 8628 配对：桌面端显示配对码，在已登录的远端服务页面确认；
-- 网关使用 SQLite 存储，支持静态加密和保留期清理。
+设备与网关之间使用开放协议 **lsp2**。它完全基于公开标准：
+- RFC 8628 设备配对；
+- 用 Ed25519/EdDSA 签名的 JWS/JWT，令牌与设备密钥绑定（`cnf.jkt`）；
+- WebSocket 子协议 `lsp2`；
+- OpenAI 兼容接口，支持 SSE 流式输出。
 
-协议说明见 [docs/protocol-v2.md](docs/protocol-v2.md)，业务服务的参考实现与演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。
+任何语言（Java、Node.js、Python、Go、Rust……）都可以实现网关或租户后端：
 
-旧版 `connector.v1` 仍然保留：网关加 `-protocol v1`，桌面端设置 `LOCALSUBPROXY_PROTOCOL=v1`。已用 v1 配对的设备升级后需要重新配对一次，详见协议文档第 10 节。
+| 资料 | 位置 |
+|---|---|
+| 规范（RFC 风格） | [docs/protocol-v2.md](docs/protocol-v2.md) |
+| 实现指南（各语言推荐库、陷阱、代码骨架） | [docs/implementers-guide.md](docs/implementers-guide.md) |
+| JSON Schema / OpenAPI 3.1 / AsyncAPI 3.0 | [spec/](spec) |
+| 测试向量 | [spec/testvectors/vectors.json](spec/testvectors/vectors.json) |
+| Python / Node.js / Rust 骨架（已用测试向量验证） | [spec/examples/](spec/examples) |
+| 黑盒一致性测试 | `LSP2_TENANT_KEY=... go run ./cmd/lsp2-conformance -gateway <url> -tenant <id>` |
+| 一键校验 | `spec/validate.sh` |
 
-> 注意：上文“使用流程”中输入 8 位数字验证码的步骤属于 v1。v2 的流程是：桌面端显示 `XXXX-XXXX` 配对码，在远端服务页面输入确认后自动完成连接。
+Go 参考实现位于 `internal/lsp2`，网关用 `localsubproxy server` 启动。业务服务的模拟实现与端到端演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。
