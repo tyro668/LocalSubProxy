@@ -253,6 +253,31 @@
 ### 6.6 模型路由
 `model` 为 `<device_id>/<model>` 时，路由到该设备（必须属于调用方）。`model` 不带设备前缀时，网关 MAY 选择调用方任意一台声明了该模型的在线设备。设备离线时返回 503（`DEVICE_OFFLINE`）；没有任何设备声明该模型时返回 404（`MODEL_NOT_FOUND`）；设备已达并发上限时返回 429（`DEVICE_BUSY`），并带 `Retry-After` 头。
 
+### 6.7 Anthropic Messages 兼容接口
+认证方式同 §6.4，另外接受 Anthropic 客户端使用的 `x-api-key: <tenant key>` 头（与 `Authorization: Bearer` 等价）；`anthropic-version` 头可有可无，网关不校验其取值。
+
+- `POST /v1/messages`：请求体按下表翻译为 §6.5 的 chat 请求，然后走与 `/v1/chat/completions` 完全相同的路由（§6.6）、签名（§5.6）、blob（§16.3）、流控（§15）与续传（§14.4）逻辑，也支持 `Idempotency-Key`。`max_tokens`（正整数）与 `model` 为必填；`lsp2_e2ee` 不适用于本接口，MUST 以 400 拒绝。
+
+| Anthropic 请求 | 翻译为 |
+|---|---|
+| `system`（字符串或 text 块数组） | 首条 `role: "system"` 消息（多个 text 块以 `\n\n` 连接） |
+| `text` 块 | `{"type":"text"}` 片段 |
+| `image` 块，`source.type: "base64"` | `image_url`，`url` 为 `data:<media_type>;base64,<data>`（大于 16 KiB 时照常走 blob） |
+| `image` 块，`source.type: "url"` | `image_url`，`url` 原样 |
+| assistant 的 `tool_use` 块 | `tool_calls[]`：`{id, type:"function", function:{name, arguments: JSON(input)}}` |
+| user 的 `tool_result` 块 | 单独一条 `role:"tool"` 消息，`tool_call_id = tool_use_id`；`content` 为字符串或 text 块拼接，`is_error: true` 时加前缀 `Error: ` |
+| `thinking` / `redacted_thinking` 块 | 丢弃 |
+| 其他块类型、服务端工具（`tools[].type` 不是 `custom`） | 400 |
+| `tools[]: {name, description, input_schema}` | `{type:"function", function:{name, description, parameters: input_schema}}` |
+| `tool_choice` `auto` / `any` / `none` / `{type:"tool",name}` | `"auto"` / `"required"` / `"none"` / `{type:"function",function:{name}}` |
+| `max_tokens`、`temperature`、`stream` | 同名字段 |
+
+- **非流式**响应：`{"id":"msg_<task>","type":"message","role":"assistant","model","content":[...],"stop_reason","stop_sequence":null,"usage":{"input_tokens","output_tokens"}}`。`content` 依次为一个 `text` 块（如有文本）和每个工具调用一个 `tool_use` 块（`input` 为解析后的参数对象，解析失败时为 `{}`）。`stop_reason` 由 `finish_reason` 映射：`stop`→`end_turn`、`length`→`max_tokens`、`tool_calls`→`tool_use`，其余→`end_turn`。
+- **流式**（`stream: true`）响应为带事件名的 SSE：`message_start` → 每个内容块 `content_block_start` / 若干 `content_block_delta`（`text_delta` 或 `input_json_delta`）/ `content_block_stop` → `message_delta`（`delta.stop_reason`、`usage`）→ `message_stop`。文本与工具调用交替出现时，网关 MUST 先关闭当前块再开始新块，`index` 从 0 递增。保活使用 `event: ping`。中途出错时发送 `event: error`，`data` 为下述错误对象，然后关闭连接。
+- **续传**：由同一个 `task.delta`/`task.done` 产生的一组 SSE 事件中，只有最后一个带 `id: <seq>`，因此 `Last-Event-ID` 总是指向一组已完整送达的事件。用同一个 `Idempotency-Key` 加 `Last-Event-ID` 重新请求时，网关 MUST 只发送该 id 之后的事件组（不重发 `message_start`）。
+- **错误**使用 Anthropic 错误对象：`{"type":"error","error":{"type","message","lsp2_code"}}`，`lsp2_code` 为 §9 的错误码。`error.type` 由 HTTP 状态决定：400/422→`invalid_request_error`，401→`authentication_error`，403→`permission_error`，404→`not_found_error`，413→`request_too_large`，429→`rate_limit_error`，503→`overloaded_error`，其他 5xx→`api_error`。
+- `GET /v1/models` 在请求带 `anthropic-version` 头时返回 Anthropic 列表形状：`{"data":[{"type":"model","id","display_name","created_at"}],"has_more":false,"first_id","last_id"}`；否则返回 §6.5 的 OpenAI 形状。
+
 ---
 
 ## 7. WebSocket 通道
@@ -463,6 +488,7 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | **lsp2-core 网关** | §4–§10 中所有 MUST；能通过 `lsp2-conformance` 的全部检查 |
 | **lsp2-core 设备** | 能验证 `spec/testvectors` 中所有正例、拒绝所有反例；实现 §7.4–§7.7 |
 | **lsp2-openai** | §6.5 的 OpenAI 兼容接口与 SSE 行为 |
+| **lsp2-anthropic** | §6.7 的 Anthropic Messages 兼容接口（`lsp2-conformance` 的 A1–A10） |
 
 验证方法：
 ```bash
