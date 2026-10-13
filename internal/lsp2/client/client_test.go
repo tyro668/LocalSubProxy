@@ -14,7 +14,7 @@ func TestRejectsForgedTaskRun(t *testing.T) {
 	gwPub, _, _ := ed25519.GenerateKey(rand.Reader)
 	_, dev, _ := ed25519.GenerateKey(rand.Reader)
 	_, attacker, _ := ed25519.GenerateKey(rand.Reader)
-	c, err := New(Config{Executor: &OpenAIExecutor{ModelList: []string{"m"}}}, Identity{GatewayURL: "http://127.0.0.1:1", DeviceID: "dev_1", PrivateKey: lsp2.B64(dev), GatewayKey: lsp2.B64(gwPub)})
+	c, err := New(Config{Executor: &OpenAIExecutor{ModelList: []string{"m"}}}, Identity{GatewayURL: "http://127.0.0.1:1", Tenant: "acme", DeviceID: "dev_1", PrivateKey: lsp2.B64(dev), GatewayKey: lsp2.B64(gwPub), Issuer: "http://127.0.0.1:1", Audience: lsp2.TokenAudience("http://127.0.0.1:1", "acme")})
 	if err != nil {
 		t.Fatal(err)
 	}

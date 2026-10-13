@@ -93,7 +93,15 @@ func TestDeviceFlow(t *testing.T) {
 	// Key-bound refresh via device-signed assertion; replayed assertion rejected.
 	now := time.Now()
 	devID := m["device_id"].(string)
-	as := lsp2.SignJWT(key, lsp2.TypAssertion, "d", lsp2.Claims{Iss: devID, Sub: devID, Aud: Audience + "/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x1"})
+	at, _ := lsp2.UnverifiedClaims(m["access_token"].(string))
+	if at.Iss != s.URL || at.Aud != lsp2.TokenAudience(s.URL, "acme") || m["issuer"] != s.URL {
+		t.Fatalf("token not bound to issuer/tenant: iss=%q aud=%q", at.Iss, at.Aud)
+	}
+	wrongAud := lsp2.SignJWT(key, lsp2.TypAssertion, "d", lsp2.Claims{Iss: devID, Sub: devID, Aud: "https://other.example/v2/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x0"})
+	if _, m := post(t, s.URL+"/v2/token", "", "", map[string]string{"grant_type": jwtBearerGrant, "assertion": wrongAud}); m["error"] != "invalid_grant" {
+		t.Fatal("assertion for another gateway accepted")
+	}
+	as := lsp2.SignJWT(key, lsp2.TypAssertion, "d", lsp2.Claims{Iss: devID, Sub: devID, Aud: lsp2.AssertionAudience(s.URL), Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x1"})
 	if st, _ := post(t, s.URL+"/v2/token", "", "", map[string]string{"grant_type": jwtBearerGrant, "assertion": as}); st != 200 {
 		t.Fatal("refresh failed")
 	}

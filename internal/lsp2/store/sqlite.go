@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 )
 
 const schema = `
-CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY, name TEXT NOT NULL, api_key_hash TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY, name TEXT NOT NULL, api_key_hash TEXT NOT NULL UNIQUE, profile TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS device_auths(device_code_hash TEXT PRIMARY KEY, user_code TEXT NOT NULL, tenant_id TEXT NOT NULL,
   public_key BLOB NOT NULL, device_name TEXT NOT NULL, status TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '',
   device_id TEXT NOT NULL DEFAULT '', expires_at INTEGER NOT NULL, interval_s INTEGER NOT NULL, last_poll INTEGER NOT NULL DEFAULT 0,
@@ -61,15 +62,30 @@ func nf(err error) error {
 }
 
 func (s *SQLite) PutTenant(ctx context.Context, t Tenant) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO tenants(id,name,api_key_hash) VALUES(?,?,?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, api_key_hash=excluded.api_key_hash`, t.ID, t.Name, t.APIKeyHash)
+	pb, _ := json.Marshal(t.Profile)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO tenants(id,name,api_key_hash,profile) VALUES(?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, api_key_hash=excluded.api_key_hash, profile=excluded.profile`, t.ID, t.Name, t.APIKeyHash, string(pb))
 	return err
 }
 
-func (s *SQLite) TenantByAPIKeyHash(ctx context.Context, h string) (Tenant, error) {
+func scanTenant(r interface{ Scan(...any) error }) (Tenant, error) {
 	var t Tenant
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,api_key_hash FROM tenants WHERE api_key_hash=?`, h).Scan(&t.ID, &t.Name, &t.APIKeyHash)
-	return t, nf(err)
+	var prof string
+	if err := r.Scan(&t.ID, &t.Name, &t.APIKeyHash, &prof); err != nil {
+		return t, nf(err)
+	}
+	if prof != "" {
+		_ = json.Unmarshal([]byte(prof), &t.Profile)
+	}
+	return t, nil
+}
+
+func (s *SQLite) TenantByAPIKeyHash(ctx context.Context, h string) (Tenant, error) {
+	return scanTenant(s.db.QueryRowContext(ctx, `SELECT id,name,api_key_hash,profile FROM tenants WHERE api_key_hash=?`, h))
+}
+
+func (s *SQLite) GetTenant(ctx context.Context, id string) (Tenant, error) {
+	return scanTenant(s.db.QueryRowContext(ctx, `SELECT id,name,api_key_hash,profile FROM tenants WHERE id=?`, id))
 }
 
 const daCols = `device_code_hash,user_code,tenant_id,public_key,device_name,status,owner_id,device_id,expires_at,interval_s,last_poll,attempts`

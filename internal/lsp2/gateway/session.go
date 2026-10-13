@@ -31,6 +31,7 @@ type dstate struct {
 	caps        []string
 	maxConc     int
 	tokenExp    int64
+	issuer      string // issuer the current session's token was verified against
 	resumeToken string
 	tasks       map[string]*gtask
 	slots       int
@@ -189,7 +190,8 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	claims, err := lsp2.VerifyJWT(g.pub, tok, lsp2.TypAccessToken, Audience, time.Now())
+	iss := g.issuer(r)
+	claims, err := g.verifyAccess(tok, iss)
 	if err != nil {
 		httpError(w, r, 401, lsp2.ErrUnauthenticated, err.Error())
 		return
@@ -268,6 +270,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	gen := ds.gen
 	ds.conn, ds.wmu = conn, wmu
 	ds.models, ds.modelCapMap, ds.caps, ds.maxConc, ds.tokenExp = hello.Models, hello.ModelCapabilities, caps, conc, claims.Exp
+	ds.issuer = iss
 	ds.resumeToken = lsp2.RandomID("rt_")
 	if ds.in == nil {
 		if contains(caps, lsp2.CapFlow) {
@@ -494,7 +497,10 @@ func (g *Gateway) refreshSession(ctx context.Context, ds *dstate, dev store.Devi
 	if json.Unmarshal(in.Data, &st) != nil {
 		return false
 	}
-	c, err := lsp2.VerifyJWT(g.pub, st.AccessToken, lsp2.TypAccessToken, Audience, time.Now())
+	ds.mu.Lock()
+	iss := ds.issuer
+	ds.mu.Unlock()
+	c, err := g.verifyAccess(st.AccessToken, iss)
 	if err != nil || c.Sub != dev.ID || c.Cnf["jkt"] != lsp2.Thumbprint(dev.PublicKey) {
 		return false
 	}

@@ -27,8 +27,6 @@ import (
 )
 
 const (
-	Audience       = "lsp2-gateway"
-	Issuer         = "lsp2-gateway"
 	userCodeChars  = "BCDFGHJKLMNPQRSTVWXZ" // RFC 8628 §6.1 recommendation
 	maxFrame       = 256 << 10
 	deviceGrant    = "urn:ietf:params:oauth:grant-type:device_code"
@@ -36,7 +34,12 @@ const (
 )
 
 type Config struct {
-	Store        store.Store
+	Store store.Store
+	// Issuer is the gateway's public https origin (e.g. https://gw.example.com).
+	// It is the iss of every token and the base of every audience. Empty means
+	// development mode: the issuer is derived from each request's Host, which
+	// MUST NOT be used in production.
+	Issuer       string
 	SigningKey   ed25519.PrivateKey // gateway key; generated if nil
 	TokenTTL     time.Duration      // default 15m
 	CodeTTL      time.Duration      // default 10m
@@ -114,6 +117,13 @@ func New(cfg Config) (*Gateway, error) {
 	if cfg.Flow.TaskWindow == 0 {
 		cfg.Flow = lsp2.Flow{TaskWindow: lsp2.DefaultTaskWindow, ConnWindow: lsp2.DefaultConnWindow}
 	}
+	if cfg.Issuer != "" {
+		o, err := lsp2.Origin(cfg.Issuer)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Issuer = o
+	}
 	pub := cfg.SigningKey.Public().(ed25519.PublicKey)
 	return &Gateway{cfg: cfg, pub: pub, kid: lsp2.Thumbprint(pub), devs: map[string]*dstate{}, tasks: map[string]*gtask{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}}, nil
 }
@@ -149,6 +159,7 @@ func (g *Gateway) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/jwk-set+json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []lsp2.JWK{lsp2.PublicJWK(g.pub)}})
 	})
+	m.HandleFunc(lsp2.MetadataPath, g.metadata)
 	m.HandleFunc("/v2/device/authorize", g.authorize)
 	m.HandleFunc("/v2/token", g.token)
 	m.HandleFunc("/v2/connect", g.connect)
@@ -162,6 +173,13 @@ func (g *Gateway) Handler() http.Handler {
 }
 
 // ---------- helpers ----------
+
+// writeJSONCache writes a cacheable 200 JSON body (Cache-Control set by the caller).
+func writeJSONCache(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_ = json.NewEncoder(w).Encode(v)
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -373,12 +391,12 @@ func (g *Gateway) recordFailure(tenant string) {
 	g.mu.Unlock()
 }
 
-func (g *Gateway) issue(d store.Device) map[string]any {
+func (g *Gateway) issue(d store.Device, iss string) map[string]any {
 	now := time.Now()
-	c := lsp2.Claims{Iss: Issuer, Sub: d.ID, Aud: Audience, Tenant: d.TenantID, Iat: now.Unix(), Exp: now.Add(g.cfg.TokenTTL).Unix(),
+	c := lsp2.Claims{Iss: iss, Sub: d.ID, Aud: lsp2.TokenAudience(iss, d.TenantID), Tenant: d.TenantID, Iat: now.Unix(), Exp: now.Add(g.cfg.TokenTTL).Unix(),
 		Jti: lsp2.RandomID("jti_"), Cnf: map[string]string{"jkt": lsp2.Thumbprint(d.PublicKey)}}
 	return map[string]any{"access_token": lsp2.SignJWT(g.cfg.SigningKey, lsp2.TypAccessToken, g.kid, c), "token_type": "Bearer", "expires_in": int(g.cfg.TokenTTL.Seconds()),
-		"device_id": d.ID, "gateway_key": lsp2.PublicJWK(g.pub)}
+		"device_id": d.ID, "gateway_key": lsp2.PublicJWK(g.pub), "issuer": iss}
 }
 
 func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
@@ -441,7 +459,7 @@ func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 500, "server_error")
 			return
 		}
-		writeJSON(w, 200, g.issue(dev))
+		writeJSON(w, 200, g.issue(dev, g.issuer(r)))
 	case jwtBearerGrant:
 		// Client assertion signed by the device key (RFC 7523 style). The device
 		// private key is the long-lived credential; access tokens stay short.
@@ -455,12 +473,12 @@ func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		c, err := lsp2.VerifyJWT(dev.PublicKey, req.Assertion, lsp2.TypAssertion, Audience+"/token", time.Now())
+		c, err := lsp2.VerifyJWT(dev.PublicKey, req.Assertion, lsp2.TypAssertion, lsp2.AssertionAudience(g.issuer(r)), time.Now())
 		if err != nil || c.Iss != dev.ID || c.Exp-c.Iat > 300 || c.Jti == "" || !g.useJTI(c.Jti, time.Unix(c.Exp+60, 0)) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		writeJSON(w, 200, g.issue(dev))
+		writeJSON(w, 200, g.issue(dev, g.issuer(r)))
 	default:
 		oauthError(w, 400, "unsupported_grant_type")
 	}
@@ -575,5 +593,26 @@ func (g *Gateway) RegisterTenant(ctx context.Context, id, name, apiKey string) e
 	if len(apiKey) < 32 {
 		return errors.New("tenant API key must be at least 32 characters")
 	}
-	return g.cfg.Store.PutTenant(ctx, store.Tenant{ID: id, Name: name, APIKeyHash: sha(apiKey)})
+	return g.RegisterTenantProfile(ctx, id, apiKey, store.TenantProfile{DisplayName: name})
+}
+
+// RegisterTenantProfile is RegisterTenant plus the SaaS identity published in
+// the signed gateway metadata (shown on the desktop consent screen).
+func (g *Gateway) RegisterTenantProfile(ctx context.Context, id, apiKey string, p store.TenantProfile) error {
+	if !lsp2.TenantIDPattern.MatchString(id) {
+		return errors.New("invalid tenant id")
+	}
+	if len(apiKey) < 32 {
+		return errors.New("tenant API key must be at least 32 characters")
+	}
+	for _, sc := range p.RequestedScopes {
+		if !contains(lsp2.Scopes, sc) {
+			return errors.New("unknown scope " + sc)
+		}
+	}
+	name := p.DisplayName
+	if name == "" {
+		name = id
+	}
+	return g.cfg.Store.PutTenant(ctx, store.Tenant{ID: id, Name: name, APIKeyHash: sha(apiKey), Profile: p})
 }

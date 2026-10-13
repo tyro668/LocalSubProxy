@@ -9,7 +9,6 @@ package client
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,12 +47,18 @@ type Identity struct {
 	PrivateKey string `json:"private_key"`        // base64url Ed25519 private key
 	GatewayKey string `json:"gateway_key"`        // pinned gateway signing key (base64url)
 	E2EEKey    string `json:"e2ee_key,omitempty"` // base64url X25519 private key for end-to-end encryption
+	// Issuer and Audience bind the identity to one gateway origin and one
+	// tenant (§18). Tokens whose iss/aud differ are rejected.
+	Issuer   string `json:"issuer"`
+	Audience string `json:"audience"`
+	SaaSName string `json:"saas_name,omitempty"`
 }
 
 func (id Identity) keys() (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	k, err1 := lsp2.UnB64(id.PrivateKey)
 	g, err2 := lsp2.UnB64(id.GatewayKey)
-	if err1 != nil || err2 != nil || len(k) != ed25519.PrivateKeySize || len(g) != ed25519.PublicKeySize || id.DeviceID == "" || id.GatewayURL == "" {
+	if err1 != nil || err2 != nil || len(k) != ed25519.PrivateKeySize || len(g) != ed25519.PublicKeySize || id.DeviceID == "" || id.GatewayURL == "" ||
+		id.Issuer == "" || id.Audience != lsp2.TokenAudience(id.Issuer, id.Tenant) {
 		return nil, nil, errors.New("invalid lsp2 identity")
 	}
 	return k, g, nil
@@ -135,89 +140,3 @@ func Discover(ctx context.Context, hc *http.Client, remoteURL string) (Discovery
 	return d, nil
 }
 
-// Pairing is an in-progress RFC 8628 device authorization.
-type Pairing struct {
-	UserCode  string
-	LinkURL   string
-	JKT       string // RFC 7638 thumbprint of the new device key
-	ExpiresAt time.Time
-	hc        *http.Client
-	remoteURL string
-	disc      Discovery
-	key       ed25519.PrivateKey
-	code      string
-	interval  time.Duration
-}
-
-// StartPairing generates the device key and requests a user code.
-func StartPairing(ctx context.Context, hc *http.Client, remoteURL, deviceName string) (*Pairing, error) {
-	if hc == nil {
-		hc = defaultHTTP()
-	}
-	disc, err := Discover(ctx, hc, remoteURL)
-	if err != nil {
-		return nil, err
-	}
-	pub, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	var auth struct {
-		DeviceCode string `json:"device_code"`
-		UserCode   string `json:"user_code"`
-		ExpiresIn  int    `json:"expires_in"`
-		Interval   int    `json:"interval"`
-	}
-	st, err := postForm(ctx, hc, disc.GatewayURL+"/v2/device/authorize", map[string]string{"tenant": disc.Tenant, "public_key": lsp2.B64(pub), "device_name": deviceName}, &auth)
-	if err != nil || st != 200 || auth.DeviceCode == "" {
-		return nil, fmt.Errorf("device authorization failed: %v (HTTP %d)", err, st)
-	}
-	if auth.Interval < 1 {
-		auth.Interval = 5
-	}
-	link := disc.LinkURL
-	if link != "" {
-		// jkt lets the SaaS pin this device key (and through it the E2EE key).
-		link += "?user_code=" + url.QueryEscape(auth.UserCode) + "&jkt=" + url.QueryEscape(lsp2.Thumbprint(pub))
-	}
-	return &Pairing{UserCode: auth.UserCode, LinkURL: link, JKT: lsp2.Thumbprint(pub), ExpiresAt: time.Now().Add(time.Duration(auth.ExpiresIn) * time.Second), hc: hc, remoteURL: remoteURL, disc: disc, key: key, code: auth.DeviceCode, interval: time.Duration(auth.Interval) * time.Second}, nil
-}
-
-// Wait polls the token endpoint until the user approves, denies or the code expires.
-func (p *Pairing) Wait(ctx context.Context) (Identity, error) {
-	for time.Now().Before(p.ExpiresAt) {
-		select {
-		case <-ctx.Done():
-			return Identity{}, ctx.Err()
-		case <-time.After(p.interval):
-		}
-		var tok map[string]any
-		proof := lsp2.SignProof(p.key, "", lsp2.ProofToken, p.code, time.Now())
-		st, err := postForm(ctx, p.hc, p.disc.GatewayURL+"/v2/token", map[string]string{"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": p.code, "proof": proof}, &tok)
-		if err != nil {
-			continue
-		}
-		if st == 200 {
-			gk, _ := tok["gateway_key"].(map[string]any)
-			x, _ := gk["x"].(string)
-			xpriv, _ := lsp2.NewX25519()
-			id := Identity{RemoteURL: p.remoteURL, GatewayURL: p.disc.GatewayURL, Tenant: p.disc.Tenant, DeviceID: fmt.Sprint(tok["device_id"]), PrivateKey: lsp2.B64(p.key), GatewayKey: x, E2EEKey: lsp2.B64(xpriv)}
-			if !id.Valid() {
-				return Identity{}, errors.New("invalid token response")
-			}
-			return id, nil
-		}
-		switch tok["error"] {
-		case "authorization_pending":
-		case "slow_down":
-			p.interval += 5 * time.Second
-		case "access_denied":
-			return Identity{}, errors.New("pairing was denied on the remote service")
-		case "expired_token":
-			return Identity{}, errors.New("pairing code expired")
-		default:
-			return Identity{}, fmt.Errorf("pairing failed: %v", tok["error"])
-		}
-	}
-	return Identity{}, errors.New("pairing code expired")
-}

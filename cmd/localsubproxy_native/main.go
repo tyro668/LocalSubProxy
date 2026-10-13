@@ -75,8 +75,9 @@ var runtime struct {
 	login  *connector.CodexLogin
 	// lsp2 pairing in progress
 	pairing    *client.Pairing
+	pairReq    *client.PairRequest // verified, awaiting the user's consent decision
 	pairCancel context.CancelFunc
-	pairState  string // idle | pending | paired | failed
+	pairState  string // idle | consent | pending | paired | failed | denied
 	pairErr    string
 }
 
@@ -178,6 +179,9 @@ func finishPairing(ctx context.Context, p *client.Pairing, remoteURL string) {
 	runtime.pairing, runtime.pairCancel = nil, nil
 	if err != nil {
 		runtime.pairState, runtime.pairErr = "failed", err.Error()
+		if client.IsConsentDenied(err) {
+			runtime.pairState = "denied"
+		}
 		return
 	}
 	id := runtime.local
@@ -208,8 +212,8 @@ func cancelPairingLocked() {
 	if runtime.pairCancel != nil {
 		runtime.pairCancel()
 	}
-	runtime.pairing, runtime.pairCancel = nil, nil
-	if runtime.pairState == "pending" {
+	runtime.pairing, runtime.pairCancel, runtime.pairReq = nil, nil, nil
+	if runtime.pairState == "pending" || runtime.pairState == "consent" {
 		runtime.pairState = "idle"
 	}
 }
@@ -225,6 +229,7 @@ func LSP_Call(raw *C.char) *C.char {
 		ID        string                  `json:"id"`
 		Path      string                  `json:"path"`
 		RemoteURL string                  `json:"remote_url"`
+		Link      string                  `json:"link"` // lsp2://pair deep link
 	}
 	if err := json.Unmarshal([]byte(C.GoString(raw)), &request); err != nil {
 		return result(nil, err)
@@ -303,24 +308,67 @@ func LSP_Call(raw *C.char) *C.char {
 			runtime.login = nil
 		}
 		return result(nil, connector.LogoutCodex(request.Path))
-	case "pair_start":
+	case "pair_start", "pair_prepare":
+		// Step 1: resolve the SaaS (remote_url or lsp2://pair link), verify the
+		// gateway's signed metadata and return the consent screen data. Nothing
+		// is registered at the gateway until pair_approve.
 		if pairedLocked() {
 			return result(nil, errors.New("already paired; disconnect first"))
 		}
 		cancelPairingLocked()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		p, err := client.StartPairing(ctx, nil, remoteURL, connector.DeviceName())
+		var req *client.PairRequest
+		var err error
+		if request.Link != "" {
+			req, err = client.PrepareLink(ctx, nil, request.Link)
+		} else {
+			req, err = client.Prepare(ctx, nil, remoteURL)
+		}
 		cancel()
 		if err != nil {
 			return result(nil, err)
 		}
+		runtime.pairReq, runtime.pairState, runtime.pairErr = req, "consent", ""
+		return result(map[string]any{"state": "consent", "consent": req.Consent}, nil)
+	case "pair_approve":
+		// Step 2a: the user explicitly approved the SaaS shown on the consent screen.
+		req := runtime.pairReq
+		if req == nil {
+			return result(nil, errors.New("no pairing awaiting consent"))
+		}
+		runtime.pairReq = nil
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		p, err := req.Approve(ctx, connector.DeviceName())
+		cancel()
+		if err != nil {
+			runtime.pairState, runtime.pairErr = "failed", err.Error()
+			return result(nil, err)
+		}
 		wctx, wcancel := context.WithCancel(context.Background())
+		remote := req.Consent.Remote
+		if remote == "" {
+			remote = req.Consent.SaaS.HomepageURI
+		}
 		runtime.pairing, runtime.pairCancel, runtime.pairState, runtime.pairErr = p, wcancel, "pending", ""
-		go finishPairing(wctx, p, remoteURL)
-		return result(map[string]any{"user_code": p.UserCode, "link_url": p.LinkURL, "jkt": p.JKT, "expires_at": p.ExpiresAt}, nil)
+		go finishPairing(wctx, p, remote)
+		return result(map[string]any{"user_code": p.UserCode, "link_url": p.LinkURL, "jkt": p.JKT, "expires_at": p.ExpiresAt, "consent": p.Consent}, nil)
+	case "pair_deny":
+		// Step 2b: the user declined; nothing was sent to the gateway.
+		req := runtime.pairReq
+		if req == nil {
+			return result(nil, errors.New("no pairing awaiting consent"))
+		}
+		runtime.pairReq = nil
+		err := req.Deny()
+		runtime.pairState, runtime.pairErr = "denied", err.Error()
+		return result(map[string]any{"state": "denied", "code": "CONSENT_DENIED"}, nil)
 	case "pair_status":
 		out := map[string]any{"state": runtime.pairState, "error": runtime.pairErr}
+		if runtime.pairReq != nil {
+			out["consent"] = runtime.pairReq.Consent
+		}
 		if runtime.pairing != nil {
+			out["consent"] = runtime.pairing.Consent
 			out["user_code"], out["link_url"], out["expires_at"] = runtime.pairing.UserCode, runtime.pairing.LinkURL, runtime.pairing.ExpiresAt
 		}
 		if runtime.pairState == "paired" {

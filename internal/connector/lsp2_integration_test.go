@@ -38,7 +38,7 @@ func TestDesktopCoreEndToEnd(t *testing.T) {
 	gws := httptest.NewServer(gw.Handler())
 	defer gws.Close()
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"gateway_url": gws.URL, "tenant": "acme", "link_url": "http://remote/link"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"gateway_url": gws.URL, "tenant": "acme", "link_url": "http://127.0.0.1/link"})
 	}))
 	defer remote.Close()
 	tenant := func(method, path string, body any) *http.Response {

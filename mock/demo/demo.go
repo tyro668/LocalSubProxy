@@ -97,7 +97,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 		return nil, err
 	}
 	acmeKey, betaKey := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	_ = gw.RegisterTenant(ctx, "acme", "Acme", acmeKey)
+	_ = gw.RegisterTenantProfile(ctx, "acme", acmeKey, store.TenantProfile{DisplayName: "Acme CRM", HomepageURI: "https://acme.example", PolicyURI: "https://acme.example/privacy", RequestedScopes: []string{lsp2.ScopeChat, lsp2.ScopeTools, lsp2.ScopeVision}})
 	_ = gw.RegisterTenant(ctx, "beta", "Beta", betaKey)
 	gws := httptest.NewServer(gw.Handler())
 	defer gws.Close()

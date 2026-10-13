@@ -21,6 +21,7 @@ func main() {
 	user := flag.String("end-user", "conformance-user", "X-End-User for tenant calls")
 	schemas := flag.String("schemas", "spec/schemas", "JSON Schema directory (empty to skip frame validation)")
 	timeout := flag.Duration("timeout", 10*time.Second, "per-step timeout")
+	issuer := flag.String("issuer", "", "expected gateway issuer origin (default: origin of -gateway)")
 	asJSON := flag.Bool("json", false, "print results as JSON")
 	flag.Parse()
 	key := os.Getenv("LSP2_TENANT_KEY")
@@ -28,7 +29,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "LSP2_TENANT_KEY must hold the tenant API key")
 		os.Exit(2)
 	}
-	cfg := conformance.Config{GatewayURL: *gw, Tenant: *tenant, TenantKey: key, EndUser: *user, SchemaDir: *schemas, Timeout: *timeout}
+	cfg := conformance.Config{GatewayURL: *gw, Issuer: *issuer, Tenant: *tenant, TenantKey: key, EndUser: *user, SchemaDir: *schemas, Timeout: *timeout}
 	if !*asJSON {
 		cfg.Log = os.Stdout
 	}

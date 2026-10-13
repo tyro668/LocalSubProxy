@@ -140,7 +140,7 @@ func (c *Client) Disconnect() {
 // accessToken exchanges a device-key-signed assertion for a short-lived token.
 func (c *Client) accessToken(ctx context.Context) (string, lsp2.Claims, error) {
 	now := time.Now()
-	a := lsp2.SignJWT(c.key, lsp2.TypAssertion, lsp2.Thumbprint(c.key.Public().(ed25519.PublicKey)), lsp2.Claims{Iss: c.id.DeviceID, Sub: c.id.DeviceID, Aud: "lsp2-gateway/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
+	a := lsp2.SignJWT(c.key, lsp2.TypAssertion, lsp2.Thumbprint(c.key.Public().(ed25519.PublicKey)), lsp2.Claims{Iss: c.id.DeviceID, Sub: c.id.DeviceID, Aud: lsp2.AssertionAudience(c.id.Issuer), Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
 	var tok struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
@@ -152,7 +152,7 @@ func (c *Client) accessToken(ctx context.Context) (string, lsp2.Claims, error) {
 		}
 		return "", lsp2.Claims{}, fmt.Errorf("token refresh failed: %v %s", err, tok.Error)
 	}
-	cl, err := lsp2.UnverifiedClaims(tok.AccessToken)
+	cl, err := verifyAccessToken(c.id, c.gw, c.key.Public().(ed25519.PublicKey), tok.AccessToken)
 	return tok.AccessToken, cl, err
 }
 
@@ -170,7 +170,7 @@ func (c *Client) Run(ctx context.Context, ready chan<- error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if errors.Is(err, ErrRevoked) {
+		if errors.Is(err, ErrRevoked) || errors.Is(err, ErrGatewayIdentity) {
 			return err
 		}
 		c.cfg.Logger.Printf("lsp2: session ended: %v", err)
@@ -469,7 +469,7 @@ func (c *Client) refreshLoop(ctx context.Context, exp int64) {
 		tok, claims, err := c.accessToken(ctx)
 		if err != nil {
 			c.cfg.Logger.Printf("lsp2: mid-session token refresh failed: %v", err)
-			if errors.Is(err, ErrRevoked) {
+			if errors.Is(err, ErrRevoked) || errors.Is(err, ErrGatewayIdentity) {
 				return
 			}
 			exp = time.Now().Add(20 * time.Second).Unix() // retry soon; gateway grants a short grace

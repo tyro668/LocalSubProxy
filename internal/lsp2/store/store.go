@@ -19,6 +19,20 @@ type Tenant struct {
 	ID         string
 	Name       string
 	APIKeyHash string // hex SHA-256 of the tenant API key; the key itself is never stored
+	Profile    TenantProfile
+}
+
+// TenantProfile is the SaaS identity published (signed) in the gateway
+// metadata and shown to the user on the desktop consent screen.
+type TenantProfile struct {
+	DisplayName     string   `json:"display_name,omitempty"`
+	LogoURI         string   `json:"logo_uri,omitempty"`
+	HomepageURI     string   `json:"homepage_uri,omitempty"`
+	PolicyURI       string   `json:"policy_uri,omitempty"`
+	TosURI          string   `json:"tos_uri,omitempty"`
+	PairingURI      string   `json:"pairing_uri,omitempty"`
+	RequestedModels []string `json:"requested_models,omitempty"`
+	RequestedScopes []string `json:"requested_scopes,omitempty"`
 }
 
 // DeviceAuth is one pending RFC 8628 device authorization.
@@ -84,6 +98,7 @@ type Event struct {
 type Store interface {
 	PutTenant(ctx context.Context, t Tenant) error
 	TenantByAPIKeyHash(ctx context.Context, hash string) (Tenant, error)
+	GetTenant(ctx context.Context, id string) (Tenant, error)
 
 	CreateDeviceAuth(ctx context.Context, d DeviceAuth) error
 	DeviceAuthByCodeHash(ctx context.Context, hash string) (DeviceAuth, error)

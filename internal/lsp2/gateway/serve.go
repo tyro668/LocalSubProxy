@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,6 +27,12 @@ type ServeOptions struct {
 	Tenants           string // "acme:ENV_VAR,beta:ENV_VAR2"
 	Retention         time.Duration
 	AllowEphemeralKey bool
+	// Issuer is the public https origin of this gateway (required unless
+	// AllowEphemeralKey, i.e. development, where it is derived per request).
+	Issuer string
+	// Profiles is an optional JSON file {"tenant": TenantProfile, ...} with the
+	// SaaS identity shown on the desktop consent screen.
+	Profiles string
 }
 
 func Serve(ctx context.Context, o ServeOptions) error {
@@ -56,16 +63,33 @@ func Serve(ctx context.Context, o ServeOptions) error {
 		return err
 	}
 	defer st.Close()
-	g, err := New(Config{Store: st, SigningKey: sk, Retention: o.Retention})
+	if o.Issuer == "" && !o.AllowEphemeralKey {
+		return errors.New("set -issuer to the gateway's public https origin (tokens and metadata are bound to it)")
+	}
+	g, err := New(Config{Store: st, SigningKey: sk, Retention: o.Retention, Issuer: o.Issuer})
 	if err != nil {
 		return err
+	}
+	profiles := map[string]store.TenantProfile{}
+	if o.Profiles != "" {
+		b, err := os.ReadFile(o.Profiles)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(b, &profiles); err != nil {
+			return fmt.Errorf("tenant profiles: %w", err)
+		}
 	}
 	for _, t := range strings.Split(o.Tenants, ",") {
 		id, env, ok := strings.Cut(strings.TrimSpace(t), ":")
 		if !ok || id == "" {
 			return fmt.Errorf("bad tenant spec %q (want id:ENV_VAR)", t)
 		}
-		if err := g.RegisterTenant(ctx, id, id, os.Getenv(env)); err != nil {
+		p, ok := profiles[id]
+		if !ok {
+			p = store.TenantProfile{DisplayName: id}
+		}
+		if err := g.RegisterTenantProfile(ctx, id, os.Getenv(env), p); err != nil {
 			return fmt.Errorf("tenant %s: %w (set %s)", id, err, env)
 		}
 	}

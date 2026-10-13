@@ -45,15 +45,19 @@ func main() {
 		db := f.String("db", "./data/gateway.db", "SQLite database file")
 		tenants := f.String("tenants", "default:LSP_TENANT_KEY_DEFAULT", "comma list of tenant:ENV_VAR_WITH_API_KEY")
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
+		issuer := f.String("issuer", "", "public https origin of this gateway, e.g. https://gw.example.com (required)")
+		profiles := f.String("tenant-profiles", "", "optional JSON file with per-tenant SaaS display identity (name, logo_uri, homepage_uri, policy_uri, requested_models, requested_scopes)")
 		_ = f.Parse(os.Args[2:])
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention})
+		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, Issuer: *issuer, Profiles: *profiles})
 	case "connector":
 		f := flag.NewFlagSet("connector", flag.ExitOnError)
 		configDir, _ := os.UserConfigDir()
 		localDir := filepath.Join(configDir, "localsubproxy")
 		remoteURL := f.String("remote-url", "", "remote service origin that serves /.well-known/lsp-connector (first run)")
+		pairLink := f.String("pair-link", "", "lsp2://pair?v=2&gateway=...&tenant=... deep link (first run, alternative to -remote-url)")
+		yes := f.Bool("yes", false, "approve the pairing consent without prompting (automation only)")
 		identity := f.String("identity", filepath.Join(localDir, "lsp2-identity.json"), "device identity file (0600; holds the device private keys)")
 		adapter := f.String("adapter-id", "", "optional initial adapter ID")
 		adapterType := f.String("adapter-type", "ollama_http", "ollama_http or codex_app_server")
@@ -74,7 +78,7 @@ func main() {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		err = runConnector(ctx, *remoteURL, *identity, cfg)
+		err = runConnector(ctx, *remoteURL, *pairLink, *yes, *identity, cfg)
 		if errors.Is(err, context.Canceled) {
 			err = nil
 		}
@@ -103,16 +107,29 @@ func usage() {
 }
 
 // runConnector pairs (first run) and then serves tasks over lsp2 using the same core as the desktop app.
-func runConnector(ctx context.Context, remoteURL, identityFile string, cfg connector.Config) error {
+func runConnector(ctx context.Context, remoteURL, pairLink string, yes bool, identityFile string, cfg connector.Config) error {
 	id, ok, err := client.LoadIdentityFile(identityFile)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		if remoteURL == "" {
-			return errors.New("first run: -remote-url is required to pair this device")
+		var req *client.PairRequest
+		switch {
+		case pairLink != "":
+			req, err = client.PrepareLink(ctx, nil, pairLink)
+		case remoteURL != "":
+			req, err = client.Prepare(ctx, nil, remoteURL)
+		default:
+			return errors.New("first run: -remote-url or -pair-link is required to pair this device")
 		}
-		p, err := client.StartPairing(ctx, nil, remoteURL, connector.DeviceName())
+		if err != nil {
+			return err
+		}
+		printConsent(req.Consent)
+		if !yes && !confirm("Allow this service to use the models on this computer? [y/N] ") {
+			return req.Deny()
+		}
+		p, err := req.Approve(ctx, connector.DeviceName())
 		if err != nil {
 			return err
 		}
@@ -134,4 +151,23 @@ func runConnector(ctx context.Context, remoteURL, identityFile string, cfg conne
 		return err
 	}
 	return c.Run(ctx)
+}
+
+func printConsent(c client.Consent) {
+	fmt.Printf("\n  %s wants to use models on this computer\n", c.SaaS.Name)
+	fmt.Printf("    gateway:     %s (verified signature, key %s)\n    tenant:      %s\n", c.Gateway, c.GatewayKeyID, c.Tenant)
+	for _, kv := range [][2]string{{"homepage", c.SaaS.HomepageURI}, {"privacy", c.SaaS.PolicyURI}, {"terms", c.SaaS.TosURI}, {"logo", c.SaaS.LogoURI}} {
+		if kv[1] != "" {
+			fmt.Printf("    %-12s %s\n", kv[0]+":", kv[1])
+		}
+	}
+	fmt.Printf("    models:      %s\n    scopes:      %s\n\n", strings.Join(c.RequestedModels, ", "), strings.Join(c.RequestedScopes, ", "))
+}
+
+func confirm(prompt string) bool {
+	fmt.Print(prompt)
+	var ans string
+	_, _ = fmt.Scanln(&ans)
+	ans = strings.ToLower(strings.TrimSpace(ans))
+	return ans == "y" || ans == "yes"
 }

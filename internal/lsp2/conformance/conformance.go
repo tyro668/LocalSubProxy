@@ -30,6 +30,7 @@ import (
 
 type Config struct {
 	GatewayURL string // http(s)://host[:port]
+	Issuer     string // expected issuer origin; default: origin of GatewayURL
 	Tenant     string
 	TenantKey  string
 	EndUser    string
@@ -54,6 +55,7 @@ type runner struct {
 	gwKey   ed25519.PublicKey
 	devKey  ed25519.PrivateKey
 	devID   string
+	issuer  string
 }
 
 var errStop = errors.New("prerequisite failed")
@@ -188,6 +190,9 @@ func (r *runner) run(ctx context.Context) error {
 	}
 	_ = h
 	r.check("D1", "GET /.well-known/jwks.json returns an OKP/Ed25519 JWK Set", want(err == nil && jwkX != "", "status %d err %v", st, err))
+	if err := r.metadata(); err != nil {
+		return err
+	}
 
 	// --- pairing (RFC 8628)
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
@@ -245,26 +250,28 @@ func (r *runner) run(ctx context.Context) error {
 		return errStop
 	}
 	r.check("T2", "gateway_key equals the JWKS key", want(jwkX == "" || jwkX == x, "jwks %s token %s", jwkX, x))
-	claims, err := lsp2.VerifyJWT(r.gwKey, at, lsp2.TypAccessToken, "lsp2-gateway", time.Now())
-	if err != nil { // aud is deployment specific; retry reading it from the token
-		if c, e2 := lsp2.UnverifiedClaims(at); e2 == nil {
-			claims, err = lsp2.VerifyJWT(r.gwKey, at, lsp2.TypAccessToken, c.Aud, time.Now())
-		}
-	}
-	r.check("T3", "access token is an EdDSA JWT with typ at+jwt signed by gateway_key", err)
+	claims, err := lsp2.VerifyJWT(r.gwKey, at, lsp2.TypAccessToken, lsp2.TokenAudience(r.issuer, r.cfg.Tenant), time.Now())
+	r.check("T3", "access token is an EdDSA JWT with typ at+jwt signed by gateway_key, aud = <issuer>/tenants/<tenant> (§18.3)", err)
+	r.check("I1", "access token iss = gateway issuer origin and tenant claim = tenant (§18.3)",
+		want(claims.Iss == r.issuer && claims.Tenant == r.cfg.Tenant, "iss %q tenant %q", claims.Iss, claims.Tenant))
+	r.check("I2", "token response issuer equals the metadata issuer", want(tr["issuer"] == r.issuer, "got %v", tr["issuer"]))
 	r.check("T4", "access token sub = device_id and cnf.jkt = RFC 7638 thumbprint of the device key",
 		want(claims.Sub == r.devID && claims.Cnf["jkt"] == lsp2.Thumbprint(pub), "sub %q jkt %q", claims.Sub, claims.Cnf["jkt"]))
 	_, m = tok(proof())
 	r.check("T5", "device_code is single-use", want(m["error"] == "invalid_grant", "got %v", m))
 	assertion := func() string {
 		now := time.Now()
-		return lsp2.SignJWT(key, lsp2.TypAssertion, lsp2.Thumbprint(pub), lsp2.Claims{Iss: r.devID, Sub: r.devID, Aud: claims.Aud + "/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
+		return lsp2.SignJWT(key, lsp2.TypAssertion, lsp2.Thumbprint(pub), lsp2.Claims{Iss: r.devID, Sub: r.devID, Aud: lsp2.AssertionAudience(r.issuer), Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
 	}
 	a1 := assertion()
 	refresh := func(a string) (int, map[string]any) {
 		st, m, _, _ := r.form("/v2/token", url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:jwt-bearer"}, "assertion": {a}})
 		return st, m
 	}
+	now := time.Now()
+	foreign := lsp2.SignJWT(key, lsp2.TypAssertion, lsp2.Thumbprint(pub), lsp2.Claims{Iss: r.devID, Sub: r.devID, Aud: "https://other-gateway.invalid/v2/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
+	st, m = refresh(foreign)
+	r.check("I3", "assertion whose aud is not this gateway's token endpoint is rejected (invalid_grant)", want(m["error"] == "invalid_grant", "status %d %v", st, m))
 	st, m = refresh(a1)
 	r.check("T6", "jwt-bearer grant with a device-signed assertion issues a new token", want(st == 200 && m["access_token"] != nil, "status %d %v", st, m))
 	_, m = refresh(a1)
@@ -531,4 +538,59 @@ func containsS(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// metadata checks §18 gateway metadata and §19 signed tenant metadata.
+func (r *runner) metadata() error {
+	iss := r.cfg.Issuer
+	if iss == "" {
+		iss = r.cfg.GatewayURL
+	}
+	o, err := lsp2.Origin(iss)
+	if err != nil {
+		o = strings.TrimRight(iss, "/")
+	}
+	r.issuer = o
+	var base lsp2.GatewayMetadata
+	st, m, _, err := r.tenant(http.MethodGet, lsp2.MetadataPath, nil)
+	b, _ := json.Marshal(m)
+	_ = json.Unmarshal(b, &base)
+	if !r.check("M1", "GET /.well-known/lsp2-gateway returns metadata whose issuer is the gateway origin", want(err == nil && st == 200 && base.Issuer == r.issuer, "status %d issuer %q want %q", st, base.Issuer, r.issuer)) {
+		return errStop
+	}
+	ok := true
+	for _, u := range []string{base.JWKSURI, base.DeviceAuthorizationEndpoint, base.TokenEndpoint, base.ConnectEndpoint} {
+		ok = ok && lsp2.SameOrigin(u, r.issuer)
+	}
+	r.check("M2", "jwks_uri, device_authorization_endpoint, token_endpoint and connect_endpoint are on the issuer origin", want(ok && len(base.ProtocolVersions) > 0, "%+v", base))
+	st, _, _, _ = r.tenant(http.MethodGet, lsp2.MetadataPath+"?tenant=no-such-tenant-"+lsp2.RandomID(""), nil)
+	r.check("M3", "metadata for an unknown tenant is 404", want(st == 404, "status %d", st))
+	st, m, _, err = r.tenant(http.MethodGet, lsp2.MetadataPath+"?tenant="+url.QueryEscape(r.cfg.Tenant), nil)
+	var tm lsp2.GatewayMetadata
+	b, _ = json.Marshal(m)
+	_ = json.Unmarshal(b, &tm)
+	_, jwks, _, _ := r.tenant(http.MethodGet, "/.well-known/jwks.json", nil)
+	var verr error = errors.New("no JWKS key verifies signed_metadata")
+	var sm lsp2.GatewayMetadata
+	if ks, _ := jwks["keys"].([]any); err == nil && st == 200 {
+		for _, k := range ks {
+			km, _ := k.(map[string]any)
+			xs, _ := km["x"].(string)
+			x, _ := lsp2.UnB64(xs)
+			if sm, verr = lsp2.VerifyMetadata(x, tm.SignedMetadata, r.issuer, r.cfg.Tenant, time.Now()); verr == nil {
+				break
+			}
+		}
+	}
+	r.check("M4", "tenant metadata carries signed_metadata (typ lsp2-metadata+jwt) verifiable with a JWKS key and bound to issuer, tenant and audience (§19.1)", verr)
+	if verr == nil {
+		badScope := ""
+		for _, sc := range sm.RequestedScopes {
+			if !containsS(lsp2.Scopes, sc) {
+				badScope = sc
+			}
+		}
+		r.check("M5", "signed SaaS identity has name, requested_scopes from the registry, exp-iat <= 24h", want(sm.SaaS.Name != "" && len(sm.RequestedScopes) > 0 && badScope == "", "saas %+v scopes %v", sm.SaaS, sm.RequestedScopes))
+	}
+	return nil
 }
