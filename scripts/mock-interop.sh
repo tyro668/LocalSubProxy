@@ -29,7 +29,7 @@ start() { # impl port
     go)
       go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
       "$tmp/localsubproxy" server -listen "127.0.0.1:$port" -db "$tmp/go.db" -tenants acme:LSP_TENANT_KEY_ACME \
-        -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" >"$tmp/$impl.log" 2>&1 & ;;
+        -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui >"$tmp/$impl.log" 2>&1 & ;;
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
   pids+=($!)

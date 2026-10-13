@@ -478,11 +478,12 @@ class Task:
 
 
 class Gateway:
-    def __init__(self, issuer="", seed=None, max_conc=16, log=None):
+    def __init__(self, issuer="", seed=None, max_conc=16, log=None, web_dir=""):
         self.cfg = {"issuer": L.origin(issuer) if issuer else "", "code_ttl": 600, "token_ttl": 900, "max_conc": max_conc,
                     "ping_interval": 20, "resume_window": 30, "task_timeout": 600, "slow_consumer": 60, "attach_grace": 30,
                     "flow": dict(DEFAULT_FLOW)}
         self.log = log or (lambda *a: print(*a, file=sys.stderr, flush=True))
+        self.web_dir = web_dir
         self.key = L.SigningKey(seed or secrets.token_bytes(32))
         self.pub, self.kid = self.key.pub, self.key.kid
         self.tenants, self.auths, self.devices, self.idem, self.task_recs = {}, {}, {}, {}, {}
@@ -505,6 +506,9 @@ class Gateway:
         a = web.Application(client_max_size=48 << 20)
         r = a.router
         r.add_get("/healthz", lambda req: self._static(json_resp(200, {"status": "ok"})))
+        if self.web_dir:
+            for path in WEB_FILES:
+                r.add_get(path, self.serve_web)
         r.add_get("/.well-known/jwks.json", lambda req: self._static(json_resp(200, {"keys": [L.public_jwk(self.pub)]}, {"Cache-Control": "public, max-age=300"})))
         r.add_route("*", "/.well-known/lsp2-gateway", self.metadata)
         r.add_route("*", "/v2/device/authorize", self.authorize)
@@ -521,6 +525,18 @@ class Gateway:
     @staticmethod
     async def _static(resp):
         return resp
+
+    async def serve_web(self, req):
+        """Shared mock SaaS chat page (mock/web): static files only, no secrets."""
+        name, ctype = WEB_FILES[req.path]
+        try:
+            with open(os.path.join(self.web_dir, name), "rb") as f:
+                body = f.read()
+        except OSError:
+            return json_resp(404, {"error": "chat UI not installed"})
+        return web.Response(body=body, headers={"Content-Type": ctype, "Content-Security-Policy": WEB_CSP,
+                                                "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+                                                "Cache-Control": "no-cache"})
 
     def issuer(self, req):
         if self.cfg["issuer"]:
@@ -1317,6 +1333,16 @@ class Gateway:
         return json_resp(200, out, headers)
 
 
+# Same paths and CSP as mock/web/web.go.
+WEB_FILES = {
+    "/": ("chat.html", "text/html; charset=utf-8"), "/chat": ("chat.html", "text/html; charset=utf-8"),
+    "/chat/": ("chat.html", "text/html; charset=utf-8"), "/chat/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
+    "/chat/qrcode.js": ("qrcode.js", "text/javascript; charset=utf-8"),
+}
+WEB_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+           "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+
 def main():
     ap = argparse.ArgumentParser(description="LSP2 mock SaaS gateway (Python)")
     ap.add_argument("--listen", default=os.environ.get("LSP2_LISTEN", "127.0.0.1:8080"))
@@ -1328,11 +1354,15 @@ def main():
                     help='JSON {"<tenant>": {"api_key_env": "...", "display_name": "...", "requested_scopes": [...], ...}}')
     ap.add_argument("--signing-key-env", default="LSP2_SIGNING_SEED", help="env var holding a hex Ed25519 seed (ephemeral if unset)")
     ap.add_argument("--max-concurrency", type=int, default=16)
+    ap.add_argument("--web-dir", default=os.environ.get("LSP2_WEB_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")),
+                    help="directory with the shared chat page, served at / and /chat")
+    ap.add_argument("--no-chat-ui", action="store_true", help="do not serve the chat page")
     a = ap.parse_args()
     seed_hex = os.environ.get(a.signing_key_env, "")
     if not seed_hex:
         print("warning: no signing key; using an ephemeral key (tokens do not survive restarts)", file=sys.stderr)
-    g = Gateway(issuer=a.issuer, seed=bytes.fromhex(seed_hex) if seed_hex else None, max_conc=a.max_concurrency)
+    g = Gateway(issuer=a.issuer, seed=bytes.fromhex(seed_hex) if seed_hex else None, max_conc=a.max_concurrency,
+                web_dir="" if a.no_chat_ui else a.web_dir)
     for spec in a.tenant:
         tid, _, env = spec.partition(":")
         if not os.environ.get(env):

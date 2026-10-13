@@ -19,6 +19,7 @@ import (
 	"localsubproxy/internal/connector"
 	"localsubproxy/internal/lsp2/client"
 	"localsubproxy/internal/lsp2/gateway"
+	"localsubproxy/mock/web"
 )
 
 func main() {
@@ -50,10 +51,15 @@ func main() {
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
 		issuer := f.String("issuer", "", "public https origin of this gateway, e.g. https://gw.example.com (required)")
 		profiles := f.String("tenant-profiles", "", "optional JSON file with per-tenant SaaS display identity (name, logo_uri, homepage_uri, policy_uri, requested_models, requested_scopes)")
+		chatUI := f.Bool("chat-ui", false, "serve the mock SaaS chat page (mock/web) at / and /chat; development only, sign-in needs a tenant API key")
 		_ = f.Parse(os.Args[2:])
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, Issuer: *issuer, Profiles: *profiles})
+		o := gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, Issuer: *issuer, Profiles: *profiles}
+		if *chatUI {
+			o.Wrap = web.Wrap
+		}
+		err = gateway.Serve(ctx, o)
 	case "connector":
 		f := flag.NewFlagSet("connector", flag.ExitOnError)
 		configDir, _ := os.UserConfigDir()

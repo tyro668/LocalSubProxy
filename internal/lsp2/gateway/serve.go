@@ -33,6 +33,8 @@ type ServeOptions struct {
 	// Profiles is an optional JSON file {"tenant": TenantProfile, ...} with the
 	// SaaS identity shown on the desktop consent screen.
 	Profiles string
+	// Wrap, if set, wraps the gateway handler (e.g. to add the mock chat UI).
+	Wrap func(http.Handler) http.Handler
 }
 
 func Serve(ctx context.Context, o ServeOptions) error {
@@ -95,7 +97,11 @@ func Serve(ctx context.Context, o ServeOptions) error {
 	}
 	go g.RunRetention(ctx, time.Hour)
 	log.Printf("lsp2 gateway listening on %s (gateway key %s, encryption at rest: %v)", o.Listen, lsp2.B64(g.PublicKey()), c != nil)
-	s := &http.Server{Addr: o.Listen, Handler: g.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	h := g.Handler()
+	if o.Wrap != nil {
+		h = o.Wrap(h)
+	}
+	s := &http.Server{Addr: o.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() { <-ctx.Done(); _ = s.Close() }()
 	if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err

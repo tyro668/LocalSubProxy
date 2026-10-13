@@ -92,6 +92,7 @@ export class Gateway {
     const p = u.pathname;
     const err = (s, code, msg) => (p.startsWith('/v1/') ? apiError(res, s, code, msg) : problem(res, s, code, msg));
     if (p === '/healthz') return json(res, 200, { status: 'ok' });
+    if (this.cfg.webDir && WEB_FILES[p] && (req.method === 'GET' || req.method === 'HEAD')) return this.serveWeb(res, p);
     if (p === '/.well-known/jwks.json') { res.setHeader('Cache-Control', 'public, max-age=300'); return json(res, 200, { keys: [L.publicJWK(this.pub)] }); }
     if (p === '/.well-known/lsp2-gateway') return this.metadata(req, res, u);
     if (p === '/v2/device/authorize') return this.authorize(req, res);
@@ -105,6 +106,16 @@ export class Gateway {
     if (p === '/v1/models') return this.models(req, res, err);
     if (p === '/v1/chat/completions') return this.chat(req, res, err);
     return err(404, 'BAD_REQUEST', 'not found');
+  }
+
+  // Shared mock SaaS chat page (mock/web): static files only, no secrets.
+  serveWeb(res, p) {
+    const [file, type] = WEB_FILES[p];
+    let b;
+    try { b = fs.readFileSync(this.cfg.webDir + '/' + file); } catch { return json(res, 404, { error: 'chat UI not installed' }); }
+    res.writeHead(200, { 'Content-Type': type, 'Content-Security-Policy': WEB_CSP, 'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-cache', 'Content-Length': b.length });
+    return res.end(b);
   }
 
   tenantAuth(req, err) {
@@ -945,6 +956,13 @@ function extractBlobs(msgs) {
   return { blobs, vision, audio };
 }
 
+// Same paths and CSP as mock/web/web.go.
+const WEB_FILES = {
+  '/': ['chat.html', 'text/html; charset=utf-8'], '/chat': ['chat.html', 'text/html; charset=utf-8'], '/chat/': ['chat.html', 'text/html; charset=utf-8'],
+  '/chat/chat.js': ['chat.js', 'text/javascript; charset=utf-8'], '/chat/qrcode.js': ['qrcode.js', 'text/javascript; charset=utf-8'],
+};
+const WEB_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 // ---------- CLI ----------
 async function main() {
   const { values: o } = parseArgs({ options: {
@@ -954,18 +972,23 @@ async function main() {
     'tenant-profiles': { type: 'string', default: process.env.LSP2_TENANT_PROFILES || '' },
     'signing-key-env': { type: 'string', default: 'LSP2_SIGNING_SEED' },
     'max-concurrency': { type: 'string', default: '16' },
+    'web-dir': { type: 'string', default: process.env.LSP2_WEB_DIR || new URL('../web', import.meta.url).pathname },
+    'no-chat-ui': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   } });
   if (o.help) {
     console.log(`usage: node gateway.mjs [--listen host:port] [--issuer https://gw.example] [--tenant id:ENV_VAR]... [--tenant-profiles profiles.json]
   --tenant id:ENV       register tenant <id> whose API key (>= 32 chars) is read from env var ENV
   --tenant-profiles F   JSON {"<tenant>": {"api_key_env": "...", "display_name": "...", "requested_scopes": [...], ...}}
+  --web-dir DIR         directory with the shared chat page (default ../web); served at / and /chat
+  --no-chat-ui          do not serve the chat page
   LSP2_SIGNING_SEED     hex Ed25519 seed (32 bytes); ephemeral key if unset`);
     return;
   }
   const seedHex = process.env[o['signing-key-env']];
   if (!seedHex) console.error('warning: no signing key; using an ephemeral key (tokens do not survive restarts)');
-  const g = new Gateway({ issuer: o.issuer, seed: seedHex ? Buffer.from(seedHex, 'hex') : undefined, maxConc: Number(o['max-concurrency']) });
+  const g = new Gateway({ issuer: o.issuer, seed: seedHex ? Buffer.from(seedHex, 'hex') : undefined, maxConc: Number(o['max-concurrency']),
+    webDir: o['no-chat-ui'] ? '' : o['web-dir'] });
   for (const t of o.tenant) {
     const [id, env] = t.split(':');
     if (!process.env[env]) throw new Error(`tenant ${id}: env ${env} is empty`);

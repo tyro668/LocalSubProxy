@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LSP2 模拟 SaaS · 本机模型聊天</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--bd:#d8dee4;--mut:#656d76;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--bg:#f6f8fa}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Segoe UI,sans-serif;color:#1f2328;background:#fff}
+header{display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--bd);background:var(--bg)}
+header h1{font-size:16px;margin:0}header .sp{flex:1}header .who{color:var(--mut)}
+button{font:inherit;padding:5px 12px;border:1px solid var(--bd);border-radius:6px;background:#fff;cursor:pointer}
+button:hover{background:#f3f4f6}button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.pri:hover{background:#0860c7}
+button.danger{color:var(--bad)}button:disabled{opacity:.5;cursor:not-allowed}
+input,select,textarea{font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;width:100%;background:#fff}
+label{display:block;font-size:12.5px;color:var(--mut);margin:8px 0 3px}
+.hidden{display:none!important}
+#login{max-width:420px;margin:60px auto;padding:24px;border:1px solid var(--bd);border-radius:10px}
+#login h2{margin-top:0}#login .note{font-size:12.5px;color:var(--mut)}
+#app{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 49px)}
+aside{border-right:1px solid var(--bd);overflow-y:auto;padding:14px;background:#fcfcfd}
+.card{border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:12px;background:#fff}
+.card h3{margin:0 0 8px;font-size:14px;display:flex;align-items:center;gap:8px}.card h3 .sp{flex:1}
+.badge{display:inline-block;font-size:11.5px;padding:0 7px;border-radius:10px;border:1px solid var(--bd);color:var(--mut)}
+.badge.on{color:var(--ok);border-color:#aceebb;background:#dafbe1}.badge.off{color:var(--mut)}.badge.rv{color:var(--bad);border-color:#ffcecb;background:#ffebe9}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;word-break:break-all}
+.link{background:var(--bg);border:1px dashed var(--bd);border-radius:6px;padding:6px 8px}
+#qr{display:flex;justify-content:center;margin:8px 0}#qr img{image-rendering:pixelated}
+.row{display:flex;gap:6px;margin-top:8px}.row>*{flex:1}
+.dev{border-top:1px solid #eef1f4;padding:8px 0}.dev:first-child{border-top:0}
+.dev .nm{font-weight:600}.dev .models{margin-top:4px;display:flex;flex-wrap:wrap;gap:4px}
+.msg-ok{color:var(--ok);font-size:12.5px;margin-top:6px}.msg-err{color:var(--bad);font-size:12.5px;margin-top:6px}
+main{display:flex;flex-direction:column;min-width:0}
+.bar{display:flex;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd)}.bar select{max-width:420px}
+#chat{flex:1;overflow-y:auto;padding:18px 16px}
+.empty{color:var(--mut);text-align:center;margin-top:12vh}
+.turn{max-width:860px;margin:0 auto 14px}
+.turn .who{font-size:12px;color:var(--mut);margin-bottom:2px}
+.bubble{white-space:pre-wrap;word-break:break-word;padding:9px 12px;border-radius:10px;border:1px solid var(--bd)}
+.user .bubble{background:#ddf4ff;border-color:#b6e3ff}
+.assistant .bubble{background:#fff}
+.bubble img{max-width:240px;max-height:180px;display:block;margin-top:6px;border-radius:6px}
+.meta{font-size:12px;color:var(--mut);margin-top:3px}
+.err{margin-top:6px;padding:8px 10px;border-radius:8px;background:#ffebe9;border:1px solid #ffcecb;color:#82071e;font-size:13px}
+.err b{font-family:ui-monospace,Menlo,monospace}
+.cursor::after{content:"▍";animation:b 1s steps(1) infinite;color:var(--acc)}@keyframes b{50%{opacity:0}}
+footer{border-top:1px solid var(--bd);padding:10px 16px}
+footer .in{max-width:860px;margin:0 auto}
+footer textarea{resize:vertical;min-height:64px}
+#att{font-size:12.5px;color:var(--mut);display:flex;align-items:center;gap:8px}
+#att img{max-height:48px;border-radius:4px;border:1px solid var(--bd)}
+#toast{position:fixed;right:16px;bottom:16px;max-width:420px;z-index:9}
+#toast div{margin-top:8px;padding:9px 12px;border-radius:8px;background:#24292f;color:#fff;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.2)}
+#toast div.bad{background:#a40e26}
+@media(max-width:860px){#app{grid-template-columns:1fr}aside{max-height:45vh;border-right:0;border-bottom:1px solid var(--bd)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>LSP2 模拟 SaaS · 本机模型聊天</h1><span class="sp"></span>
+  <span class="who" id="who"></span>
+  <button id="logout" class="hidden">退出</button>
+</header>
+
+<section id="login">
+  <h2>开发登录</h2>
+  <p class="note">这是一个模拟 SaaS 的开发页面。用租户 API Key 登录后，页面直接以“租户后端”的身份调用本网关的 <span class="mono">/v2/tenant/*</span> 与 <span class="mono">/v1/*</span>。Key 只保存在本标签页的 sessionStorage 中，关闭标签页即清除；页面本身不包含任何密钥。</p>
+  <form id="loginForm" autocomplete="off">
+    <label for="tenant">租户 ID</label><input id="tenant" required value="acme">
+    <label for="user">最终用户（X-End-User）</label><input id="user" required value="alice" maxlength="128">
+    <label for="key">租户 API Key</label><input id="key" type="password" required minlength="32" placeholder="与网关 --tenant id:ENV 中 ENV 的值相同">
+    <div class="row"><button class="pri" type="submit">登录</button></div>
+    <div class="msg-err" id="loginErr"></div>
+  </form>
+</section>
+
+<div id="app" class="hidden">
+  <aside>
+    <div class="card">
+      <h3>配对状态<span class="sp"></span><button id="refresh" title="刷新">刷新</button></h3>
+      <div id="pairState">加载中…</div>
+    </div>
+    <div class="card">
+      <h3>配对新设备</h3>
+      <div style="font-size:12.5px;color:var(--mut)">① 在电脑上用 Connector 打开下方链接（或扫码），在本机同意授权；② Connector 显示配对码后，在这里输入并批准。</div>
+      <label>配对链接</label>
+      <div class="link mono" id="pairLink">…</div>
+      <div id="qr"></div>
+      <div class="row"><button id="copyLink">复制链接</button><button id="copyCmd">复制 Connector 命令</button></div>
+      <label for="code">设备配对码（user_code）</label><input id="code" placeholder="如 BCDF-GHJK" class="mono">
+      <label for="jkt">设备公钥指纹 jkt（可选，强校验）</label><input id="jkt" class="mono" placeholder="由 pairing_uri 的 ?jkt= 带入">
+      <div class="row"><button class="pri" id="approve">批准</button><button class="danger" id="deny">拒绝</button></div>
+      <div id="pairMsg"></div>
+    </div>
+    <div class="card">
+      <h3>我的设备<span class="sp"></span><span class="badge" id="devCount">0</span></h3>
+      <div id="devices"></div>
+    </div>
+  </aside>
+  <main>
+    <div class="bar">
+      <label for="model" style="margin:0;white-space:nowrap">模型</label>
+      <select id="model"></select>
+      <span id="modelCaps" class="badge"></span>
+      <span class="sp" style="flex:1"></span>
+      <button id="newChat">新对话</button>
+    </div>
+    <div id="chat"><div class="empty" id="empty">选择一个在线设备上的模型，开始对话。<br>回答经网关的 <span class="mono">/v1/chat/completions</span>（SSE）流式返回。</div></div>
+    <footer><div class="in">
+      <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+      <div class="row" style="align-items:center">
+        <div id="att"><input type="file" id="file" accept="image/*" class="hidden"><button id="pick" type="button">添加图片</button><span id="attInfo"></span></div>
+        <span style="flex:1"></span>
+        <button id="stop" class="danger hidden" style="flex:0 0 auto">停止</button>
+        <button id="send" class="pri" style="flex:0 0 auto">发送</button>
+      </div>
+    </div></footer>
+  </main>
+</div>
+<div id="toast"></div>
+<script src="/chat/qrcode.js"></script>
+<script src="/chat/chat.js"></script>
+</body>
+</html>

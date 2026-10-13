@@ -17,6 +17,7 @@ import (
 	"localsubproxy/mock/demo"
 	"localsubproxy/mock/fakemodel"
 	"localsubproxy/mock/saas"
+	"localsubproxy/mock/web"
 )
 
 func main() {
@@ -46,7 +47,7 @@ func main() {
 		tenants := f.String("tenants", "acme:LSP_TENANT_KEY_ACME", "comma list of tenant:ENV_VAR_WITH_API_KEY")
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
 		f.Parse(os.Args[2:])
-		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, AllowEphemeralKey: true})
+		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, AllowEphemeralKey: true, Wrap: web.Wrap})
 	case "saas":
 		f := flag.NewFlagSet("saas", flag.ExitOnError)
 		listen := f.String("listen", "127.0.0.1:3000", "")
