@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 // Codex is intentionally a separate, opt-in adapter. The CLI owns ChatGPT login;
@@ -322,7 +322,7 @@ func (x *Connector) probeCodexAdapter(ctx context.Context, a AdapterConfig) Adap
 	return h
 }
 
-func codexInput(messages []lsp2.Message) string {
+func codexInput(messages []lmbp.Message) string {
 	var b strings.Builder
 	for _, m := range messages {
 		b.WriteString("[" + m.Role + "]\n")
@@ -334,15 +334,15 @@ func codexInput(messages []lsp2.Message) string {
 
 // callCodex runs a text-only task through the Codex app-server (tools and
 // multimodal input are rejected earlier by checkCaps).
-func (x *Connector) callCodex(ctx context.Context, model string, msgs []lsp2.Message, a AdapterConfig, emitText func(string) error) error {
+func (x *Connector) callCodex(ctx context.Context, model string, msgs []lmbp.Message, a AdapterConfig, emitText func(string) error) error {
 	return runCodexWithEffort(ctx, model, msgs, a.CodexBin, a.ReasoningEffort, emitText)
 }
 
-func runCodex(ctx context.Context, model string, msgs []lsp2.Message, bin string, emitText func(string) error) error {
+func runCodex(ctx context.Context, model string, msgs []lmbp.Message, bin string, emitText func(string) error) error {
 	return runCodexWithEffort(ctx, model, msgs, bin, "", emitText)
 }
 
-func runCodexWithEffort(ctx context.Context, model string, msgs []lsp2.Message, bin, effort string, emitText func(string) error) error {
+func runCodexWithEffort(ctx context.Context, model string, msgs []lmbp.Message, bin, effort string, emitText func(string) error) error {
 	s, closeFn, err := startCodex(ctx, bin)
 	if err != nil {
 		return err

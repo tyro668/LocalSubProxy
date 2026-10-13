@@ -1,9 +1,9 @@
 asyncapi: 3.0.0
 info:
-  title: LocalSubProxy protocol v2 (lsp2) — device WebSocket channel
+  title: LMBP (Local Model Bridge Protocol) — device WebSocket channel
   version: 2.0.0
   description: |
-    Normative text: docs/protocol-v2.md. Written from the **device (connector)** point of view:
+    Normative text: docs/lmbp-spec.md. Written from the **device (connector)** point of view:
     `send` = device→gateway, `receive` = gateway→device. A gateway implements the mirror image.
 
     Every WebSocket *text* message is one JSON object (RFC 8259, UTF-8) matching
@@ -11,18 +11,18 @@ info:
 
     Data frames (blob.chunk, task.run, task.delta, task.done, task.error) carry a per-task,
     per-direction `seq` starting at 1 and are acknowledged with task.ack (capabilities
-    `resume` and `flow`, docs/protocol-v2.md §14–§15). Control frames carry no seq.
+    `resume` and `flow`, docs/lmbp-spec.md §14–§15). Control frames carry no seq.
 servers:
   production:
     host: gateway.example.com
-    pathname: /v2/connect
+    pathname: /lmbp/v1/connect
     protocol: wss
-    description: TLS is REQUIRED except on loopback in development. Use the connect_endpoint from /.well-known/lsp2-gateway (§18.2).
+    description: TLS is REQUIRED except on loopback in development. Use the connect_endpoint from /.well-known/lmbp-gateway (§18.2).
     security:
       - $ref: '#/components/securitySchemes/accessToken'
 channels:
   device:
-    address: /v2/connect
+    address: /lmbp/v1/connect
     title: Device session
     bindings:
       ws:
@@ -34,10 +34,10 @@ channels:
             Authorization:
               type: string
               pattern: '^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
-              description: 'Access token (typ at+jwt) with iss = gateway issuer origin and aud = <issuer>/tenants/<tenant> (docs/protocol-v2.md §18.3). The gateway rejects other iss/aud with 401; the device rejects tokens that do not match its stored issuer/audience before connecting (§18.4).'
+              description: 'Access token (typ at+jwt) with iss = gateway issuer origin and aud = <issuer>/tenants/<tenant> (docs/lmbp-spec.md §18.3). The gateway rejects other iss/aud with 401; the device rejects tokens that do not match its stored issuer/audience before connecting (§18.4).'
             Sec-WebSocket-Protocol:
               type: string
-              description: MUST offer lsp2; the server selects exactly lsp2.
+              description: MUST offer lmbp; the server selects exactly lmbp.
         bindingVersion: 0.1.0
     messages:
       hello:
@@ -191,7 +191,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Access token (typ at+jwt) from POST /v2/token, bound to the device key via cnf.jkt; possession proven by the hello proof JWT.
+      description: Access token (typ at+jwt) from POST /lmbp/v1/token, bound to the device key via cnf.jkt; possession proven by the hello proof JWT.
   messages:
     hello:
       name: 'hello'
@@ -221,7 +221,7 @@ components:
       name: 'task.run'
       title: task.run
       contentType: application/json
-      summary: "Gateway→device data frame (seq). No data; the payload is the compact JWS in `jws` (typ lsp2-task+jws, schema task.run.payload.json) and may reference blobs, tools and an e2ee sealed request."
+      summary: "Gateway→device data frame (seq). No data; the payload is the compact JWS in `jws` (typ lmbp-task+jws, schema task.run.payload.json) and may reference blobs, tools and an e2ee sealed request."
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'

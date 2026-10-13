@@ -4,7 +4,7 @@
 // streaming, multi-turn, image upload, stop, CONSENT_DENIED and DEVICE_OFFLINE.
 //
 //   node chat-ui.mjs [go node python]
-// env: LSP2_BIN (dir with localsubproxy + lspmock), CHROME (browser path),
+// env: LMBP_BIN (dir with localsubproxy + lspmock), CHROME (browser path),
 //      SHOTS (screenshot dir), PYTHON (python with aiohttp/cryptography)
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -14,8 +14,8 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 
 const repo = path.resolve(new URL('../../..', import.meta.url).pathname);
-const bin = process.env.LSP2_BIN || path.join(repo, 'bin');
-const shots = process.env.SHOTS || path.join(os.tmpdir(), 'lsp2-chat-shots');
+const bin = process.env.LMBP_BIN || path.join(repo, 'bin');
+const shots = process.env.SHOTS || path.join(os.tmpdir(), 'lmbp-chat-shots');
 const chrome = process.env.CHROME || '/usr/bin/google-chrome';
 const python = process.env.PYTHON || path.join(repo, 'mock/python/.venv/bin/python');
 const impls = process.argv.slice(2).length ? process.argv.slice(2) : ['go', 'node', 'python'];
@@ -39,7 +39,7 @@ process.on('exit', cleanup);
 const profiles = path.join(repo, 'mock/tenant-profiles.example.json');
 function startGateway(impl, port) {
   const listen = `127.0.0.1:${port}`, iss = `http://${listen}`;
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `lsp2-${impl}-`));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `lmbp-${impl}-`));
   switch (impl) {
     case 'go': return run(path.join(bin, 'localsubproxy'), ['server', '-listen', listen, '-db', path.join(tmp, 'g.db'), '-tenants', 'acme:LSP_TENANT_KEY_ACME',
       '-tenant-profiles', profiles, '-issuer', iss, '-chat-ui']);
@@ -88,13 +88,13 @@ for (const impl of impls) {
     ok('wrong key rejected: ' + (await page.textContent('#loginErr')));
     await page.fill('#key', key); await page.click('#loginForm button[type=submit]');
     await page.waitForSelector('#app:not(.hidden)');
-    await page.waitForFunction(() => document.getElementById('pairLink').textContent.startsWith('lsp2://pair'));
+    await page.waitForFunction(() => document.getElementById('pairLink').textContent.startsWith('lmbp://pair'));
     const link = await page.textContent('#pairLink');
     if (!(await page.$('#qr img'))) throw new Error('no QR code');
     ok('logged in; pair link + QR: ' + link);
 
     // pair the real connector through the page
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `lsp2-dev-${impl}-`));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `lmbp-dev-${impl}-`));
     con = startConnector(dir, link, `http://127.0.0.1:${modelPort}`);
     const code = await until(async () => (con.out.match(/pairing code: ([A-Z]{4}-[A-Z]{4})/) || [])[1], 15000, 'pairing code');
     const jkt = (con.out.match(/jkt=([A-Za-z0-9_-]{43})/) || [])[1];
@@ -128,7 +128,7 @@ for (const impl of impls) {
     if (!a.text.includes('第 2 轮')) throw new Error('multi-turn history not sent: ' + a.text);
     ok('multi-turn: model saw 2 user turns');
 
-    // image upload (> 16 KiB → lsp2-blob + blob.chunk on the wire)
+    // image upload (> 16 KiB → lmbp-blob + blob.chunk on the wire)
     const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = c.height = 200; const x = c.getContext('2d');
       for (let i = 0; i < 200; i += 2) for (let j = 0; j < 200; j += 2) { x.fillStyle = `rgb(${Math.random() * 255 | 0},${i},${Math.random() * 255 | 0})`; x.fillRect(i, j, 2, 2); }
       return c.toDataURL('image/png').split(',')[1]; });
@@ -153,7 +153,7 @@ for (const impl of impls) {
 
     // CONSENT_DENIED: a second (fake) device asks to pair, SaaS user denies, then tries to approve
     const pub = crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
-    const au = await (await fetch(base + '/v2/device/authorize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tenant: 'acme', public_key: pub, device_name: 'intruder' }) })).json();
+    const au = await (await fetch(base + '/lmbp/v1/device/authorize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tenant: 'acme', public_key: pub, device_name: 'intruder' }) })).json();
     await page.fill('#code', au.user_code); await page.click('#deny');
     await page.waitForFunction(() => document.getElementById('pairMsg').textContent.includes('已拒绝'));
     await page.fill('#code', au.user_code); await page.click('#approve');

@@ -1,11 +1,11 @@
-// net/http SaaS example: the lsp2server SDK mounted next to your own routes.
+// net/http SaaS example: the lmbpserver SDK mounted next to your own routes.
 //
 // What the business code does (and nothing else):
 //  1. pairing   GET /app/pair → link + QR; POST /app/pair/approve {user_code}; devices list/revoke
 //  2. LLM calls the official openai-go / anthropic-sdk-go clients with their base URL pointed at
 //     this server (or, as here, wired in-process via the SDK's Transport), or the SDK's own Client.
 //
-// Everything protocol-related (/v2/*, /.well-known/*, /v1/*) is served by srv.Middleware.
+// Everything protocol-related (/lmbp/v1/*, /.well-known/*, /v1/*) is served by srv.Middleware.
 //
 //	TENANT_API_KEY=$(openssl rand -hex 24) go run .
 package main
@@ -25,7 +25,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	oopt "github.com/openai/openai-go/v3/option"
 
-	lsp2server "github.com/tyro668/LocalSubProxy/sdk/go"
+	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
 )
 
 func main() {
@@ -36,28 +36,28 @@ func main() {
 	if len(apiKey) < 32 {
 		log.Fatal("set TENANT_API_KEY (>= 32 chars; server-side secret)")
 	}
-	profile := lsp2server.TenantProfile{DisplayName: "Acme Chat (net/http)", RequestedScopes: []string{"lsp2.chat", "lsp2.tools", "lsp2.vision"}}
+	profile := lmbpserver.TenantProfile{DisplayName: "Acme Chat (net/http)", RequestedScopes: []string{"lmbp.chat", "lmbp.tools", "lmbp.vision"}}
 	if f := os.Getenv("TENANT_PROFILE_FILE"); f != "" {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			log.Fatal(err)
 		}
-		var all map[string]lsp2server.TenantProfile
+		var all map[string]lmbpserver.TenantProfile
 		if err := json.Unmarshal(b, &all); err != nil {
 			log.Fatal(err)
 		}
 		profile = all[tenant]
 	}
-	var st lsp2server.Store
-	if db := os.Getenv("LSP2_DB"); db != "" {
+	var st lmbpserver.Store
+	if db := os.Getenv("LMBP_DB"); db != "" {
 		var err error
-		if st, err = lsp2server.OpenSQLiteStore(db, nil); err != nil {
+		if st, err = lmbpserver.OpenSQLiteStore(db, nil); err != nil {
 			log.Fatal(err)
 		}
 	}
-	srv, err := lsp2server.New(ctx, lsp2server.Options{
-		Tenants: []lsp2server.Tenant{{ID: tenant, APIKey: apiKey, Profile: profile}},
-		Issuer:  os.Getenv("LSP2_ISSUER"), // e.g. https://saas.example.com in production
+	srv, err := lmbpserver.New(ctx, lmbpserver.Options{
+		Tenants: []lmbpserver.Tenant{{ID: tenant, APIKey: apiKey, Profile: profile}},
+		Issuer:  os.Getenv("LMBP_ISSUER"), // e.g. https://saas.example.com in production
 		Store:   st,
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func main() {
 	// Your own login decides who the end user is. Demo: a header.
 	user := func(r *http.Request) string { return env2(r.Header.Get("X-Demo-User"), "demo-user") }
 	issuer := func(r *http.Request) string {
-		if v := os.Getenv("LSP2_ISSUER"); v != "" {
+		if v := os.Getenv("LMBP_ISSUER"); v != "" {
 			return v
 		}
 		return "http://" + r.Host
@@ -137,8 +137,8 @@ func main() {
 			reply(w, nil, err)
 			return
 		}
-		m, err := c.Messages(r.Context(), lsp2server.MessagesRequest{Model: a.Model, MaxTokens: 512,
-			Messages: []lsp2server.AnthropicMessage{{Role: "user", Content: a.Prompt}}})
+		m, err := c.Messages(r.Context(), lmbpserver.MessagesRequest{Model: a.Model, MaxTokens: 512,
+			Messages: []lmbpserver.AnthropicMessage{{Role: "user", Content: a.Prompt}}})
 		if err != nil {
 			reply(w, nil, err)
 			return
@@ -159,11 +159,11 @@ func reply(w http.ResponseWriter, v any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
 		code := http.StatusBadRequest
-		var ae *lsp2server.APIError
+		var ae *lmbpserver.APIError
 		switch {
 		case errors.As(err, &ae):
 			code = ae.Status
-		case errors.Is(err, lsp2server.ErrCodeInvalid), errors.Is(err, lsp2server.ErrDeviceUnknown):
+		case errors.Is(err, lmbpserver.ErrCodeInvalid), errors.Is(err, lmbpserver.ErrDeviceUnknown):
 			code = http.StatusNotFound
 		case strings.Contains(err.Error(), "status"):
 			code = http.StatusBadGateway

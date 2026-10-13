@@ -1,4 +1,4 @@
-# lsp2-server：LSP2 服务端 Node.js SDK
+# lmbp-server：LMBP 服务端 Node.js SDK
 
 让你的 SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
 
@@ -10,7 +10,7 @@ WebSocket 会话、JOSE、续传、流控、大图分块、E2EE 透传全部在 
 ## 安装
 
 ```bash
-npm install lsp2-server            # 仓库内：npm install ../../sdk/node
+npm install lmbp-server            # 仓库内：npm install ../../sdk/node
 npm install better-sqlite3         # 可选：SqliteStore
 ```
 
@@ -19,12 +19,12 @@ npm install better-sqlite3         # 可选：SqliteStore
 ```js
 import http from 'node:http';
 import express from 'express';
-import { LSP2Server, SqliteStore, PairingError } from 'lsp2-server';
+import { LMBPServer, SqliteStore, PairingError } from 'lmbp-server';
 
-const lsp = new LSP2Server({
+const lsp = new LMBPServer({
   tenants: [{ id: 'acme', apiKey: process.env.TENANT_API_KEY, profile: { display_name: 'Acme CRM' } }],
   issuer: 'https://saas.example.com',    // 留空为开发模式（取请求 Host）
-  store: new SqliteStore('lsp2.db'),     // 默认 MemoryStore
+  store: new SqliteStore('lmbp.db'),     // 默认 MemoryStore
 });
 
 const app = express();
@@ -42,7 +42,7 @@ app.post('/app/ask', async (req, res) => {
 });
 
 const server = http.createServer(app);
-lsp.attach(server);                      // /v2/connect 的 WebSocket 升级
+lsp.attach(server);                      // /lmbp/v1/connect 的 WebSocket 升级
 server.listen(3000);
 ```
 
@@ -58,11 +58,11 @@ server.listen(3000);
 
 | 分类 | API |
 |---|---|
-| 构造 | `new LSP2Server({ tenants, issuer, store, signingSeed, maxConcurrency, chatUIDir, log, tuning })` |
+| 构造 | `new LMBPServer({ tenants, issuer, store, signingSeed, maxConcurrency, chatUIDir, log, tuning })` |
 | 挂载 | `handler`、`middleware()`、`fastifyPlugin`、`attach(server)`、`listen(port, host)`、`close()`、`PATHS` |
-| 密钥 | `keys.kid()`、`keys.publicJWK()`、`keys.jwks()`；`LSP2Server.generateSigningSeed()`、`LSP2Server.generateTenantKey()`。未传 `signingSeed` 时种子保存在 Store 中 |
+| 密钥 | `keys.kid()`、`keys.publicJWK()`、`keys.jwks()`；`LMBPServer.generateSigningSeed()`、`LMBPServer.generateTenantKey()`。未传 `signingSeed` 时种子保存在 Store 中 |
 | 配对 | `pairing.link(tenant, issuer?)`、`pairing.create(...) → { link, qrSVG, qrDataURL }`、`pairing.lookup(tenant, code)`、`pairing.approve(tenant, user, code, { jkt })`、`pairing.deny(...)`、`pairing.listDevices(tenant, user)`、`pairing.revokeDevice(tenant, user, id)`；失败抛 `PairingError`（`code`：`BAD_REQUEST` / `NOT_FOUND` / `FORBIDDEN`） |
-| 进程内客户端 | `client(tenant, user)` → `models()`、`chat.completions.create/stream`、`messages.create/stream`（`stream` 为 async iterable，支持 `signal` 取消、`idempotencyKey`）；失败抛 `LSP2APIError{status, code}` |
+| 进程内客户端 | `client(tenant, user)` → `models()`、`chat.completions.create/stream`、`messages.create/stream`（`stream` 为 async iterable，支持 `signal` 取消、`idempotencyKey`）；失败抛 `LMBPAPIError{status, code}` |
 | 存储 | `MemoryStore`、`SqliteStore(path \| db)`（better-sqlite3）；自定义存储实现 `Store` 接口（同步方法） |
 | 工具 | `anthropic.*`：Anthropic ↔ OpenAI 请求/响应转换函数 |
 

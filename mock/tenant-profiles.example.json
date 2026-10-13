@@ -7,6 +7,6 @@
     "tos_uri": "https://acme.example/terms",
     "pairing_uri": "http://127.0.0.1:3000/link",
     "requested_models": ["qwen3-8b"],
-    "requested_scopes": ["lsp2.chat", "lsp2.tools", "lsp2.vision"]
+    "requested_scopes": ["lmbp.chat", "lmbp.tools", "lmbp.vision"]
   }
 }

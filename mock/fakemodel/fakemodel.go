@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 type Server struct {
@@ -56,8 +56,8 @@ func VeryLongChunk(i int) string { return fmt.Sprintf("[%05d]%s", i, strings.Rep
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Model    string         `json:"model"`
-		Messages []lsp2.Message `json:"messages"`
-		Tools    []lsp2.Tool    `json:"tools"`
+		Messages []lmbp.Message `json:"messages"`
+		Tools    []lmbp.Tool    `json:"tools"`
 	}
 	if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Messages) == 0 {
 		http.Error(w, `{"error":{"message":"bad request"}}`, 400)

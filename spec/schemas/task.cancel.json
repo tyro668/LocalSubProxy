@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lsp2/task.cancel.json",
+  "$id": "https://localsubproxy.dev/spec/lmbp/task.cancel.json",
   "title": "task.cancel",
   "description": "gateway\u2192device",
   "type": "object",

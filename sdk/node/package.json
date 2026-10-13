@@ -1,7 +1,7 @@
 {
-  "name": "lsp2-server",
+  "name": "lmbp-server",
   "version": "0.1.0",
-  "description": "LSP2 server SDK: pair users' desktop apps and call their local models through OpenAI- and Anthropic-compatible APIs",
+  "description": "LMBP server SDK: pair users' desktop apps and call their local models through OpenAI- and Anthropic-compatible APIs",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -32,7 +32,7 @@
     "node": ">=18.17"
   },
   "keywords": [
-    "lsp2",
+    "lmbp",
     "llm",
     "openai",
     "anthropic",

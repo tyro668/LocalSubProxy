@@ -1,8 +1,8 @@
 /**
- * Anthropic Messages compatibility (/v1/messages, protocol-v2 §6.7): request
+ * Anthropic Messages compatibility (/v1/messages, LMBP spec §6.7): request
  * translation to the OpenAI chat shape and rendering of task events as an
  * Anthropic message or named-event SSE stream. Port of
- * internal/lsp2/gateway/anthropic.go; keep the three implementations in step.
+ * internal/lmbp/gateway/anthropic.go; keep the three implementations in step.
  */
 import type { ServerResponse } from 'node:http';
 
@@ -16,9 +16,9 @@ const STATUS_TYPE: Record<number, string> = {
 /** Anthropic error type for an HTTP status. */
 export const errorType = (status: number): string => STATUS_TYPE[status] ?? 'api_error';
 
-/** Anthropic error object; lsp2_code carries the protocol error code. */
+/** Anthropic error object; lmbp_code carries the protocol error code. */
 export const errorBody = (status: number, code: string, message: string) =>
-  ({ type: 'error', error: { type: errorType(status), message, lsp2_code: code } });
+  ({ type: 'error', error: { type: errorType(status), message, lmbp_code: code } });
 
 /** OpenAI finish_reason → Anthropic stop_reason. */
 export const stopReason = (finish?: string) => (finish === 'length' ? 'max_tokens' : finish === 'tool_calls' ? 'tool_use' : 'end_turn');
@@ -31,7 +31,7 @@ export function toOpenAI(input: Obj): Obj {
   if (typeof input.model !== 'string' || !input.model) throw new Error('model: field required');
   const mt = input.max_tokens;
   if (!Number.isInteger(mt) || mt < 1) throw new Error('max_tokens: field required (positive integer)');
-  if ('lsp2_e2ee' in input) throw new Error('lsp2_e2ee is only supported on /v1/chat/completions');
+  if ('lmbp_e2ee' in input) throw new Error('lmbp_e2ee is only supported on /v1/chat/completions');
   const out: Obj = { model: input.model, max_tokens: mt, stream: input.stream === true };
   if (typeof input.temperature === 'number') out.temperature = input.temperature;
   const msgs: Obj[] = [];
@@ -198,7 +198,7 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
       send('message_stop', { type: 'message_stop' });
     } else {
       const eb = e.data || {};
-      send('error', { type: 'error', error: { type: errorType(statusOf(eb.code)), message: eb.message, lsp2_code: eb.code } });
+      send('error', { type: 'error', error: { type: errorType(statusOf(eb.code)), message: eb.message, lmbp_code: eb.code } });
     }
     flush();
   });

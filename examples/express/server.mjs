@@ -1,10 +1,10 @@
-// Express SaaS example: the lsp2-server SDK mounted next to your own routes.
+// Express SaaS example: the lmbp-server SDK mounted next to your own routes.
 //
 // What the business code does (and nothing else):
 //   1. pairing   GET /app/pair → link + QR; POST /app/pair/approve {user_code}; devices list/revoke
 //   2. LLM calls the official `openai` / `@anthropic-ai/sdk` clients with baseURL pointed at this
 //                server, or the SDK's in-process client.
-// Everything protocol-related (/v2/*, /.well-known/*, /v1/*) is served by lsp.middleware().
+// Everything protocol-related (/lmbp/v1/*, /.well-known/*, /v1/*) is served by lsp.middleware().
 //
 //   TENANT_API_KEY=$(openssl rand -hex 24) node server.mjs
 import fs from 'node:fs';
@@ -12,7 +12,7 @@ import http from 'node:http';
 import express from 'express';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { LSP2Server, SqliteStore, PairingError } from 'lsp2-server';
+import { LMBPServer, SqliteStore, PairingError } from 'lmbp-server';
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
@@ -20,12 +20,12 @@ const tenant = process.env.TENANT_ID || 'acme';
 const apiKey = process.env.TENANT_API_KEY;
 if (!apiKey) throw new Error('set TENANT_API_KEY (>= 32 chars; server-side secret)');
 const profile = process.env.TENANT_PROFILE_FILE ? JSON.parse(fs.readFileSync(process.env.TENANT_PROFILE_FILE, 'utf8'))[tenant]
-  : { display_name: 'Acme Chat (Express)', requested_scopes: ['lsp2.chat', 'lsp2.tools', 'lsp2.vision'] };
+  : { display_name: 'Acme Chat (Express)', requested_scopes: ['lmbp.chat', 'lmbp.tools', 'lmbp.vision'] };
 
-const lsp = new LSP2Server({
+const lsp = new LMBPServer({
   tenants: [{ id: tenant, apiKey, profile }],
-  issuer: process.env.LSP2_ISSUER,                         // e.g. https://saas.example.com in production
-  store: process.env.LSP2_DB ? new SqliteStore(process.env.LSP2_DB) : undefined,
+  issuer: process.env.LMBP_ISSUER,                         // e.g. https://saas.example.com in production
+  store: process.env.LMBP_DB ? new SqliteStore(process.env.LMBP_DB) : undefined,
 });
 
 const app = express();
@@ -34,7 +34,7 @@ app.use(express.json());
 
 // Your own login decides who the end user is. Demo: a header.
 const user = (req) => req.get('x-demo-user') || 'demo-user';
-const issuer = (req) => process.env.LSP2_ISSUER || `${req.protocol}://${req.get('host')}`;
+const issuer = (req) => process.env.LMBP_ISSUER || `${req.protocol}://${req.get('host')}`;
 
 // ---- 1. pairing ----
 app.get('/app/pair', (req, res) => res.json(lsp.pairing.create(tenant, issuer(req))));
@@ -75,5 +75,5 @@ app.post('/app/ask-inprocess', async (req, res, next) => {
 app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
 
 const server = http.createServer(app);
-lsp.attach(server);                   // WebSocket upgrades for /v2/connect
+lsp.attach(server);                   // WebSocket upgrades for /lmbp/v1/connect
 server.listen(port, host, () => console.error(`express example on http://${host}:${port} (tenant ${tenant})`));

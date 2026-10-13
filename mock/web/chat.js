@@ -1,4 +1,4 @@
-// LSP2 mock SaaS chat page (shared by the Go, Node and Python gateways).
+// LMBP mock SaaS chat page (shared by the Go, Node and Python gateways).
 // No build step. All user/model text is rendered with textContent only.
 'use strict';
 (function () {
@@ -71,12 +71,12 @@
   }
   async function login(a) {
     auth = a;
-    try { await api('GET', '/v2/tenant/devices'); }
+    try { await api('GET', '/lmbp/v1/tenant/devices'); }
     catch (e) { auth = null; throw e; }
-    SS.setItem('lsp2.auth', JSON.stringify(a));
+    SS.setItem('lmbp.auth', JSON.stringify(a));
     showApp(true); await loadPairing(); await refresh();
   }
-  function logout() { auth = null; SS.removeItem('lsp2.auth'); showApp(false); }
+  function logout() { auth = null; SS.removeItem('lmbp.auth'); showApp(false); }
   $('loginForm').addEventListener('submit', async (ev) => {
     ev.preventDefault(); $('loginErr').textContent = '';
     try { await login({ tenant: $('tenant').value.trim(), user: $('user').value.trim(), key: $('key').value }); $('key').value = ''; }
@@ -87,11 +87,11 @@
   // ---- pairing ----
   async function loadPairing() {
     try {
-      const res = await fetch('/.well-known/lsp2-gateway?tenant=' + encodeURIComponent(auth.tenant));
+      const res = await fetch('/.well-known/lmbp-gateway?tenant=' + encodeURIComponent(auth.tenant));
       if (!res.ok) throw await parseError(res);
       issuer = (await res.json()).issuer;
     } catch (e) { issuer = location.origin; toast('读取网关元数据失败：' + describe(e.code, e.message), true); }
-    pairLink = 'lsp2://pair?v=2&gateway=' + encodeURIComponent(issuer) + '&tenant=' + encodeURIComponent(auth.tenant);
+    pairLink = 'lmbp://pair?v=1&gateway=' + encodeURIComponent(issuer) + '&tenant=' + encodeURIComponent(auth.tenant);
     $('pairLink').textContent = pairLink;
     $('qr').textContent = '';
     if (window.qrcode) {
@@ -110,7 +110,7 @@
     const body = { user_code }; const jkt = $('jkt').value.trim(); if (jkt) body.jkt = jkt; if (deny) body.deny = true;
     $('approve').disabled = $('deny').disabled = true;
     try {
-      const r = await api('POST', '/v2/tenant/device-approvals', body);
+      const r = await api('POST', '/lmbp/v1/tenant/device-approvals', body);
       pairMsg(r.status === 'approved' ? `已批准：${r.device_name || '设备'}（${r.device_id}），等待设备上线…` : '已拒绝该配对请求，设备将收到 CONSENT_DENIED');
       $('code').value = ''; $('jkt').value = ''; history_replaceParams();
       setTimeout(refresh, 1500);
@@ -127,7 +127,7 @@
   async function refresh() {
     if (!auth) return;
     try {
-      const [d, m] = await Promise.all([api('GET', '/v2/tenant/devices'), api('GET', '/v1/models')]);
+      const [d, m] = await Promise.all([api('GET', '/lmbp/v1/tenant/devices'), api('GET', '/v1/models')]);
       renderDevices(d.devices || []); renderModels(m.data || []);
     } catch (e) { if (e.status !== 401) $('pairState').textContent = '加载失败：' + describe(e.code, e.message); }
   }
@@ -156,7 +156,7 @@
         const b = el('button', 'danger', '吊销'); b.style.marginTop = '6px';
         b.onclick = async () => {
           if (!confirm(`吊销设备 ${d.name}？吊销后设备需要重新配对。`)) return;
-          try { await api('POST', '/v2/tenant/devices/' + encodeURIComponent(d.device_id) + '/revoke'); toast('已吊销'); refresh(); }
+          try { await api('POST', '/lmbp/v1/tenant/devices/' + encodeURIComponent(d.device_id) + '/revoke'); toast('已吊销'); refresh(); }
           catch (e) { toast(describe(e.code, e.message), true); }
         };
         row.append(b);
@@ -300,6 +300,6 @@
   if (qs.get('user_code')) $('code').value = qs.get('user_code');
   if (qs.get('jkt')) $('jkt').value = qs.get('jkt');
   if (qs.get('tenant')) $('tenant').value = qs.get('tenant');
-  const saved = SS.getItem('lsp2.auth');
+  const saved = SS.getItem('lmbp.auth');
   if (saved) login(JSON.parse(saved)).catch(() => logout());
 })();

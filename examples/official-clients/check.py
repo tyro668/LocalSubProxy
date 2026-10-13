@@ -1,6 +1,6 @@
-"""Official openai / anthropic Python libraries, unchanged, against an LSP2 gateway.
+"""Official openai / anthropic Python libraries, unchanged, against an LMBP gateway.
 
-Env: LSP2_BASE_URL (gateway root), LSP2_API_KEY (tenant key), LSP2_END_USER, LSP2_MODEL.
+Env: LMBP_BASE_URL (gateway root), LMBP_API_KEY (tenant key), LMBP_END_USER, LMBP_MODEL.
 """
 import os
 import sys
@@ -8,7 +8,7 @@ import sys
 import anthropic
 import openai
 
-base, key, user, model = (os.environ[k] for k in ("LSP2_BASE_URL", "LSP2_API_KEY", "LSP2_END_USER", "LSP2_MODEL"))
+base, key, user, model = (os.environ[k] for k in ("LMBP_BASE_URL", "LMBP_API_KEY", "LMBP_END_USER", "LMBP_MODEL"))
 hdr = {"X-End-User": user}
 tools_oa = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
 tools_an = [{"name": "get_weather", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}]

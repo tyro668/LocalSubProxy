@@ -1,4 +1,4 @@
-# lsp2-server：LSP2 服务端 Python SDK（ASGI）
+# lmbp-server：LMBP 服务端 Python SDK（ASGI）
 
 让你的 SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
 
@@ -10,7 +10,7 @@ WebSocket 会话、JOSE、续传、流控、大图分块、E2EE 透传全部在 
 ## 安装
 
 ```bash
-pip install lsp2-server[server]          # 仓库内：pip install -e sdk/python[server]
+pip install lmbp-server[server]          # 仓库内：pip install -e sdk/python[server]
 ```
 
 运行时依赖只有 `cryptography` 与 `segno`（二维码）；`[server]` 附带 uvicorn。uvicorn 请使用 `--ws websockets`，这样 WebSocket 握手被拒时能返回 401/403。
@@ -19,15 +19,15 @@ pip install lsp2-server[server]          # 仓库内：pip install -e sdk/python
 
 ```python
 from fastapi import FastAPI
-from lsp2_server import LSP2Server, LSP2Middleware, SQLiteStore, TenantConfig
+from lmbp_server import LMBPServer, LMBPMiddleware, SQLiteStore, TenantConfig
 
-lsp = LSP2Server(
+lsp = LMBPServer(
     tenants=[TenantConfig("acme", os.environ["TENANT_API_KEY"], {"display_name": "Acme CRM"})],
     issuer="https://saas.example.com",       # 留空为开发模式
-    store=SQLiteStore("lsp2.db"),            # 默认 MemoryStore
+    store=SQLiteStore("lmbp.db"),            # 默认 MemoryStore
 )
 app = FastAPI()
-app.add_middleware(LSP2Middleware, server=lsp)   # 协议路径 + /v1/*，其余交给 FastAPI
+app.add_middleware(LMBPMiddleware, server=lsp)   # 协议路径 + /v1/*，其余交给 FastAPI
 
 @app.get("/app/pair")                            # 1. 配对
 def pair():
@@ -51,19 +51,19 @@ uvicorn app:app --ws websockets
 
 完整示例：[`examples/fastapi/app.py`](../../examples/fastapi/app.py)。
 
-其他框架：任何 ASGI 应用都可以用 `lsp.asgi(app)` 包一层（未知路径交给 `app`），或用 `LSP2Middleware`（Starlette / FastAPI）；独立运行用 `lsp.run(host, port)`。
+其他框架：任何 ASGI 应用都可以用 `lsp.asgi(app)` 包一层（未知路径交给 `app`），或用 `LMBPMiddleware`（Starlette / FastAPI）；独立运行用 `lsp.run(host, port)`。
 
 ## API
 
 | 分类 | API |
 |---|---|
-| 构造 | `LSP2Server(tenants, issuer="", store=None, signing_seed=None, max_concurrency=16, chat_ui_dir="", log=None, **tuning)`；租户可为 `TenantConfig` 或 dict |
-| 挂载 | `asgi(app=None)`、`LSP2Middleware(app, server=...)`、`run(host, port, app=None)` |
-| 密钥 | `keys.kid()`、`keys.public_jwk()`、`keys.jwks()`；`LSP2Server.generate_signing_seed()`、`LSP2Server.generate_tenant_key()`。未传 `signing_seed` 时种子保存在 Store 中 |
+| 构造 | `LMBPServer(tenants, issuer="", store=None, signing_seed=None, max_concurrency=16, chat_ui_dir="", log=None, **tuning)`；租户可为 `TenantConfig` 或 dict |
+| 挂载 | `asgi(app=None)`、`LMBPMiddleware(app, server=...)`、`run(host, port, app=None)` |
+| 密钥 | `keys.kid()`、`keys.public_jwk()`、`keys.jwks()`；`LMBPServer.generate_signing_seed()`、`LMBPServer.generate_tenant_key()`。未传 `signing_seed` 时种子保存在 Store 中 |
 | 配对 | `pairing.link(tenant, issuer=None)`、`pairing.create(...) → PairingInfo(link, qr_svg)`、`pairing.lookup(tenant, code) → PendingPairing \| None`、`pairing.approve(tenant, user, code, jkt=None) → ApproveResult`、`pairing.deny(...)`、`pairing.list_devices(tenant, user) → list[DeviceInfo]`、`pairing.revoke_device(tenant, user, id)`；失败抛 `PairingError`（`code`：`BAD_REQUEST` / `NOT_FOUND` / `FORBIDDEN`） |
-| 进程内客户端 | `client(tenant, user)` → `await models()`、`await chat.completions.create(**req)`、`async for chunk in chat.completions.stream(**req)`、`messages.create / stream`（均支持 `idempotency_key=`）；失败抛 `LSP2APIError(status, code)` |
+| 进程内客户端 | `client(tenant, user)` → `await models()`、`await chat.completions.create(**req)`、`async for chunk in chat.completions.stream(**req)`、`messages.create / stream`（均支持 `idempotency_key=`）；失败抛 `LMBPAPIError(status, code)` |
 | 存储 | `MemoryStore()`、`SQLiteStore(path)`（标准库 sqlite3）；自定义存储实现 `Store` Protocol（同步方法） |
-| 工具 | `lsp2_server.anthropic`：Anthropic ↔ OpenAI 转换函数 |
+| 工具 | `lmbp_server.anthropic`：Anthropic ↔ OpenAI 转换函数 |
 
 ## 官方客户端原样可用
 

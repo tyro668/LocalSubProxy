@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lsp2/task.done.json",
+  "$id": "https://localsubproxy.dev/spec/lmbp/task.done.json",
   "title": "task.done",
   "description": "device→gateway",
   "type": "object",

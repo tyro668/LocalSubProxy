@@ -1,4 +1,4 @@
-package lsp2server
+package lmbpserver
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 
 	"rsc.io/qr"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
 )
 
 // Pairing errors returned by Approve / Deny / RevokeDevice.
@@ -27,7 +27,7 @@ type Pairing struct{ s *Server }
 
 // PairingInfo is what you show the user to start pairing.
 type PairingInfo struct {
-	Link  string // lsp2://pair?... deep link (§19.4)
+	Link  string // lmbp://pair?... deep link (§19.4)
 	QRSVG string // QR code of Link as an SVG document
 	QRPNG []byte // QR code of Link as PNG
 }
@@ -69,11 +69,11 @@ func (p *Pairing) Link(tenant, issuer string) (string, error) {
 	if issuer == "" {
 		return "", errors.New("pairing link needs an issuer (Options.Issuer or argument)")
 	}
-	iss, err := lsp2.Origin(issuer)
+	iss, err := lmbp.Origin(issuer)
 	if err != nil {
 		return "", err
 	}
-	return lsp2.PairLink{Gateway: iss, Tenant: tenant}.String(), nil
+	return lmbp.PairLink{Gateway: iss, Tenant: tenant}.String(), nil
 }
 
 // Create returns the pair link with its QR code (SVG and PNG).
@@ -110,7 +110,7 @@ func (p *Pairing) Lookup(ctx context.Context, tenant, userCode string) (PendingP
 	if err != nil {
 		return PendingPairing{}, ErrCodeInvalid
 	}
-	return PendingPairing{UserCode: d.UserCode, DeviceName: d.DeviceName, JKT: lsp2.Thumbprint(d.PublicKey), Status: d.Status, ExpiresAt: d.ExpiresAt}, nil
+	return PendingPairing{UserCode: d.UserCode, DeviceName: d.DeviceName, JKT: lmbp.Thumbprint(d.PublicKey), Status: d.Status, ExpiresAt: d.ExpiresAt}, nil
 }
 
 // Approve binds the device that shows userCode to endUser. jkt (optional)
@@ -135,7 +135,7 @@ func (p *Pairing) decide(ctx context.Context, tenant, endUser, userCode, jkt str
 	if err != nil {
 		return ApproveResult{}, err
 	}
-	return ApproveResult{Status: d.Status, DeviceID: d.DeviceID, DeviceName: d.DeviceName, JKT: lsp2.Thumbprint(d.PublicKey)}, nil
+	return ApproveResult{Status: d.Status, DeviceID: d.DeviceID, DeviceName: d.DeviceName, JKT: lmbp.Thumbprint(d.PublicKey)}, nil
 }
 
 // ListDevices returns endUser's devices with live status.
@@ -147,7 +147,7 @@ func (p *Pairing) ListDevices(ctx context.Context, tenant, endUser string) ([]De
 	out := make([]DeviceInfo, 0, len(ds))
 	for _, d := range ds {
 		l := p.s.gw.Live(d.ID)
-		out = append(out, DeviceInfo{DeviceID: d.ID, Name: d.Name, Status: d.Status, CreatedAt: d.CreatedAt, JKT: lsp2.Thumbprint(d.PublicKey),
+		out = append(out, DeviceInfo{DeviceID: d.ID, Name: d.Name, Status: d.Status, CreatedAt: d.CreatedAt, JKT: lmbp.Thumbprint(d.PublicKey),
 			Online: l.Online, Models: l.Models, ModelCapabilities: l.ModelCapabilities})
 	}
 	return out, nil

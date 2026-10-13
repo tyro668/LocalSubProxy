@@ -1,7 +1,7 @@
-// LSP2 gateway engine (Node.js), the core of the lsp2-server SDK.
-// Behaviourally equivalent to the Go reference gateway (internal/lsp2/gateway):
+// LMBP gateway engine (Node.js), the core of the lmbp-server SDK.
+// Behaviourally equivalent to the Go reference gateway (internal/lmbp/gateway):
 // RFC 8628 pairing, EdDSA tokens bound to issuer/tenant audiences, gateway
-// metadata + signed_metadata, RFC 7523 refresh, the lsp2 WebSocket tunnel
+// metadata + signed_metadata, RFC 7523 refresh, the lmbp WebSocket tunnel
 // (seq/ack/resume, credit flow control, tools, multimodal blobs, E2EE relay),
 // an OpenAI-compatible API and the Anthropic Messages API (§6.7).
 // Durable state goes through a Store (../store.ts); live sessions are in-process.
@@ -9,7 +9,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { WebSocketServer } from 'ws';
-import * as L from './lsp2.js';
+import * as L from './lmbp.js';
 import { MemoryStore } from '../store.js';
 import * as A from '../anthropic.js';
 
@@ -98,15 +98,15 @@ export class Gateway {
     if (p === '/healthz') return json(res, 200, { status: 'ok' });
     if (this.cfg.webDir && WEB_FILES[p] && (req.method === 'GET' || req.method === 'HEAD')) return this.serveWeb(res, p);
     if (p === '/.well-known/jwks.json') { res.setHeader('Cache-Control', 'public, max-age=300'); return json(res, 200, { keys: [L.publicJWK(this.pub)] }); }
-    if (p === '/.well-known/lsp2-gateway') return this.metadata(req, res, u);
-    if (p === '/v2/device/authorize') return this.authorize(req, res);
-    if (p === '/v2/token') return this.token(req, res);
-    if (p === '/v2/connect') return problem(res, 400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lsp2 required');
-    if (p === '/v2/tenant/device-approvals') return this.approve(req, res, err);
-    if (p === '/v2/tenant/devices') return this.listDevices(req, res, err);
+    if (p === '/.well-known/lmbp-gateway') return this.metadata(req, res, u);
+    if (p === '/lmbp/v1/device/authorize') return this.authorize(req, res);
+    if (p === '/lmbp/v1/token') return this.token(req, res);
+    if (p === '/lmbp/v1/connect') return problem(res, 400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lmbp required');
+    if (p === '/lmbp/v1/tenant/device-approvals') return this.approve(req, res, err);
+    if (p === '/lmbp/v1/tenant/devices') return this.listDevices(req, res, err);
     let m;
-    if ((m = p.match(/^\/v2\/tenant\/devices\/([^/]+)\/revoke$/))) return this.revoke(req, res, err, decodeURIComponent(m[1]));
-    if ((m = p.match(/^\/v2\/tenant\/tasks\/([^/]+)\/events$/)) && req.method === 'GET') return this.taskEvents(req, res, err, m[1]);
+    if ((m = p.match(/^\/lmbp\/v1\/tenant\/devices\/([^/]+)\/revoke$/))) return this.revoke(req, res, err, decodeURIComponent(m[1]));
+    if ((m = p.match(/^\/lmbp\/v1\/tenant\/tasks\/([^/]+)\/events$/)) && req.method === 'GET') return this.taskEvents(req, res, err, m[1]);
     if (p === '/v1/models') return this.models(req, res, err);
     if (p === '/v1/chat/completions') return this.chat(req, res, err);
     if (p === '/v1/messages') return this.messages(req, res);
@@ -125,7 +125,7 @@ export class Gateway {
   }
 
   tenantAuth(req, err) {
-    const ip = req[Symbol.for('lsp2.inProcessTenant')];
+    const ip = req[Symbol.for('lmbp.inProcessTenant')];
     if (ip) {
       const user = req.headers['x-end-user'];
       if (!user || user.length > 128) { err(400, 'BAD_REQUEST', 'end user required'); return null; }
@@ -145,9 +145,9 @@ export class Gateway {
   // ---------- §18 metadata ----------
   buildMetadata(iss, t) {
     const ws = 'ws' + iss.slice(4);
-    const m = { issuer: iss, jwks_uri: iss + '/.well-known/jwks.json', device_authorization_endpoint: iss + '/v2/device/authorize',
-      token_endpoint: iss + '/v2/token', connect_endpoint: ws + '/v2/connect', chat_completions_endpoint: iss + '/v1/chat/completions',
-      protocol_versions: ['2'], capabilities: L.CAPABILITIES, scopes_supported: L.SCOPES };
+    const m = { issuer: iss, jwks_uri: iss + '/.well-known/jwks.json', device_authorization_endpoint: iss + '/lmbp/v1/device/authorize',
+      token_endpoint: iss + '/lmbp/v1/token', connect_endpoint: ws + '/lmbp/v1/connect', chat_completions_endpoint: iss + '/v1/chat/completions',
+      protocol_versions: ['1.0'], capabilities: L.CAPABILITIES, scopes_supported: L.SCOPES };
     if (!t) return m;
     const p = t.profile || {};
     const saas = { name: p.display_name || t.name };
@@ -155,7 +155,7 @@ export class Gateway {
     const iat = L.now();
     Object.assign(m, { tenant: t.id, audience: L.tokenAudience(iss, t.id), saas });
     if (p.requested_models?.length) m.requested_models = p.requested_models;
-    Object.assign(m, { requested_scopes: p.requested_scopes?.length ? p.requested_scopes : ['lsp2.chat'], iat, exp: iat + 3600 });
+    Object.assign(m, { requested_scopes: p.requested_scopes?.length ? p.requested_scopes : ['lmbp.chat'], iat, exp: iat + 3600 });
     m.signed_metadata = L.signJWS(this.priv, L.TYP.metadata, this.kid, m);
     return m;
   }
@@ -329,9 +329,9 @@ export class Gateway {
       const b = JSON.stringify(problemBody(status, code, msg));
       sock.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nContent-Type: application/problem+json\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(b)}\r\nConnection: close\r\n\r\n${b}`);
     };
-    if (u.pathname !== '/v2/connect') return reject(404, 'BAD_REQUEST', 'not found');
+    if (u.pathname !== '/lmbp/v1/connect') return reject(404, 'BAD_REQUEST', 'not found');
     const protos = String(req.headers['sec-websocket-protocol'] || '').split(',').map((s) => s.trim());
-    if (!protos.includes(L.SUBPROTOCOL)) return reject(400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lsp2 required');
+    if (!protos.includes(L.SUBPROTOCOL)) return reject(400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lmbp required');
     if (req.headers.origin) return reject(403, 'FORBIDDEN', 'browser origins are not allowed');
     const tok = String(req.headers.authorization || '').replace(/^Bearer /, '');
     const iss = this.issuer(req);
@@ -553,8 +553,8 @@ export class Gateway {
     const msgs = Array.isArray(r.messages) ? r.messages : [];
     const tools = Array.isArray(r.tools) ? r.tools : [];
     const hasToolChoice = r.tool_choice !== undefined && r.tool_choice !== null;
-    if (r.lsp2_e2ee) {
-      if (msgs.length || tools.length) return err(400, 'BAD_REQUEST', 'lsp2_e2ee requests must not carry cleartext messages or tools');
+    if (r.lmbp_e2ee) {
+      if (msgs.length || tools.length) return err(400, 'BAD_REQUEST', 'lmbp_e2ee requests must not carry cleartext messages or tools');
     } else {
       if (!msgs.length || msgs.length > 500) return err(400, 'BAD_REQUEST', '1-500 messages required');
       for (const m of msgs) {
@@ -567,10 +567,10 @@ export class Gateway {
     const { ds, model } = rs;
     const run = { task_id: '', iat: 0, device_id: ds.deviceID, model };
     let blobs = [];
-    if (r.lsp2_e2ee) {
+    if (r.lmbp_e2ee) {
       if (!ds.caps.includes('e2ee')) return err(400, 'CAPABILITY_UNSUPPORTED', 'device does not support end-to-end encryption');
-      const jwe = String(r.lsp2_e2ee);
-      if (jwe.split('.').length !== 5 || jwe.length > L.MAX_TASK_BLOB_BYTES) return err(400, 'BAD_REQUEST', 'lsp2_e2ee must be a compact JWE');
+      const jwe = String(r.lmbp_e2ee);
+      if (jwe.split('.').length !== 5 || jwe.length > L.MAX_TASK_BLOB_BYTES) return err(400, 'BAD_REQUEST', 'lmbp_e2ee must be a compact JWE');
       const id = L.randomID('blob_');
       const data = Buffer.from(jwe);
       blobs = [{ ref: { id, size: data.length, sha256: L.b64(L.sha256(data)), media_type: 'application/jose' }, data }];
@@ -671,7 +671,7 @@ export class Gateway {
       if (usage) m.usage = usage;
       return JSON.stringify(Object.assign(m, extra || {}));
     };
-    const sealed = (e) => (typeof e.data?.e2ee === 'string' && e.data.e2ee ? { lsp2_e2ee: { seq: e.seq, type: e.type, data: e.data.e2ee } } : null);
+    const sealed = (e) => (typeof e.data?.e2ee === 'string' && e.data.e2ee ? { lmbp_e2ee: { seq: e.seq, type: e.type, data: e.data.e2ee } } : null);
     if (stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
       if (after === 0) res.write(`id: 0\ndata: ${chunk({ role: 'assistant', content: '' }, null)}\n\n`);
@@ -690,7 +690,7 @@ export class Gateway {
           tail = 'data: [DONE]\n\n';
         } else {
           const eb = e.data || {};
-          b = JSON.stringify({ error: { message: eb.message, type: 'lsp2_error', code: eb.code, retryable: !!eb.retryable } });
+          b = JSON.stringify({ error: { message: eb.message, type: 'lmbp_error', code: eb.code, retryable: !!eb.retryable } });
         }
         res.write(`id: ${e.seq}\ndata: ${b}\n\n${tail}`);
       });
@@ -701,7 +701,7 @@ export class Gateway {
     let done = null, fail = null;
     const ok = await t.stream(after, signal, null, (e) => {
       if (e.type === 'task.delta') {
-        if (t.e2ee) { const s = sealed(e); if (s) sealedFrames.push(s.lsp2_e2ee); return; }
+        if (t.e2ee) { const s = sealed(e); if (s) sealedFrames.push(s.lmbp_e2ee); return; }
         text += e.data?.text || '';
         for (const c of e.data?.tool_calls || []) {
           const idx = Number.isInteger(c.index) ? c.index : 0;
@@ -712,7 +712,7 @@ export class Gateway {
         }
       } else if (e.type === 'task.done') {
         done = e.data || {};
-        if (t.e2ee) { const s = sealed(e); if (s) sealedFrames.push(s.lsp2_e2ee); }
+        if (t.e2ee) { const s = sealed(e); if (s) sealedFrames.push(s.lmbp_e2ee); }
       } else fail = e.data || {};
     });
     if (!ok) return;
@@ -724,7 +724,7 @@ export class Gateway {
       if (!text) msg.content = null;
     }
     const out = { id: 'chatcmpl-' + t.id, object: 'chat.completion', created: t.created, model: t.reqModel, choices: [{ index: 0, message: msg, finish_reason: finish }] };
-    if (t.e2ee) { out.choices = [{ index: 0, message: { role: 'assistant', content: null }, finish_reason: finish }]; out.lsp2_e2ee = sealedFrames; }
+    if (t.e2ee) { out.choices = [{ index: 0, message: { role: 'assistant', content: null }, finish_reason: finish }]; out.lmbp_e2ee = sealedFrames; }
     if (done.usage) out.usage = done.usage;
     return json(res, 200, out);
   }
@@ -909,7 +909,7 @@ function problem(res, status, code, detail) {
   res.setHeader('Cache-Control', 'no-store');
   json(res, status, problemBody(status, code, detail));
 }
-function apiError(res, status, code, message) { json(res, status, { error: { message, type: 'lsp2_error', code } }); }
+function apiError(res, status, code, message) { json(res, status, { error: { message, type: 'lmbp_error', code } }); }
 function oauthError(res, status, error) { res.setHeader('Cache-Control', 'no-store'); json(res, status, { error }); }
 function readBody(req, max) {
   // Frameworks that already consumed the stream (express.json/raw, fastify)

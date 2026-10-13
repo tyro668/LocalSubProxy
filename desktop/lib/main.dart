@@ -13,8 +13,8 @@ const _brandDark = Color(0xFFAB94FF);
 const _brandDarkForeground = Color(0xFF0C1224);
 
 String _transportLabel(Object? transport) => switch (transport) {
-  'wss' => 'WSS（lsp2）',
-  'ws' => 'WS（lsp2，仅本机联调）',
+  'wss' => 'WSS（lmbp）',
+  'ws' => 'WS（lmbp，仅本机联调）',
   _ => '未连接',
 };
 
@@ -505,7 +505,7 @@ class _HomePageState extends State<HomePage> {
                 child: TextField(
                   controller: remoteUrl,
                   placeholder: const Text(
-                    'https://remote.example.com 或 lsp2://pair?… 链接',
+                    'https://remote.example.com 或 lmbp://pair?… 链接',
                   ),
                   features: const [InputFeature.clear()],
                 ),
@@ -1036,7 +1036,7 @@ class _ToggleRow extends StatelessWidget {
 }
 
 /// Consent screen: the SaaS identity verified from the gateway's signed
-/// metadata (docs/protocol-v2.md §19). Nothing here comes from the link.
+/// metadata (docs/lmbp-spec.md §19). Nothing here comes from the link.
 class _ConsentView extends StatelessWidget {
   const _ConsentView({required this.consent});
   final Map<String, dynamic> consent;

@@ -1,7 +1,7 @@
 // Package web is the shared mock-SaaS chat page served by the Go, Node and
-// Python LSP2 gateways at / and /chat. It is a static page: it holds no
+// Python LMBP gateways at / and /chat. It is a static page: it holds no
 // secrets; the user signs in with a tenant API key that stays in the tab's
-// sessionStorage and is sent only to this gateway's /v2/tenant and /v1 APIs.
+// sessionStorage and is sent only to this gateway's /lmbp/v1/tenant and /v1 APIs.
 package web
 
 import (

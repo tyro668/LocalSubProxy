@@ -1,4 +1,4 @@
-// Package lsp2server lets a SaaS backend use models that run on its users'
+// Package lmbpserver lets a SaaS backend use models that run on its users'
 // own machines through the LocalSubProxy desktop app.
 //
 // Business code does two things only:
@@ -11,8 +11,8 @@
 //     libraries, or in-process with Server.Client.
 //
 // The WebSocket session, JOSE, resume, flow control and E2EE pass-through
-// stay inside the SDK (it embeds the reference gateway, internal/lsp2/gateway).
-package lsp2server
+// stay inside the SDK (it embeds the reference gateway, internal/lmbp/gateway).
+package lmbpserver
 
 import (
 	"context"
@@ -25,9 +25,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
 )
 
 // Store is the persistence interface (see NewMemoryStore, OpenSQLiteStore).
@@ -79,7 +79,7 @@ type Options struct {
 	Retention time.Duration
 }
 
-// Server is an embedded LSP2 gateway.
+// Server is an embedded LMBP gateway.
 type Server struct {
 	gw      *gateway.Gateway
 	store   Store
@@ -145,7 +145,7 @@ func loadOrCreateKey(ctx context.Context, st Store) (ed25519.PrivateKey, error) 
 	return ed25519.NewKeyFromSeed(seed), nil
 }
 
-// Handler serves the protocol endpoints (/.well-known/*, /v2/*, /healthz)
+// Handler serves the protocol endpoints (/.well-known/*, /lmbp/v1/*, /healthz)
 // and /v1/chat/completions, /v1/models, /v1/messages. Mount it at the root.
 func (s *Server) Handler() http.Handler { return s.handler }
 
@@ -167,14 +167,14 @@ func (s *Server) Close() error { return s.store.Close() }
 type Keys struct{ pub ed25519.PublicKey }
 
 // KID is the RFC 7638 thumbprint of the gateway signing key.
-func (k *Keys) KID() string { return lsp2.Thumbprint(k.pub) }
+func (k *Keys) KID() string { return lmbp.Thumbprint(k.pub) }
 
 // PublicJWK is the public JWK served at /.well-known/jwks.json.
-func (k *Keys) PublicJWK() lsp2.JWK { return lsp2.PublicJWK(k.pub) }
+func (k *Keys) PublicJWK() lmbp.JWK { return lmbp.PublicJWK(k.pub) }
 
 // JWKS is the document served at /.well-known/jwks.json.
 func (k *Keys) JWKS() map[string]any {
-	return map[string]any{"keys": []lsp2.JWK{lsp2.PublicJWK(k.pub)}}
+	return map[string]any{"keys": []lmbp.JWK{lmbp.PublicJWK(k.pub)}}
 }
 
 // GenerateSigningKey creates a new Ed25519 gateway key (keep the seed in your secret manager).
@@ -187,5 +187,5 @@ func GenerateSigningKey() (ed25519.PrivateKey, error) {
 func GenerateTenantKey() string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
-	return "lsp2_" + base64.RawURLEncoding.EncodeToString(b)
+	return "lmbp_" + base64.RawURLEncoding.EncodeToString(b)
 }

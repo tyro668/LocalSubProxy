@@ -8,7 +8,7 @@ import type {
   ChatRequest, ChatCompletion, ChatCompletionChunk, Model, MessagesRequest, Message, MessageStreamEvent, APIErrorShape,
 } from './types.js';
 
-export class LSP2APIError extends Error implements APIErrorShape {
+export class LMBPAPIError extends Error implements APIErrorShape {
   constructor(readonly status: number, readonly code: string, message: string, readonly body?: unknown) { super(message); }
 }
 
@@ -51,7 +51,7 @@ export class InProcessClient {
   async request(method: string, path: string, body?: unknown, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<Resp> {
     const g = this.server.engine;
     const t = g.tenants.get(this.tenant);
-    if (!t) throw new LSP2APIError(401, 'UNAUTHENTICATED', 'unknown tenant ' + this.tenant);
+    if (!t) throw new LMBPAPIError(401, 'UNAUTHENTICATED', 'unknown tenant ' + this.tenant);
     const raw = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
     const req: any = new EventEmitter();
     Object.assign(req, {
@@ -116,7 +116,7 @@ export class InProcessClient {
         for await (const e of this.sse('POST', '/v1/chat/completions', { ...req, stream: true }, idem(opts.idempotencyKey), opts.signal)) {
           if (e.data === '[DONE]') return;
           const v = JSON.parse(e.data);
-          if (v.error) throw new LSP2APIError(502, v.error.code, v.error.message, v);
+          if (v.error) throw new LMBPAPIError(502, v.error.code, v.error.message, v);
           yield v;
         }
       }.bind(this),
@@ -131,7 +131,7 @@ export class InProcessClient {
     stream: async function* (this: InProcessClient, req: MessagesRequest, opts: { idempotencyKey?: string; signal?: AbortSignal } = {}): AsyncGenerator<MessageStreamEvent> {
       for await (const e of this.sse('POST', '/v1/messages', { ...req, stream: true }, idem(opts.idempotencyKey), opts.signal)) {
         const v = JSON.parse(e.data);
-        if (v.type === 'error') throw new LSP2APIError(502, v.error?.lsp2_code ?? 'ERROR', v.error?.message ?? 'error', v);
+        if (v.type === 'error') throw new LMBPAPIError(502, v.error?.lmbp_code ?? 'ERROR', v.error?.message ?? 'error', v);
         if (v.type !== 'ping') yield v;
       }
     }.bind(this),
@@ -139,11 +139,11 @@ export class InProcessClient {
 }
 
 /** Marks a request created by the in-process client; carries the tenant. */
-export const IN_PROCESS = Symbol.for('lsp2.inProcessTenant');
+export const IN_PROCESS = Symbol.for('lmbp.inProcessTenant');
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 const idem = (k?: string): Record<string, string> => (k ? { 'idempotency-key': k } : {});
-function toError(status: number, v: any): LSP2APIError {
+function toError(status: number, v: any): LMBPAPIError {
   const e = v?.error ?? {};
-  return new LSP2APIError(status, e.code ?? e.lsp2_code ?? 'ERROR', e.message ?? v?.detail ?? 'request failed', v);
+  return new LMBPAPIError(status, e.code ?? e.lmbp_code ?? 'ERROR', e.message ?? v?.detail ?? 'request failed', v);
 }

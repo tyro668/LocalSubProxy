@@ -1,5 +1,5 @@
-use lsp2_skeleton::ext::*;
-use lsp2_skeleton::*;
+use lmbp_skeleton::ext::*;
+use lmbp_skeleton::*;
 use serde_json::Value;
 
 fn load() -> Value {

@@ -11,16 +11,16 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
-// Ollama /api/chat mapping (docs/protocol-v2.md §11.6): text parts are joined
+// Ollama /api/chat mapping (docs/lmbp-spec.md §11.6): text parts are joined
 // into "content"; data: images become "images" (raw base64; Ollama cannot
 // fetch URLs, so https images are CAPABILITY_UNSUPPORTED); assistant
 // tool_calls become {"function":{"name","arguments":<object>}}; role "tool"
 // is kept; tools pass through (OpenAI format). Ollama returns whole tool
 // calls, which are emitted as single tool_call deltas with generated ids.
-func ollamaMessages(msgs []lsp2.Message) ([]map[string]any, error) {
+func ollamaMessages(msgs []lmbp.Message) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, m := range msgs {
 		om := map[string]any{"role": m.Role, "content": m.Content.PlainText()}
@@ -59,7 +59,7 @@ func ollamaMessages(msgs []lsp2.Message) ([]map[string]any, error) {
 	return out, nil
 }
 
-func (x *Connector) callOllama(ctx context.Context, model string, run lsp2.TaskRun, a AdapterConfig, out *limitedEmitter) (*lsp2.TaskDone, error) {
+func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
 	msgs, err := ollamaMessages(run.Messages)
 	if err != nil {
 		return nil, err
@@ -119,7 +119,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lsp2.TaskR
 		if part.Error != "" {
 			return nil, knownFailure("UPSTREAM_ERROR: " + part.Error)
 		}
-		d := lsp2.TaskDelta{Text: part.Message.Content}
+		d := lmbp.TaskDelta{Text: part.Message.Content}
 		for _, tc := range part.Message.ToolCalls {
 			i := calls
 			calls++
@@ -127,7 +127,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lsp2.TaskR
 			if args == "" {
 				args = "{}"
 			}
-			d.ToolCalls = append(d.ToolCalls, lsp2.ToolCall{Index: &i, ID: fmt.Sprintf("call_%d", i), Type: "function", Function: lsp2.FunctionCall{Name: tc.Function.Name, Arguments: args}})
+			d.ToolCalls = append(d.ToolCalls, lmbp.ToolCall{Index: &i, ID: fmt.Sprintf("call_%d", i), Type: "function", Function: lmbp.FunctionCall{Name: tc.Function.Name, Arguments: args}})
 		}
 		if err := out.delta(d); err != nil {
 			return nil, err
@@ -140,7 +140,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lsp2.TaskR
 			case part.DoneReason == "length":
 				reason = "length"
 			}
-			return &lsp2.TaskDone{FinishReason: reason, Usage: &lsp2.Usage{PromptTokens: part.PromptEvalCount, CompletionTokens: part.EvalCount}}, nil
+			return &lmbp.TaskDone{FinishReason: reason, Usage: &lmbp.Usage{PromptTokens: part.PromptEvalCount, CompletionTokens: part.EvalCount}}, nil
 		}
 	}
 	if err := sc.Err(); err != nil {

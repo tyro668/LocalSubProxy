@@ -25,10 +25,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/store"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
 	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 	"github.com/tyro668/LocalSubProxy/mock/saas"
 )
@@ -72,8 +72,8 @@ type countingExec struct {
 	n atomic.Int64
 }
 
-func (c *countingExec) Execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp2.TaskDelta) error) (*lsp2.TaskDone, *lsp2.ErrorBody) {
-	return c.OpenAIExecutor.Execute(ctx, run, func(d lsp2.TaskDelta) error { c.n.Add(1); return emit(d) })
+func (c *countingExec) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
+	return c.OpenAIExecutor.Execute(ctx, run, func(d lmbp.TaskDelta) error { c.n.Add(1); return emit(d) })
 }
 
 func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
@@ -97,7 +97,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 		return nil, err
 	}
 	acmeKey, betaKey := strings.Repeat("a", 40), strings.Repeat("b", 40)
-	_ = gw.RegisterTenantProfile(ctx, "acme", acmeKey, store.TenantProfile{DisplayName: "Acme CRM", HomepageURI: "https://acme.example", PolicyURI: "https://acme.example/privacy", RequestedScopes: []string{lsp2.ScopeChat, lsp2.ScopeTools, lsp2.ScopeVision}})
+	_ = gw.RegisterTenantProfile(ctx, "acme", acmeKey, store.TenantProfile{DisplayName: "Acme CRM", HomepageURI: "https://acme.example", PolicyURI: "https://acme.example/privacy", RequestedScopes: []string{lmbp.ScopeChat, lmbp.ScopeTools, lmbp.ScopeVision}})
 	_ = gw.RegisterTenant(ctx, "beta", "Beta", betaKey)
 	gws := httptest.NewServer(gw.Handler())
 	defer gws.Close()
@@ -156,7 +156,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 		return nil, err
 	}
 	exec := &countingExec{OpenAIExecutor: &client.OpenAIExecutor{BaseURL: model.URL, ModelList: []string{"qwen3-8b", "broken"},
-		Caps: map[string][]string{"qwen3-8b": {lsp2.ModelCapTools, lsp2.ModelCapVision}}}}
+		Caps: map[string][]string{"qwen3-8b": {lmbp.ModelCapTools, lmbp.ModelCapVision}}}}
 	conn, err := client.New(client.Config{Executor: exec, MaxConcurrency: 4, Logger: quiet}, id)
 	if err != nil {
 		return nil, err
@@ -173,7 +173,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	case <-time.After(10 * time.Second):
 		return nil, errors.New("connector did not connect")
 	}
-	say("⑤ WebSocket(lsp2) 握手完成：hello 带设备签名 proof、X25519 密钥声明、flow 窗口；协商能力 resume/flow/tools/multimodal/e2ee，并发 4")
+	say("⑤ WebSocket(lmbp) 握手完成：hello 带设备签名 proof、X25519 密钥声明、flow 窗口；协商能力 resume/flow/tools/multimodal/e2ee，并发 4")
 
 	get := func(c *http.Client, p string) (int, map[string]any) {
 		r, err := c.Get(acme.URL + p)
@@ -370,7 +370,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	sealedOnly := len(evs) > 0
 	for _, e := range evs {
 		dump.Write(e.Data)
-		if e.Kind == lsp2.TypeTaskDelta && !bytes.Contains(e.Data, []byte(`"e2ee"`)) {
+		if e.Kind == lmbp.TypeTaskDelta && !bytes.Contains(e.Data, []byte(`"e2ee"`)) {
 			sealedOnly = false
 		}
 	}

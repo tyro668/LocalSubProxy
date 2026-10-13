@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run lsp2-conformance and the Go-connector end-to-end test against the
+# Run lmbp-conformance and the Go-connector end-to-end test against the
 # Node and Python mock gateways (and the Go reference gateway).
 #
 #   scripts/mock-interop.sh            # node python go
@@ -16,7 +16,7 @@ trap cleanup EXIT
 
 export LSP_TENANT_KEY_ACME
 LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # never printed
-go build -o "$tmp/lsp2-conformance" ./cmd/lsp2-conformance
+go build -o "$tmp/lmbp-conformance" ./cmd/lmbp-conformance
 
 start() { # impl port
   local impl=$1 port=$2
@@ -46,7 +46,7 @@ start() { # impl port
     sdk-go|sdk-go-sqlite)   # examples/go-nethttp: the sdk/go module imported from another module
       (cd examples/go-nethttp && go build -o "$tmp/go-nethttp" .)
       db=""; [ "$impl" = sdk-go-sqlite ] && db="$tmp/sdkgo.db"
-      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LSP2_DB=$db \
+      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LMBP_DB=$db \
         "$tmp/go-nethttp" >"$tmp/$impl.log" 2>&1 & ;;
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
@@ -61,12 +61,12 @@ for impl in "${impls[@]}"; do
   port=$((port + 1))
   start "$impl" "$port"
   echo "== $impl (http://127.0.0.1:$port)"
-  if LSP2_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lsp2-conformance" -gateway "http://127.0.0.1:$port" -tenant acme >"$tmp/$impl.conf" 2>&1; then
+  if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme >"$tmp/$impl.conf" 2>&1; then
     echo "   conformance: $(tail -1 "$tmp/$impl.conf")"
   else
     echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; fail=1
   fi
-  if LSP2_OFFICIAL_CLIENTS=${LSP2_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LSP2_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LSP2_TENANT=acme LSP2_TENANT_KEY=$LSP_TENANT_KEY_ACME \
+  if LMBP_OFFICIAL_CLIENTS=${LMBP_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LMBP_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LMBP_TENANT=acme LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME \
       go test -count=1 ./mock/external -run TestExternalGateway >"$tmp/$impl.e2e" 2>&1; then
     echo "   connector e2e: ok"
   else

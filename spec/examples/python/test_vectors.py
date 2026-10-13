@@ -5,7 +5,7 @@ import sys
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-import lsp2
+import lmbp
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 V = json.loads((ROOT / "testvectors" / "vectors.json").read_text("utf-8"))
@@ -20,39 +20,39 @@ def check(name, ok, detail=""):
 
 
 def priv(n):
-    return Ed25519PrivateKey.from_private_bytes(lsp2.unb64u(V["keys"][n]["seed_b64url"]))
+    return Ed25519PrivateKey.from_private_bytes(lmbp.unb64u(V["keys"][n]["seed_b64url"]))
 
 
 def pub(n):
-    return lsp2.unb64u(V["keys"][n]["public_b64url"])
+    return lmbp.unb64u(V["keys"][n]["public_b64url"])
 
 
 for n, k in V["keys"].items():
     p = priv(n).public_key().public_bytes_raw()
-    check(f"key {n}: seed→public, RFC 7638 thumbprint", lsp2.b64u(p) == k["public_b64url"] and lsp2.thumbprint(p) == k["jkt"])
+    check(f"key {n}: seed→public, RFC 7638 thumbprint", lmbp.b64u(p) == k["public_b64url"] and lmbp.thumbprint(p) == k["jkt"])
 for c in V["base64url"]:
-    check(f"base64url {c['bytes_hex'] or '(empty)'}", lsp2.b64u(bytes.fromhex(c["bytes_hex"])) == c["b64url"])
+    check(f"base64url {c['bytes_hex'] or '(empty)'}", lmbp.b64u(bytes.fromhex(c["bytes_hex"])) == c["b64url"])
 for c in V["ath"]:
-    check("ath", lsp2.ath(c["credential"]) == c["ath"])
+    check("ath", lmbp.ath(c["credential"]) == c["ath"])
 
 
 def verify(kind, compact, key, exp):
     if kind == "access_token":
-        c = lsp2.verify_access_token(key, compact, exp["aud"], NOW)
+        c = lmbp.verify_access_token(key, compact, exp["aud"], NOW)
         if c["cnf"]["jkt"] != exp["cnf.jkt"]:
-            raise lsp2.Lsp2Error("jkt")
+            raise lmbp.LmbpError("jkt")
     elif kind == "client_assertion":
-        c = json.loads(lsp2.verify_jws(key, compact, lsp2.TYP_ASSERTION))
+        c = json.loads(lmbp.verify_jws(key, compact, lmbp.TYP_ASSERTION))
         if c["aud"] != exp["aud"]:
-            raise lsp2.Lsp2Error("aud")
+            raise lmbp.LmbpError("aud")
     elif kind == "proof":
-        lsp2.verify_proof(key, compact, exp["iss"], exp["aud"], exp["credential"], NOW)
+        lmbp.verify_proof(key, compact, exp["iss"], exp["aud"], exp["credential"], NOW)
     elif kind == "task_run":
-        lsp2.verify_task_run(key, {"task_id": exp["envelope_task_id"], "jws": compact})
+        lmbp.verify_task_run(key, {"task_id": exp["envelope_task_id"], "jws": compact})
 
 
 for j in V["jws"]:
-    sig = lsp2.b64u(priv(j["signed_by"]).sign(j["signing_input"].encode()))
+    sig = lmbp.b64u(priv(j["signed_by"]).sign(j["signing_input"].encode()))
     check(f"jws {j['name']}: deterministic Ed25519 signature", sig == j["signature_b64url"])
     try:
         verify(j["kind"], j["compact"], pub(j["signed_by"]), j["verify_with"])
@@ -69,23 +69,23 @@ for n in V["negative"]:
 # issue_access_token reproduces the reference token byte-for-byte (same member order, no HTML escaping needed).
 at = next(j for j in V["jws"] if j["name"] == "access_token")
 pl = at["payload"]
-mine = lsp2.issue_access_token(priv("gateway"), at["protected_header"]["kid"], pl["sub"], pl["tenant"], pub("device"),
+mine = lmbp.issue_access_token(priv("gateway"), at["protected_header"]["kid"], pl["sub"], pl["tenant"], pub("device"),
                                ttl=pl["exp"] - pl["iat"], now=pl["iat"], jti=pl["jti"])
 check("issue_access_token == reference compact", mine == at["compact"], mine)
 
 # verify_hello with the vector hello frame.
 hello = next(f["frame"] for f in V["valid_frames"] if f["name"] == "hello")
 try:
-    lsp2.verify_hello(pub("gateway"), lambda _id: pub("device"), hello, at["compact"], now=NOW)
+    lmbp.verify_hello(pub("gateway"), lambda _id: pub("device"), hello, at["compact"], now=NOW)
     check("verify_hello(vector hello)", True)
 except Exception as e:  # noqa: BLE001
     check("verify_hello(vector hello)", False, repr(e))
 
 # sign_task_run → verify_task_run round trip, including non-ASCII and </script>.
 tr = next(j for j in V["jws"] if j["name"] == "task_run")
-env = lsp2.sign_task_run(priv("gateway"), "k", tr["payload"])
-check("sign_task_run round trip", lsp2.verify_task_run(pub("gateway"), env) == tr["payload"])
-check("sse_chunk shape", lsp2.sse_chunk("t", "m", 1, "hi").startswith(b'data: {"id":"chatcmpl-t"'))
+env = lmbp.sign_task_run(priv("gateway"), "k", tr["payload"])
+check("sign_task_run round trip", lmbp.verify_task_run(pub("gateway"), env) == tr["payload"])
+check("sse_chunk shape", lmbp.sse_chunk("t", "m", 1, "hi").startswith(b'data: {"id":"chatcmpl-t"'))
 
 # Frames against JSON Schema 2020-12.
 try:
@@ -109,21 +109,21 @@ except ImportError:
     print("SKIP schema checks (pip install jsonschema)")
 
 # ---- extensions: E2EE, flow control, resume ----
-import lsp2_ext as x  # noqa: E402
+import lmbp_ext as x  # noqa: E402
 
 E = V["e2ee"]
 try:
     xp, kid = x.verify_key_statement(pub("device"), E["key_statement"]["pinned_jkt"], E["key_statement"]["device_id"], E["key_statement"]["compact"], NOW)
-    check("e2ee key statement verifies against pinned jkt", lsp2.b64u(xp) == E["key_statement"]["expect_x25519_public_b64url"] and kid == E["key_statement"]["expect_kid"])
+    check("e2ee key statement verifies against pinned jkt", lmbp.b64u(xp) == E["key_statement"]["expect_x25519_public_b64url"] and kid == E["key_statement"]["expect_kid"])
 except Exception as e:  # noqa: BLE001
     check("e2ee key statement verifies against pinned jkt", False, repr(e))
-xpriv = lsp2.unb64u(E["device_x25519"]["private_b64url"])
+xpriv = lmbp.unb64u(E["device_x25519"]["private_b64url"])
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey  # noqa: E402
-check("e2ee X25519 public + RFC 7638 kid", lsp2.b64u(X25519PrivateKey.from_private_bytes(xpriv).public_key().public_bytes_raw()) == E["device_x25519"]["public_b64url"]
-      and x.x25519_thumbprint(lsp2.unb64u(E["device_x25519"]["public_b64url"])) == E["device_x25519"]["kid"])
+check("e2ee X25519 public + RFC 7638 kid", lmbp.b64u(X25519PrivateKey.from_private_bytes(xpriv).public_key().public_bytes_raw()) == E["device_x25519"]["public_b64url"]
+      and x.x25519_thumbprint(lmbp.unb64u(E["device_x25519"]["public_b64url"])) == E["device_x25519"]["kid"])
 J = E["jwe"]
-check("e2ee Concat KDF (RFC 7518 §4.6.2) reproduces cek", lsp2.b64u(x.concat_kdf(lsp2.unb64u(J["shared_secret_b64url"]))) == J["cek_b64url"])
-mine = x.seal_jwe(lsp2.unb64u(E["device_x25519"]["public_b64url"]), J["recipient_kid"], J["plaintext_utf8"].encode(), lsp2.unb64u(J["ephemeral_private_b64url"]), lsp2.unb64u(J["iv_b64url"]))
+check("e2ee Concat KDF (RFC 7518 §4.6.2) reproduces cek", lmbp.b64u(x.concat_kdf(lmbp.unb64u(J["shared_secret_b64url"]))) == J["cek_b64url"])
+mine = x.seal_jwe(lmbp.unb64u(E["device_x25519"]["public_b64url"]), J["recipient_kid"], J["plaintext_utf8"].encode(), lmbp.unb64u(J["ephemeral_private_b64url"]), lmbp.unb64u(J["iv_b64url"]))
 check("e2ee seal_jwe with vector ephemeral key/IV: ciphertext and tag match", mine.split(".")[2:] == J["compact"].split(".")[2:] or mine == J["compact"], mine)
 try:
     h, pt = x.open_jwe(xpriv, J["compact"])
@@ -133,10 +133,10 @@ except Exception as e:  # noqa: BLE001
 h, pt = x.open_jwe(xpriv, mine)
 check("e2ee seal→open round trip", pt.decode() == J["plaintext_utf8"])
 for c in E["chunks"]:
-    k = lsp2.unb64u(c["response_key_b64url"])
+    k = lmbp.unb64u(c["response_key_b64url"])
     check(f"e2ee chunk seq {c['seq']} {c['type']}: seal matches", x.seal_chunk(k, c["rid"], c["type"], c["seq"], c["plaintext_utf8"].encode()) == c["sealed_b64url"])
     check(f"e2ee chunk seq {c['seq']}: nonce/aad", x.chunk_nonce(c["seq"]).hex() == c["nonce_hex"] and x.chunk_aad(c["rid"], c["type"], c["seq"]).decode() == c["aad"])
-k0 = lsp2.unb64u(E["chunks"][0]["response_key_b64url"])
+k0 = lmbp.unb64u(E["chunks"][0]["response_key_b64url"])
 for n in E["negative"]:
     try:
         if n["kind"] == "jwe":

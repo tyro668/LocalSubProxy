@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sign } from 'node:crypto';
-import * as L from './lsp2.mjs';
+import * as L from './lmbp.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const V = JSON.parse(readFileSync(join(ROOT, 'testvectors', 'vectors.json'), 'utf8'));
@@ -55,14 +55,14 @@ try {
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   const sdir = join(ROOT, 'schemas');
   for (const f of readdirSync(sdir)) ajv.addSchema(JSON.parse(readFileSync(join(sdir, f), 'utf8')));
-  const validate = ajv.getSchema('https://localsubproxy.dev/spec/lsp2/envelope.json');
+  const validate = ajv.getSchema('https://localsubproxy.dev/spec/lmbp/envelope.json');
   for (const f of V.valid_frames) check(`schema valid frame ${f.name}`, validate(f.frame), JSON.stringify(validate.errors));
   for (const f of V.invalid_frames) check(`schema rejects ${f.name}`, !validate(f.frame));
 } catch (err) {
   if (err.code === 'ERR_MODULE_NOT_FOUND') console.log('SKIP schema checks (npm install)'); else throw err;
 }
 // ---- extensions: E2EE, flow control, resume ----
-const X = await import('./lsp2_ext.mjs');
+const X = await import('./lmbp_ext.mjs');
 const E = V.e2ee;
 try {
   const ks = E.key_statement;

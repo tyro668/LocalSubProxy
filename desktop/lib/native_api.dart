@@ -65,13 +65,13 @@ class NativeApi {
   Map<String, dynamic> status() =>
       (_invoke(_call, {'action': 'status'}) as Map).cast<String, dynamic>();
 
-  // lsp2 pairing, step 1: resolve the SaaS (https origin or lsp2://pair
+  // lmbp pairing, step 1: resolve the SaaS (https origin or lmbp://pair
   // link) and verify the gateway's signed metadata. Returns
   // {state: consent, consent: {saas: {...}, gateway, tenant, ...}}.
   Map<String, dynamic> pairPrepare(String urlOrLink) =>
       (_invoke(_call, {
                 'action': 'pair_prepare',
-                if (urlOrLink.startsWith('lsp2://'))
+                if (urlOrLink.startsWith('lmbp://'))
                   'link': urlOrLink
                 else
                   'remote_url': urlOrLink,

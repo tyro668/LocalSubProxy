@@ -20,7 +20,7 @@ import (
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/connector"
 	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 )
 
 // localIdentity is identity.json: the per-install data key plus display
@@ -33,7 +33,7 @@ type localIdentity struct {
 
 const deviceKeyFile = "device_key.enc"
 
-// loadDevice decrypts the lsp2 identity (Ed25519 + X25519 private keys and
+// loadDevice decrypts the lmbp identity (Ed25519 + X25519 private keys and
 // the pinned gateway key) with the per-install data key.
 func loadDevice(dir string, id localIdentity) (*client.Identity, error) {
 	if id.DeviceID == "" {
@@ -76,7 +76,7 @@ var runtime struct {
 	login     *connector.CodexLogin
 	audit     *audit.Log // per-connection request log (audit.db)
 	auditStop context.CancelFunc
-	// lsp2 pairing in progress
+	// lmbp pairing in progress
 	pairing    *client.Pairing
 	pairReq    *client.PairRequest // verified, awaiting the user's consent decision
 	pairCancel context.CancelFunc
@@ -241,7 +241,7 @@ func LSP_Call(raw *C.char) *C.char {
 		ID        string                  `json:"id"`
 		Path      string                  `json:"path"`
 		RemoteURL string                  `json:"remote_url"`
-		Link      string                  `json:"link"` // lsp2://pair deep link
+		Link      string                  `json:"link"` // lmbp://pair deep link
 		Filter    audit.Filter            `json:"filter"`
 		GroupBy   []string                `json:"group_by"`
 		LocalTime bool                    `json:"local_time"`
@@ -343,7 +343,7 @@ func LSP_Call(raw *C.char) *C.char {
 		}
 		return result(nil, connector.LogoutCodex(request.Path))
 	case "pair_start", "pair_prepare":
-		// Step 1: resolve the SaaS (remote_url or lsp2://pair link), verify the
+		// Step 1: resolve the SaaS (remote_url or lmbp://pair link), verify the
 		// gateway's signed metadata and return the consent screen data. Nothing
 		// is registered at the gateway until pair_approve.
 		if pairedLocked() {

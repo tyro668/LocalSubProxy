@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lsp2/session.token.request.json",
+  "$id": "https://localsubproxy.dev/spec/lmbp/session.token.request.json",
   "title": "session.token.request",
   "description": "device→gateway",
   "type": "object",
@@ -14,7 +14,7 @@
     },
     "proof": {
       "$ref": "defs.json#/$defs/compactJws",
-      "description": "Proof JWT, aud lsp2:session.token, ath=SHA-256(new access token)."
+      "description": "Proof JWT, aud lmbp:session.token, ath=SHA-256(new access token)."
     }
   }
 }

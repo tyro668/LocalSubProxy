@@ -1,4 +1,4 @@
-// lspmock runs the protocol-v2 mock stack: gateway, SaaS, connector, fake model, or an all-in-one demo.
+// lspmock runs the LMBP mock stack: gateway, SaaS, connector, fake model, or an all-in-one demo.
 package main
 
 import (
@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
 	"github.com/tyro668/LocalSubProxy/mock/demo"
 	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 	"github.com/tyro668/LocalSubProxy/mock/saas"
@@ -71,7 +71,7 @@ func main() {
 	case "connector":
 		f := flag.NewFlagSet("connector", flag.ExitOnError)
 		saasURL := f.String("saas", "http://127.0.0.1:3000", "")
-		id := f.String("identity", "lsp2-identity.json", "")
+		id := f.String("identity", "lmbp-identity.json", "")
 		name := f.String("name", hostname(), "")
 		modelURL := f.String("model-url", "http://127.0.0.1:11500", "local OpenAI-compatible base URL")
 		models := f.String("models", "qwen3-8b", "allowlisted model IDs")

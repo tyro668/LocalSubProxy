@@ -1,11 +1,11 @@
 {
-  "name": "lsp2-mock-gateway-node",
+  "name": "lmbp-mock-gateway-node",
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "LSP2 mock SaaS gateway in Node.js: a thin CLI over the lsp2-server SDK (sdk/node)",
+  "description": "LMBP mock SaaS gateway in Node.js: a thin CLI over the lmbp-server SDK (sdk/node)",
   "engines": { "node": ">=18.17" },
-  "bin": { "lsp2-mock-gateway": "gateway.mjs" },
+  "bin": { "lmbp-mock-gateway": "gateway.mjs" },
   "scripts": { "start": "node gateway.mjs", "test": "node --test test/" },
-  "dependencies": { "lsp2-server": "file:../../sdk/node" }
+  "dependencies": { "lmbp-server": "file:../../sdk/node" }
 }

@@ -1,8 +1,8 @@
-# mock/：协议 v2 的服务端模拟实现
+# mock/：LMBP 的服务端模拟实现
 
-> 网关、存储和设备端已移到 `internal/lsp2/*`，作为正式代码使用。本目录只保留业务服务模拟（`saas/`）、假模型、演示和 `lspmock` 命令行。
+> 网关、存储和设备端已移到 `internal/lmbp/*`，作为正式代码使用。本目录只保留业务服务模拟（`saas/`）、假模型、演示和 `lspmock` 命令行。
 
-本目录提供业务服务（SaaS）的模拟实现，配合 `internal/lsp2` 中的参考网关与设备端使用。协议说明见 [docs/protocol-v2.md](../docs/protocol-v2.md)。
+本目录提供业务服务（SaaS）的模拟实现，配合 `internal/lmbp` 中的参考网关与设备端使用。协议说明见 [docs/lmbp-spec.md](../docs/lmbp-spec.md)。
 
 | 包 | 作用 |
 |---|---|
@@ -10,10 +10,10 @@
 | `fakemodel/` | 一个假的模型：OpenAI 兼容 `/v1` 与 Ollama 原生 `/api/chat`、`/api/tags`，都支持流式输出 |
 | `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
 | `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
-| `node/` | Node.js 版完整网关（与参考网关等价，通过 63 项 `lsp2-conformance`），见 [node/README.md](node/README.md) |
+| `node/` | Node.js 版完整网关（与参考网关等价，通过 63 项 `lmbp-conformance`），见 [node/README.md](node/README.md) |
 | `python/` | Python（aiohttp）版完整网关，同上，见 [python/README.md](python/README.md) |
 | `web/` | 三种网关共用的模拟 SaaS 聊天页（`/`、`/chat`）：配对、设备、流式对话、图片、停止、用量与耗时，见 [web/README.md](web/README.md) |
-| `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LSP2_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑三种实现 |
+| `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LMBP_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑三种实现 |
 
 ## 一条命令看完整流程
 
@@ -45,6 +45,6 @@ bin/lspmock connector -saas http://127.0.0.1:3000 -model-url http://127.0.0.1:11
 
 ## 正式部署前须知
 
-- 网关和 SaaS 前面需要加 HTTPS 反向代理；`/v2/connect` 要允许 WebSocket 升级，SSE 路径要关闭缓冲。
+- 网关和 SaaS 前面需要加 HTTPS 反向代理；`/lmbp/v1/connect` 要允许 WebSocket 升级，SSE 路径要关闭缓冲。
 - mock SaaS 的用户名和密码直接写在命令行参数里，仅供演示。
 - 会话保存在网关进程的内存中，部署多个网关实例时需要做粘性路由。

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 // The test binary doubles as a small App Server. It never calls a model.
@@ -131,8 +131,8 @@ func fakeCodex() {
 	}
 }
 
-func fakeMessages() []lsp2.Message {
-	return []lsp2.Message{{Role: "user", Content: lsp2.Text("say hello")}}
+func fakeMessages() []lmbp.Message {
+	return []lmbp.Message{{Role: "user", Content: lmbp.Text("say hello")}}
 }
 
 func TestCodexProbeAndStreaming(t *testing.T) {
@@ -272,13 +272,13 @@ func TestCodexTaskThroughExecutor(t *testing.T) {
 		t.Fatalf("codex must be text-only: %v", caps)
 	}
 	var out strings.Builder
-	run := lsp2.TaskRun{TaskID: "task_1", Model: "codex-local/fake-model", Messages: fakeMessages()}
-	done, fail := x.Execute(ctx, run, func(d lsp2.TaskDelta) error { out.WriteString(d.Text); return nil })
+	run := lmbp.TaskRun{TaskID: "task_1", Model: "codex-local/fake-model", Messages: fakeMessages()}
+	done, fail := x.Execute(ctx, run, func(d lmbp.TaskDelta) error { out.WriteString(d.Text); return nil })
 	if fail != nil || done.FinishReason != "stop" || out.String() != "hello world" {
 		t.Fatalf("execute: %v %v %q", done, fail, out.String())
 	}
-	run.Tools = []lsp2.Tool{{Type: "function", Function: lsp2.FunctionDef{Name: "f"}}}
-	if _, fail := x.Execute(ctx, run, func(lsp2.TaskDelta) error { return nil }); fail == nil || fail.Code != lsp2.ErrUnsupported {
+	run.Tools = []lmbp.Tool{{Type: "function", Function: lmbp.FunctionDef{Name: "f"}}}
+	if _, fail := x.Execute(ctx, run, func(lmbp.TaskDelta) error { return nil }); fail == nil || fail.Code != lmbp.ErrUnsupported {
 		t.Fatalf("tools on codex: %v", fail)
 	}
 }

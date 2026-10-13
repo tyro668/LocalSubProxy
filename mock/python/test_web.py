@@ -4,7 +4,7 @@ import unittest
 import httpx
 
 import gateway as G
-from lsp2_server import LSP2Server
+from lmbp_server import LMBPServer
 
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")
 
@@ -15,7 +15,7 @@ class ChatUITest(unittest.IsolatedAsyncioTestCase):
             return await c.get(path)
 
     async def test_served_with_csp(self):
-        lsp = LSP2Server([], chat_ui_dir=WEB, log=lambda *a: None)
+        lsp = LMBPServer([], chat_ui_dir=WEB, log=lambda *a: None)
         for path, ctype in [("/", "text/html"), ("/chat", "text/html"), ("/chat/chat.js", "text/javascript"), ("/chat/qrcode.js", "text/javascript")]:
             r = await self.get(lsp, path)
             self.assertEqual(r.status_code, 200, path)
@@ -23,7 +23,7 @@ class ChatUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r.headers["Content-Security-Policy"], G.WEB_CSP)
 
     async def test_disabled(self):
-        self.assertEqual((await self.get(LSP2Server([], log=lambda *a: None), "/chat")).status_code, 404)
+        self.assertEqual((await self.get(LMBPServer([], log=lambda *a: None), "/chat")).status_code, 404)
 
 
 if __name__ == "__main__":

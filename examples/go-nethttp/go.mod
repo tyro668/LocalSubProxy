@@ -1,4 +1,4 @@
-module example.com/lsp2-go-nethttp
+module example.com/lmbp-go-nethttp
 
 go 1.23.0
 

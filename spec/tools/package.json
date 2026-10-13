@@ -1,5 +1,5 @@
 {
-  "name": "lsp2-spec-tools",
+  "name": "lmbp-spec-tools",
   "private": true,
   "type": "module",
   "dependencies": { "@asyncapi/parser": "^3.4.0" }

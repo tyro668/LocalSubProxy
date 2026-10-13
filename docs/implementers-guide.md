@@ -1,6 +1,6 @@
-# lsp2 实现指南：用 Java、Node.js、Python、Go、Rust 实现网关
+# lmbp 实现指南：用 Java、Node.js、Python、Go、Rust 实现网关
 
-本指南面向要用自己的语言实现 lsp2 **网关**（也适用于租户后端或设备端）的团队。规范以 [`docs/protocol-v2.md`](protocol-v2.md) 为准，本文只讲实现方法和常见陷阱。
+本指南面向要用自己的语言实现 lmbp **网关**（也适用于租户后端或设备端）的团队。规范以 [`docs/lmbp-spec.md`](lmbp-spec.md) 为准，本文只讲实现方法和常见陷阱。
 
 ## 0. 先看这几份材料
 
@@ -11,14 +11,14 @@
 | `spec/asyncapi.yaml` | WebSocket 通道和消息 |
 | `spec/testvectors/vectors.json` | 固定密钥、期望签名和 JWT、正例与反例，以及合法和非法的帧 |
 | `spec/examples/{python,node,rust}` | 关键路径的骨架代码，**都已用测试向量实际运行通过** |
-| `cmd/lsp2-conformance` | 黑盒测试你的网关，共 31 项检查 |
+| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 31 项检查 |
 | `spec/validate.sh` | 一键校验所有契约，并运行示例骨架 |
 
 ### 代码片段的验证状态
 
 | 语言 | 状态 |
 |---|---|
-| Go | 参考实现（`internal/lsp2`）。`go test` 覆盖测试向量、Schema 和一致性测试 |
+| Go | 参考实现（`internal/lmbp`）。`go test` 覆盖测试向量、Schema 和一致性测试 |
 | Python | `spec/examples/python`：已在 Python 3.13 + cryptography 上运行，60 项全部通过 |
 | Node.js | `spec/examples/node`：已在 Node 20 上运行，只用 `node:crypto`，Schema 校验用 ajv，59 项全部通过 |
 | Rust | `spec/examples/rust`：已在 rustc 1.85 + ed25519-dalek 2 上运行，`cargo test` 通过 |
@@ -33,7 +33,7 @@
 | 能力 | Java | Node.js | Python | Go | Rust |
 |---|---|---|---|---|---|
 | HTTP 服务 | Spring Boot / Quarkus / Javalin | Fastify / Express / `node:http` | FastAPI / Starlette | `net/http` | axum |
-| WebSocket（需支持子协议选择） | Jakarta WebSocket（Tyrus）、Spring WebSocket、Netty | `ws`（用 `handleProtocols` 选择 `lsp2`） | `websockets`（`subprotocols=["lsp2"]`）、Starlette `websocket.accept(subprotocol="lsp2")` | `gorilla/websocket`（`Upgrader.Subprotocols`）、`coder/websocket` | `axum::extract::ws`（`.protocols(["lsp2"])`）、`tokio-tungstenite` |
+| WebSocket（需支持子协议选择） | Jakarta WebSocket（Tyrus）、Spring WebSocket、Netty | `ws`（用 `handleProtocols` 选择 `lmbp`） | `websockets`（`subprotocols=["lmbp"]`）、Starlette `websocket.accept(subprotocol="lmbp")` | `gorilla/websocket`（`Upgrader.Subprotocols`）、`coder/websocket` | `axum::extract::ws`（`.protocols(["lmbp"])`）、`tokio-tungstenite` |
 | Ed25519 | JDK 15+ `Signature.getInstance("Ed25519")`；BouncyCastle | `node:crypto`（`sign(null, …)`） | `cryptography` | `crypto/ed25519` | `ed25519-dalek` 2（用 `verify_strict`） |
 | JWS/JWT（EdDSA） | Nimbus JOSE+JWT（`Ed25519Signer`/`Ed25519Verifier`，需 Tink）、jose4j | `jose`（panva），或像骨架那样直接用 `node:crypto` | `joserfc`、PyJWT[crypto]（`algorithms=["EdDSA"]`） | 自己实现（参考实现约 80 行）、`go-jose` v4、`lestrrat-go/jwx` v2 | `josekit`、`jsonwebtoken` 9（支持 EdDSA），或像骨架那样手写 |
 | JSON Schema 2020-12 | `com.networknt:json-schema-validator` | `ajv`（`ajv/dist/2020`） | `jsonschema` + `referencing` | `santhosh-tekuri/jsonschema` v6 | `jsonschema` crate |
@@ -51,7 +51,7 @@
 ## 2. 跨语言陷阱
 
 ### 2.1 JSON
-- **签名不依赖 JSON 序列化**。lsp2 一律对**收到的字节**验签，然后再解析 JSON。不要先解析再重新序列化后验签。不同语言的序列化结果互不相同：
+- **签名不依赖 JSON 序列化**。lmbp 一律对**收到的字节**验签，然后再解析 JSON。不要先解析再重新序列化后验签。不同语言的序列化结果互不相同：
   - Go 的 `json.Marshal` 默认把 `<`、`>`、`&` 转义为 `\u003c` 等；
   - Python 的 `json.dumps` 默认 `ensure_ascii=True`，会把中文转成 `\uXXXX`；
   - JavaScript 会把 `1.0` 输出为 `1`；
@@ -111,17 +111,17 @@
    - `devices(id, tenant, owner, name, public_key, status, created_at)`
    - `tasks(id, tenant, owner, device_id, state, request_enc, …)`
 2. **密钥**：从环境变量或 KMS 加载 32 字节的网关 Ed25519 种子，计算 `kid = RFC7638(pub)`。实现 `GET /.well-known/jwks.json`。
-3. **`POST /v2/device/authorize`**：解析表单参数，检查公钥是否为 32 字节，生成 `device_code`（只存哈希）和 `user_code`，返回结果并带上 `Cache-Control: no-store`。
-4. **`POST /v2/tenant/device-approvals`**：用租户 Key 的哈希查出租户。在租户内按 `user_code` 查找待确认记录。确认后创建设备记录，归属 `X-End-User`。失败要计数限速。
-5. **`POST /v2/token`**：
+3. **`POST /lmbp/v1/device/authorize`**：解析表单参数，检查公钥是否为 32 字节，生成 `device_code`（只存哈希）和 `user_code`，返回结果并带上 `Cache-Control: no-store`。
+4. **`POST /lmbp/v1/tenant/device-approvals`**：用租户 Key 的哈希查出租户。在租户内按 `user_code` 查找待确认记录。确认后创建设备记录，归属 `X-End-User`。失败要计数限速。
+5. **`POST /lmbp/v1/token`**：
    - device_code 授权：先验证证明，再看状态，最后标记为已使用（规范 §6.3 的顺序）；
    - jwt-bearer 授权：用设备公钥验证断言，并对 `jti` 去重。
    - 签发 `at+jwt`，内含 `cnf.jkt`。
-6. **`GET /v2/connect`**：
+6. **`GET /lmbp/v1/connect`**：
    1. 检查子协议；
    2. 拒绝带 `Origin` 的请求；
    3. 验证访问令牌，并核对设备状态和 `cnf.jkt`；
-   4. 升级连接，选择 `lsp2`；
+   4. 升级连接，选择 `lmbp`；
    5. 15 秒内读取 `hello`，验证证明（`ath` 绑定本次连接的令牌）；
    6. 回复 `welcome`，`capabilities` 取交集；
    7. 记录 `sessions[device_id]`，并关闭该设备的旧会话。
@@ -141,7 +141,7 @@
    6. 客户端断开或超时时发送 `task.cancel`；
    7. 设备断线时任务失败（`DEVICE_OFFLINE`）。
 9. **吊销**：把设备状态改为 `revoked`，并关闭在线会话。
-10. **验证**：先跑测试向量，再执行 `lsp2-conformance -gateway http://localhost:PORT`，直到 31 项全部通过。
+10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 31 项全部通过。
 
 ---
 
@@ -149,16 +149,16 @@
 
 下面每种语言都覆盖四个关键点：**验证 hello**、**签发令牌**、**签名 task.run**、**输出 SSE 块**。
 
-### 4.1 Python（已运行：`spec/examples/python/lsp2.py`）
+### 4.1 Python（已运行：`spec/examples/python/lmbp.py`）
 ```python
 def verify_hello(gw_pub, device_pub_of, frame, access_token, aud="https://gw.example.com/tenants/acme", now=None):
     claims = verify_access_token(gw_pub, access_token, aud, now)          # typ=at+jwt, aud, exp/iat ±30s
     dev_pub = device_pub_of(claims["sub"])                                # 查库，且 status == active
     if claims.get("cnf", {}).get("jkt") != thumbprint(dev_pub):
-        raise Lsp2Error("token not bound to this device key")
-    if frame.get("v") != 2 or frame.get("type") != "hello" or frame["data"].get("device_id") != claims["sub"]:
-        raise Lsp2Error("bad hello")
-    verify_proof(dev_pub, frame["data"]["proof"], claims["sub"], "lsp2:hello", access_token, now)
+        raise LmbpError("token not bound to this device key")
+    if frame.get("v") != 1 or frame.get("type") != "hello" or frame["data"].get("device_id") != claims["sub"]:
+        raise LmbpError("bad hello")
+    verify_proof(dev_pub, frame["data"]["proof"], claims["sub"], "lmbp:hello", access_token, now)
     return claims   # 调用方还要对 proof 的 jti 去重
 
 def issue_access_token(gw_key, kid, device_id, tenant, device_pub, ttl=900, now=None, jti=None):
@@ -168,8 +168,8 @@ def issue_access_token(gw_key, kid, device_id, tenant, device_pub, ttl=900, now=
     return sign_jws(gw_key, "at+jwt", json_bytes(claims), kid)
 
 def sign_task_run(gw_key, kid, payload):
-    return {"v": 2, "type": "task.run", "task_id": payload["task_id"],
-            "jws": sign_jws(gw_key, "lsp2-task+jws", json_bytes(payload), kid)}
+    return {"v": 1, "type": "task.run", "task_id": payload["task_id"],
+            "jws": sign_jws(gw_key, "lmbp-task+jws", json_bytes(payload), kid)}
 
 def sse_chunk(task_id, model, created, text=None, finish=None):
     delta = {"content": text} if text is not None else {}
@@ -177,16 +177,16 @@ def sse_chunk(task_id, model, created, text=None, finish=None):
            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
     return b"data: " + json_bytes(obj) + b"\n\n"
 ```
-FastAPI 中接入 WebSocket（示意）：`await ws.accept(subprotocol="lsp2")`，在此之前先检查 `ws.headers["sec-websocket-protocol"]`、`Authorization` 以及是否带有 `Origin`。
+FastAPI 中接入 WebSocket（示意）：`await ws.accept(subprotocol="lmbp")`，在此之前先检查 `ws.headers["sec-websocket-protocol"]`、`Authorization` 以及是否带有 `Origin`。
 
-### 4.2 Node.js（已运行：`spec/examples/node/lsp2.mjs`）
+### 4.2 Node.js（已运行：`spec/examples/node/lmbp.mjs`）
 ```js
 export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = 'https://gw.example.com/tenants/acme', now } = {}) {
   const claims = verifyAccessToken(gwPub, accessToken, aud, now);
   const devPub = devicePubOf(claims.sub);
   if (claims.cnf?.jkt !== thumbprint(devPub)) throw new Error('token not bound to device key');
-  if (frame.v !== 2 || frame.type !== 'hello' || frame.data?.device_id !== claims.sub) throw new Error('bad hello');
-  verifyProof(devPub, frame.data.proof, { iss: claims.sub, aud: 'lsp2:hello', credential: accessToken }, now);
+  if (frame.v !== 1 || frame.type !== 'hello' || frame.data?.device_id !== claims.sub) throw new Error('bad hello');
+  verifyProof(devPub, frame.data.proof, { iss: claims.sub, aud: 'lmbp:hello', credential: accessToken }, now);
   return claims;
 }
 export function issueAccessToken(gwKey, kid, { deviceId, tenant, devicePub, ttl = 900, now = Math.floor(Date.now() / 1000), jti }) {
@@ -195,7 +195,7 @@ export function issueAccessToken(gwKey, kid, { deviceId, tenant, devicePub, ttl 
   return signJws(gwKey, 'at+jwt', jsonBytes(claims), kid);
 }
 export const signTaskRun = (gwKey, kid, payload) =>
-  ({ v: 2, type: 'task.run', task_id: payload.task_id, jws: signJws(gwKey, 'lsp2-task+jws', jsonBytes(payload), kid) });
+  ({ v: 1, type: 'task.run', task_id: payload.task_id, jws: signJws(gwKey, 'lmbp-task+jws', jsonBytes(payload), kid) });
 export async function writeSseChunk(res, { taskId, model, created, text, finish = null }) {
   const obj = { id: `chatcmpl-${taskId}`, object: 'chat.completion.chunk', created, model,
     choices: [{ index: 0, delta: text === undefined ? {} : { content: text }, finish_reason: finish }] };
@@ -204,7 +204,7 @@ export async function writeSseChunk(res, { taskId, model, created, text, finish 
 ```
 使用 `ws` 库接入（示意）：
 ```js
-const wss = new WebSocketServer({ noServer: true, handleProtocols: (ps) => (ps.has('lsp2') ? 'lsp2' : false) });
+const wss = new WebSocketServer({ noServer: true, handleProtocols: (ps) => (ps.has('lmbp') ? 'lmbp' : false) });
 server.on('upgrade', (req, sock, head) => {
   if (req.headers.origin) return sock.end('HTTP/1.1 403 Forbidden\r\n\r\n');
   // 在这里验证 Authorization 中的令牌，失败时返回 401
@@ -212,22 +212,22 @@ server.on('upgrade', (req, sock, head) => {
 });
 ```
 
-### 4.3 Go（参考实现：`internal/lsp2`、`internal/lsp2/gateway`）
+### 4.3 Go（参考实现：`internal/lmbp`、`internal/lmbp/gateway`）
 ```go
 // 验证 hello（gateway.go）
-claims, err := lsp2.VerifyJWT(g.pub, tok, lsp2.TypAccessToken, Audience, time.Now())
-// ……查设备，检查 status == active，且 claims.Cnf["jkt"] == lsp2.Thumbprint(dev.PublicKey)
-pc, err := lsp2.VerifyProof(dev.PublicKey, hello.Proof, dev.ID, lsp2.ProofHello, tok, time.Now())
+claims, err := lmbp.VerifyJWT(g.pub, tok, lmbp.TypAccessToken, Audience, time.Now())
+// ……查设备，检查 status == active，且 claims.Cnf["jkt"] == lmbp.Thumbprint(dev.PublicKey)
+pc, err := lmbp.VerifyProof(dev.PublicKey, hello.Proof, dev.ID, lmbp.ProofHello, tok, time.Now())
 if err != nil || !g.useJTI(pc.Jti, time.Now().Add(3*time.Minute)) { /* error UNAUTHENTICATED，然后断开 */ }
 
 // 签发令牌
-c := lsp2.Claims{Iss: Issuer, Sub: d.ID, Aud: Audience, Tenant: d.TenantID, Iat: now.Unix(), Exp: now.Add(ttl).Unix(),
-	Jti: lsp2.RandomID("jti_"), Cnf: map[string]string{"jkt": lsp2.Thumbprint(d.PublicKey)}}
-at := lsp2.SignJWT(signingKey, lsp2.TypAccessToken, kid, c)
+c := lmbp.Claims{Iss: Issuer, Sub: d.ID, Aud: Audience, Tenant: d.TenantID, Iat: now.Unix(), Exp: now.Add(ttl).Unix(),
+	Jti: lmbp.RandomID("jti_"), Cnf: map[string]string{"jkt": lmbp.Thumbprint(d.PublicKey)}}
+at := lmbp.SignJWT(signingKey, lmbp.TypAccessToken, kid, c)
 
 // 签名 task.run
-jws := lsp2.SignTaskRun(signingKey, kid, lsp2.TaskRun{TaskID: id, Iat: now, Exp: now + 60, Nonce: lsp2.RandomID("n_"), DeviceID: dev, Model: m, Messages: msgs})
-s.send(lsp2.Envelope{V: 2, Type: lsp2.TypeTaskRun, TaskID: id, JWS: jws})
+jws := lmbp.SignTaskRun(signingKey, kid, lmbp.TaskRun{TaskID: id, Iat: now, Exp: now + 60, Nonce: lmbp.RandomID("n_"), DeviceID: dev, Model: m, Messages: msgs})
+s.send(lmbp.Envelope{V: 2, Type: lmbp.TypeTaskRun, TaskID: id, JWS: jws})
 
 // SSE
 fmt.Fprintf(w, "data: %s\n\n", chunkJSON); w.(http.Flusher).Flush()
@@ -240,8 +240,8 @@ pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &
     let sub = c["sub"].as_str().ok_or("sub")?.to_string();
     let dev = device_pub_of(&sub);
     if c["cnf"]["jkt"] != thumbprint(&dev).as_str() { return Err("token not bound to device key".into()); }
-    if frame["v"] != 2 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
-    verify_proof(&dev, frame["data"]["proof"].as_str().ok_or("proof")?, &sub, "lsp2:hello", token, now)?;
+    if frame["v"] != 1 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
+    verify_proof(&dev, frame["data"]["proof"].as_str().ok_or("proof")?, &sub, "lmbp:hello", token, now)?;
     Ok(c)
 }
 pub fn issue_access_token(gw: &SigningKey, kid: &str, device_id: &str, tenant: &str, device_pub: &[u8], now: i64, ttl: i64, jti: &str) -> String {
@@ -249,14 +249,14 @@ pub fn issue_access_token(gw: &SigningKey, kid: &str, device_id: &str, tenant: &
     sign_jws(gw, TYP_ACCESS_TOKEN, c.to_string().as_bytes(), Some(kid))
 }
 pub fn sign_task_run(gw: &SigningKey, kid: &str, payload: &Value) -> Value {
-    json!({"v":2,"type":"task.run","task_id":payload["task_id"],"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
+    json!({"v":1,"type":"task.run","task_id":payload["task_id"],"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
 }
 pub fn sse_chunk(task_id: &str, model: &str, created: i64, text: &str) -> String {
     format!("data: {}\n\n", json!({"id":format!("chatcmpl-{task_id}"),"object":"chat.completion.chunk","created":created,"model":model,
         "choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]}))
 }
 ```
-axum 接入（示意）：`ws.protocols(["lsp2"]).on_upgrade(...)`。升级前先从 `HeaderMap` 中验证令牌，并拒绝带 `Origin` 的请求。SSE 用 `Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))`。
+axum 接入（示意）：`ws.protocols(["lmbp"]).on_upgrade(...)`。升级前先从 `HeaderMap` 中验证令牌，并拒绝带 `Origin` 的请求。SSE 用 `Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))`。
 
 ### 4.5 Java（**示意，未编译**；JDK 17+，只用 JDK 自带的 EdDSA 与 Jackson）
 ```java
@@ -294,26 +294,26 @@ static JsonNode verifyJws(PublicKey pub, String jws, String typ) throws Exceptio
   return STRICT_MAPPER.readTree(unb64(p[1]));
 }
 // verifyHello：verifyJws(gw, token, "at+jwt") → 检查 aud/exp/iat → 查设备并比对 cnf.jkt
-//              → verifyJws(dev, proof, "lsp2-proof+jwt") → 检查 aud="lsp2:hello"、iss、ath=b64(sha256(token))、|now-iat|≤60，并对 jti 去重
-// signTaskRun：signJws(gwKey, "lsp2-task+jws", kid, mapper.writeValueAsBytes(payload))
+//              → verifyJws(dev, proof, "lmbp-proof+jwt") → 检查 aud="lmbp:hello"、iss、ath=b64(sha256(token))、|now-iat|≤60，并对 jti 去重
+// signTaskRun：signJws(gwKey, "lmbp-task+jws", kid, mapper.writeValueAsBytes(payload))
 // SSE（Spring MVC）：emitter.send(SseEmitter.event().data(chunkJson, MediaType.APPLICATION_JSON))；结束时 emitter.send("[DONE]")
 ```
-接入 Spring WebSocket 时，在 `HandshakeInterceptor` 中验证令牌和 `Origin`，并在 `DefaultHandshakeHandler` 中选择子协议 `lsp2`（`setSupportedProtocols("lsp2")`）。**用 Java 实现前，请先把上面的函数对照 `vectors.json` 跑一遍**：要求签名逐字节一致，所有反例都被拒绝。
+接入 Spring WebSocket 时，在 `HandshakeInterceptor` 中验证令牌和 `Origin`，并在 `DefaultHandshakeHandler` 中选择子协议 `lmbp`（`setSupportedProtocols("lmbp")`）。**用 Java 实现前，请先把上面的函数对照 `vectors.json` 跑一遍**：要求签名逐字节一致，所有反例都被拒绝。
 
 ---
 
 ## 4.6 扩展：断线续传、流量控制、tools/多模态、端到端加密
 
-规范见 protocol-v2.md §14–§17；测试向量 `e2ee`、`flow`、`resume` 三节和 `valid_frames` 中的扩展帧覆盖全部密码学与判定细节。
+规范见 lmbp-spec.md §14–§17；测试向量 `e2ee`、`flow`、`resume` 三节和 `valid_frames` 中的扩展帧覆盖全部密码学与判定细节。
 
 ### JWE / HPKE / X25519 推荐库
 
 | 语言 | X25519 + AES-GCM（直接实现，推荐） | JOSE 库（可选） | 状态 |
 |---|---|---|---|
-| Python | `cryptography`（`X25519PrivateKey`、`AESGCM`） | `joserfc`、`jwcrypto` | 已运行：`spec/examples/python/lsp2_ext.py` |
-| Node.js | `node:crypto`（`diffieHellman`、`aes-256-gcm`，Node ≥ 18） | `jose`（panva）`compactDecrypt` 并限定 `keyManagementAlgorithms:['ECDH-ES']` | 已运行：`spec/examples/node/lsp2_ext.mjs` |
+| Python | `cryptography`（`X25519PrivateKey`、`AESGCM`） | `joserfc`、`jwcrypto` | 已运行：`spec/examples/python/lmbp_ext.py` |
+| Node.js | `node:crypto`（`diffieHellman`、`aes-256-gcm`，Node ≥ 18） | `jose`（panva）`compactDecrypt` 并限定 `keyManagementAlgorithms:['ECDH-ES']` | 已运行：`spec/examples/node/lmbp_ext.mjs` |
 | Rust | `x25519-dalek`（`static_secrets`）+ `aes-gcm` + `sha2` | `josekit` | 已运行：`spec/examples/rust/src/ext.rs` |
-| Go | `crypto/ecdh`、`crypto/aes`+`cipher.NewGCM`（标准库） | `go-jose/v4` | 参考实现 `internal/lsp2/e2ee.go` |
+| Go | `crypto/ecdh`、`crypto/aes`+`cipher.NewGCM`（标准库） | `go-jose/v4` | 参考实现 `internal/lmbp/e2ee.go` |
 | Java | JDK 11+ `KeyAgreement("X25519")`、`Cipher("AES/GCM/NoPadding")` | Nimbus JOSE+JWT（`X25519Decrypter`，需 Tink） | 未编写示例 |
 
 HPKE（RFC 9180）在设计上更现代，但 2026 年各语言 JOSE 生态对 JOSE-HPKE 草案支持不一，故本协议选用 RFC 7518 ECDH-ES + A256GCM：Concat KDF 只是一轮 SHA-256（`00000001 ‖ Z ‖ len("A256GCM") ‖ "A256GCM" ‖ 0 ‖ 0 ‖ 00000100`），二十行内即可手写并用向量 `concat_kdf_input_hex`/`cek_b64url` 自检。
@@ -339,19 +339,19 @@ HPKE（RFC 9180）在设计上更现代，但 2026 年各语言 JOSE 生态对 J
 6. 在到期前通过 `session.token` 续期；
 7. 断线后按指数退避重连；收到 `invalid_grant` 后停止，提示用户重新配对。
 
-Go 设备端参考实现见 `internal/lsp2/client`。
+Go 设备端参考实现见 `internal/lmbp/client`。
 
 
 ## 网关身份绑定与配对同意（§18–§19）对接清单
 
 **网关（任何语言）**
 1. 配置 issuer = 对外 https origin（例如 `https://gw.example.com`），不要用主机名推导。
-2. 访问令牌：`iss = issuer`，`aud = issuer + "/tenants/" + tenant`；验证时两项都要比对。设备断言的 `aud = issuer + "/v2/token"`。
-3. 提供 `GET /.well-known/lsp2-gateway`；带 `?tenant=` 时用 JWKS 中的 Ed25519 密钥签 `signed_metadata`（`typ: lsp2-metadata+jwt`，`kid` = RFC 7638 指纹），载荷是除 `signed_metadata` 外的全部字段，`exp - iat ≤ 24h`。结构见 `spec/schemas/gateway-metadata.json`。
+2. 访问令牌：`iss = issuer`，`aud = issuer + "/tenants/" + tenant`；验证时两项都要比对。设备断言的 `aud = issuer + "/lmbp/v1/token"`。
+3. 提供 `GET /.well-known/lmbp-gateway`；带 `?tenant=` 时用 JWKS 中的 Ed25519 密钥签 `signed_metadata`（`typ: lmbp-metadata+jwt`，`kid` = RFC 7638 指纹），载荷是除 `signed_metadata` 外的全部字段，`exp - iat ≤ 24h`。结构见 `spec/schemas/gateway-metadata.json`。
 4. 令牌响应带 `issuer`。
 
 **设备（桌面端）**
-1. 入口是深链接 `lsp2://pair?v=2&gateway=…&tenant=…`，或 SaaS 地址 → `/.well-known/lsp-connector`。
+1. 入口是深链接 `lmbp://pair?v=1&gateway=…&tenant=…`，或 SaaS 地址 → `/.well-known/lsp-connector`。
 2. 拉取元数据和 JWKS（必须同源），校验签名、issuer、tenant、audience、有效期；失败就不显示同意页。
 3. 同意页显示 `saas.*`、网关 origin、请求的模型和作用域、密钥指纹。用户拒绝时不发任何请求，返回 `CONSENT_DENIED`。
 4. 用户同意后才调用 `device_authorize`。令牌响应的 `gateway_key` 必须等于签名元数据的密钥。

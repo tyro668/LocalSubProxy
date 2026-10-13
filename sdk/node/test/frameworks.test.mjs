@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import Fastify from 'fastify';
 import express from 'express';
-import { LSP2Server } from '../dist/index.js';
+import { LMBPServer } from '../dist/index.js';
 import { pairAndConnect } from '../test-support/simdevice.mjs';
 
 const KEY = 'k'.repeat(40);
@@ -12,7 +12,7 @@ const chat = (base, body, path = '/v1/chat/completions') => fetch(base + path, {
   headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 test('fastify plugin: protocol routes, WebSocket upgrade and chat next to app routes', async () => {
-  const lsp = new LSP2Server({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
+  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
   const app = Fastify();
   await app.register(lsp.fastifyPlugin);
   app.get('/app/hello', async () => ({ hi: true }));
@@ -31,7 +31,7 @@ test('fastify plugin: protocol routes, WebSocket upgrade and chat next to app ro
 
 test('express: middleware before and after express.json()', async () => {
   for (const order of ['before', 'after']) {
-    const lsp = new LSP2Server({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
+    const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
     const app = express();
     if (order === 'after') app.use(express.json());
     app.use(lsp.middleware());

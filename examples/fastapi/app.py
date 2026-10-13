@@ -1,10 +1,10 @@
-"""FastAPI SaaS example: the lsp2-server SDK mounted next to your own routes.
+"""FastAPI SaaS example: the lmbp-server SDK mounted next to your own routes.
 
 What the business code does (and nothing else):
   1. pairing   GET /app/pair → link + QR; POST /app/pair/approve {user_code}; devices list/revoke
   2. LLM calls the official ``openai`` / ``anthropic`` clients with base_url pointed at this
                server, or the SDK's in-process client.
-Everything protocol-related (/v2/*, /.well-known/*, /v1/*) is served by LSP2Middleware.
+Everything protocol-related (/lmbp/v1/*, /.well-known/*, /v1/*) is served by LMBPMiddleware.
 
     TENANT_API_KEY=$(openssl rand -hex 24) uvicorn app:app --port 8000
 """
@@ -18,19 +18,19 @@ import openai
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
-from lsp2_server import LSP2Middleware, LSP2Server, PairingError, SQLiteStore, TenantConfig
+from lmbp_server import LMBPMiddleware, LMBPServer, PairingError, SQLiteStore, TenantConfig
 
 PORT = int(os.environ.get("PORT", "8000"))
 TENANT = os.environ.get("TENANT_ID", "acme")
 API_KEY = os.environ["TENANT_API_KEY"]  # >= 32 chars; server-side secret
 PROFILE = (json.load(open(os.environ["TENANT_PROFILE_FILE"]))[TENANT] if os.environ.get("TENANT_PROFILE_FILE")
-           else {"display_name": "Acme Chat (FastAPI)", "requested_scopes": ["lsp2.chat", "lsp2.tools", "lsp2.vision"]})
+           else {"display_name": "Acme Chat (FastAPI)", "requested_scopes": ["lmbp.chat", "lmbp.tools", "lmbp.vision"]})
 
-lsp = LSP2Server([TenantConfig(TENANT, API_KEY, PROFILE)], issuer=os.environ.get("LSP2_ISSUER", ""),
-                 store=SQLiteStore(os.environ["LSP2_DB"]) if os.environ.get("LSP2_DB") else None)
+lsp = LMBPServer([TenantConfig(TENANT, API_KEY, PROFILE)], issuer=os.environ.get("LMBP_ISSUER", ""),
+                 store=SQLiteStore(os.environ["LMBP_DB"]) if os.environ.get("LMBP_DB") else None)
 
 app = FastAPI(title="Acme Chat")
-app.add_middleware(LSP2Middleware, server=lsp)  # protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages
+app.add_middleware(LMBPMiddleware, server=lsp)  # protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages
 
 
 def user(x_demo_user: str | None) -> str:  # your own login decides who the end user is
@@ -40,7 +40,7 @@ def user(x_demo_user: str | None) -> str:  # your own login decides who the end 
 # ---- 1. pairing ----
 @app.get("/app/pair")
 def pair(request: Request):
-    info = lsp.pairing.create(TENANT, os.environ.get("LSP2_ISSUER") or str(request.base_url).rstrip("/"))
+    info = lsp.pairing.create(TENANT, os.environ.get("LMBP_ISSUER") or str(request.base_url).rstrip("/"))
     return {"link": info.link, "qr_svg": info.qr_svg}
 
 

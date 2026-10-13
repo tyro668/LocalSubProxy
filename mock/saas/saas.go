@@ -53,7 +53,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/logout", s.logout)
 	m.HandleFunc("/", s.auth(s.home))
 	m.HandleFunc("/link", s.auth(s.link))
-	m.HandleFunc("/api/devices", s.auth(s.proxy("GET", "/v2/tenant/devices")))
+	m.HandleFunc("/api/devices", s.auth(s.proxy("GET", "/lmbp/v1/tenant/devices")))
 	m.HandleFunc("/api/models", s.auth(s.proxy("GET", "/v1/models")))
 	m.HandleFunc("/api/chat", s.auth(s.proxy("POST", "/v1/chat/completions")))
 	m.HandleFunc("/api/chat/e2ee", s.auth(s.e2eeChat))
@@ -64,7 +64,7 @@ func (s *Server) Handler() http.Handler {
 // discovery is public and contains no secrets and no codes.
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"gateway_url": s.cfg.PublicGatewayURL, "tenant": s.cfg.TenantID, "link_url": strings.TrimRight(s.cfg.PublicURL, "/") + "/link", "protocol": "lsp2"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"gateway_url": s.cfg.PublicGatewayURL, "tenant": s.cfg.TenantID, "link_url": strings.TrimRight(s.cfg.PublicURL, "/") + "/link", "protocol": "lmbp"})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +194,7 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, user string) {
 	if r.Method == http.MethodPost {
 		jkt := r.FormValue("jkt")
 		b, _ := json.Marshal(map[string]any{"user_code": r.FormValue("user_code"), "deny": r.FormValue("deny") == "1", "jkt": jkt})
-		resp, err := s.gw(r, "POST", "/v2/tenant/device-approvals", strings.NewReader(string(b)), user)
+		resp, err := s.gw(r, "POST", "/lmbp/v1/tenant/device-approvals", strings.NewReader(string(b)), user)
 		if err != nil {
 			data["Error"] = "网关不可达"
 		} else {
@@ -232,7 +232,7 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request, user string) {
 		http.Error(w, "bad request", 400)
 		return
 	}
-	s.proxy("POST", "/v2/tenant/devices/"+id+"/revoke")(w, r, user)
+	s.proxy("POST", "/lmbp/v1/tenant/devices/"+id+"/revoke")(w, r, user)
 }
 
 func (s *Server) home(w http.ResponseWriter, r *http.Request, user string) {

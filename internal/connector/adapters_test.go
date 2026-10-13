@@ -11,22 +11,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 // Adapter mappings for tools and multimodal input against fake providers.
 
-var weather = []lsp2.Tool{{Type: "function", Function: lsp2.FunctionDef{Name: "get_weather", Parameters: json.RawMessage(`{"type":"object"}`)}}}
+var weather = []lmbp.Tool{{Type: "function", Function: lmbp.FunctionDef{Name: "get_weather", Parameters: json.RawMessage(`{"type":"object"}`)}}}
 
-func imageMsgs(url string) []lsp2.Message {
-	return []lsp2.Message{{Role: "system", Content: lsp2.Text("be brief")}, {Role: "user", Content: lsp2.Content{Parts: []lsp2.ContentPart{{Type: "text", Text: "what?"}, {Type: "image_url", ImageURL: &lsp2.ImageURL{URL: url}}}}}}
+func imageMsgs(url string) []lmbp.Message {
+	return []lmbp.Message{{Role: "system", Content: lmbp.Text("be brief")}, {Role: "user", Content: lmbp.Content{Parts: []lmbp.ContentPart{{Type: "text", Text: "what?"}, {Type: "image_url", ImageURL: &lmbp.ImageURL{URL: url}}}}}}
 }
 
-func toolRound() []lsp2.Message {
-	return []lsp2.Message{
-		{Role: "user", Content: lsp2.Text("weather?")},
-		{Role: "assistant", Content: lsp2.Content{Null: true}, ToolCalls: []lsp2.ToolCall{{ID: "call_1", Type: "function", Function: lsp2.FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`}}}},
-		{Role: "tool", ToolCallID: "call_1", Content: lsp2.Text("18C")},
+func toolRound() []lmbp.Message {
+	return []lmbp.Message{
+		{Role: "user", Content: lmbp.Text("weather?")},
+		{Role: "assistant", Content: lmbp.Content{Null: true}, ToolCalls: []lmbp.ToolCall{{ID: "call_1", Type: "function", Function: lmbp.FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`}}}},
+		{Role: "tool", ToolCallID: "call_1", Content: lmbp.Text("18C")},
 	}
 }
 
@@ -37,7 +37,7 @@ type collected struct {
 	calls int
 }
 
-func (c *collected) emit(d lsp2.TaskDelta) error {
+func (c *collected) emit(d lmbp.TaskDelta) error {
 	c.text.WriteString(d.Text)
 	for _, tc := range d.ToolCalls {
 		if tc.ID != "" {
@@ -59,8 +59,8 @@ func newX(t *testing.T, a AdapterConfig) *Connector {
 	return x
 }
 
-func run(model string, msgs []lsp2.Message, tools []lsp2.Tool) lsp2.TaskRun {
-	return lsp2.TaskRun{TaskID: lsp2.RandomID("t_"), Model: model, Messages: msgs, Tools: tools}
+func run(model string, msgs []lmbp.Message, tools []lmbp.Tool) lmbp.TaskRun {
+	return lmbp.TaskRun{TaskID: lmbp.RandomID("t_"), Model: model, Messages: msgs, Tools: tools}
 }
 
 func TestAnthropicMapping(t *testing.T) {
@@ -87,7 +87,7 @@ func TestAnthropicMapping(t *testing.T) {
 	x := newX(t, AdapterConfig{ID: "an", Type: "anthropic_compatible", BaseURL: srv.URL, APIKey: "k", Models: []string{"claude"}})
 	ctx := context.Background()
 	var c collected
-	done, fail := x.Execute(ctx, run("an/claude", []lsp2.Message{{Role: "user", Content: lsp2.Text("weather?")}}, weather), c.emit)
+	done, fail := x.Execute(ctx, run("an/claude", []lmbp.Message{{Role: "user", Content: lmbp.Text("weather?")}}, weather), c.emit)
 	if fail != nil || done.FinishReason != "tool_calls" || c.name != "get_weather" || c.args.String() != `{"city":"Paris"}` || done.Usage.PromptTokens != 12 {
 		t.Fatalf("anthropic tool_use: %v %v %q %q", done, fail, c.name, c.args.String())
 	}
@@ -135,7 +135,7 @@ func TestOllamaMapping(t *testing.T) {
 	x := newX(t, AdapterConfig{ID: "ol", Type: "ollama_http", BaseURL: srv.URL, Models: []string{"llava"}, Capabilities: []string{"tools", "vision"}})
 	ctx := context.Background()
 	var c collected
-	done, fail := x.Execute(ctx, run("ol/llava", []lsp2.Message{{Role: "user", Content: lsp2.Text("weather?")}}, weather), c.emit)
+	done, fail := x.Execute(ctx, run("ol/llava", []lmbp.Message{{Role: "user", Content: lmbp.Text("weather?")}}, weather), c.emit)
 	if fail != nil || done.FinishReason != "tool_calls" || c.name != "get_weather" || c.args.String() != `{"city":"Paris"}` || c.calls != 1 {
 		t.Fatalf("ollama tool call: %v %v %q", done, fail, c.args.String())
 	}
@@ -152,7 +152,7 @@ func TestOllamaMapping(t *testing.T) {
 	if imgs := got["messages"].([]any)[1].(map[string]any)["images"].([]any); imgs[0] != "iVBORw0KGgo=" {
 		t.Fatalf("ollama images: %v", got)
 	}
-	if _, fail := x.Execute(ctx, run("ol/llava", imageMsgs("https://example.com/a.png"), nil), c.emit); fail == nil || fail.Code != lsp2.ErrUnsupported {
+	if _, fail := x.Execute(ctx, run("ol/llava", imageMsgs("https://example.com/a.png"), nil), c.emit); fail == nil || fail.Code != lmbp.ErrUnsupported {
 		t.Fatalf("https image on ollama: %v", fail)
 	}
 }
@@ -183,7 +183,7 @@ func TestOpenAIPassthroughAndCapabilities(t *testing.T) {
 	}
 	// Explicit flags restrict capabilities.
 	y := newX(t, AdapterConfig{ID: "oa", Type: "openai_compatible", BaseURL: srv.URL, APIKey: "k", Models: []string{"gpt"}, Capabilities: []string{"tools"}})
-	if _, fail := y.Execute(ctx, run("oa/gpt", imageMsgs("https://example.com/cat.png"), nil), c.emit); fail == nil || fail.Code != lsp2.ErrUnsupported {
+	if _, fail := y.Execute(ctx, run("oa/gpt", imageMsgs("https://example.com/cat.png"), nil), c.emit); fail == nil || fail.Code != lmbp.ErrUnsupported {
 		t.Fatalf("vision without flag: %v", fail)
 	}
 	if caps := y.ModelCapabilities()["oa/gpt"]; len(caps) != 1 || caps[0] != "tools" {

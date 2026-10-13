@@ -1,9 +1,9 @@
-// Official openai / @anthropic-ai/sdk Node libraries, unchanged, against an LSP2 gateway.
-// Env: LSP2_BASE_URL, LSP2_API_KEY, LSP2_END_USER, LSP2_MODEL.
+// Official openai / @anthropic-ai/sdk Node libraries, unchanged, against an LMBP gateway.
+// Env: LMBP_BASE_URL, LMBP_API_KEY, LMBP_END_USER, LMBP_MODEL.
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 
-const { LSP2_BASE_URL: base, LSP2_API_KEY: key, LSP2_END_USER: user, LSP2_MODEL: model } = process.env;
+const { LMBP_BASE_URL: base, LMBP_API_KEY: key, LMBP_END_USER: user, LMBP_MODEL: model } = process.env;
 const hdr = { 'X-End-User': user };
 const ok = (name, cond, detail = '') => {
   console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : `: ${JSON.stringify(detail)}`));

@@ -1,5 +1,5 @@
 use ed25519_dalek::{Signer, SigningKey};
-use lsp2_skeleton::*;
+use lmbp_skeleton::*;
 use serde_json::Value;
 
 fn load() -> Value {

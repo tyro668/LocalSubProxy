@@ -17,8 +17,8 @@ import (
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
 	"github.com/tyro668/LocalSubProxy/mock/web"
 )
 
@@ -65,9 +65,9 @@ func main() {
 		configDir, _ := os.UserConfigDir()
 		localDir := filepath.Join(configDir, "localsubproxy")
 		remoteURL := f.String("remote-url", "", "remote service origin that serves /.well-known/lsp-connector (first run)")
-		pairLink := f.String("pair-link", "", "lsp2://pair?v=2&gateway=...&tenant=... deep link (first run, alternative to -remote-url)")
+		pairLink := f.String("pair-link", "", "lmbp://pair?v=1&gateway=...&tenant=... deep link (first run, alternative to -remote-url)")
 		yes := f.Bool("yes", false, "approve the pairing consent without prompting (automation only)")
-		identity := f.String("identity", filepath.Join(localDir, "lsp2-identity.json"), "device identity file (0600; holds the device private keys)")
+		identity := f.String("identity", filepath.Join(localDir, "lmbp-identity.json"), "device identity file (0600; holds the device private keys)")
 		adapter := f.String("adapter-id", "", "optional initial adapter ID")
 		adapterType := f.String("adapter-type", "ollama_http", "ollama_http or codex_app_server")
 		ollama := f.String("ollama-url", "http://127.0.0.1:11434", "locally approved Ollama base URL")
@@ -130,7 +130,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: localsubproxy server [flags] | connector [flags] | codex-models [flags] | usage [flags] | audit [flags]")
 }
 
-// runConnector pairs (first run) and then serves tasks over lsp2 using the same core as the desktop app.
+// runConnector pairs (first run) and then serves tasks over lmbp using the same core as the desktop app.
 func runConnector(ctx context.Context, remoteURL, pairLink string, yes bool, identityFile string, cfg connector.Config) error {
 	id, ok, err := client.LoadIdentityFile(identityFile)
 	if err != nil {

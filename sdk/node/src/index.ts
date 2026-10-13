@@ -1,5 +1,5 @@
 /**
- * lsp2-server: let your SaaS use models that run on your users' own machines.
+ * lmbp-server: let your SaaS use models that run on your users' own machines.
  *
  * Business code only does two things:
  *   1. pairing: show a pair link / QR, then approve the user code the user reads off the desktop app;
@@ -14,7 +14,7 @@ import type { AddressInfo } from 'node:net';
 // @ts-ignore engine is plain JS
 import { Gateway } from './engine/gateway.js';
 // @ts-ignore
-import * as L from './engine/lsp2.js';
+import * as L from './engine/lmbp.js';
 import { MemoryStore, SqliteStore, type Store } from './store.js';
 import { InProcessClient } from './client.js';
 
@@ -24,12 +24,12 @@ export * as anthropic from './anthropic.js';
 export type * from './types.js';
 import type { TenantConfig, PairingInfo, DeviceInfo, ApproveResult, PendingPairing } from './types.js';
 
-export interface LSP2ServerOptions {
+export interface LMBPServerOptions {
   /** Tenants (SaaS products) served by this gateway. Usually one. */
   tenants: TenantConfig[];
   /** Public https origin of the gateway (iss of every token). Empty = dev mode (derived from Host). */
   issuer?: string;
-  /** Persistence; defaults to MemoryStore. Use `new SqliteStore('lsp2.db')` to survive restarts. */
+  /** Persistence; defaults to MemoryStore. Use `new SqliteStore('lmbp.db')` to survive restarts. */
   store?: Store;
   /** 32-byte Ed25519 seed. Default: loaded from the store, generated on first start. */
   signingSeed?: Buffer;
@@ -45,13 +45,13 @@ export interface LSP2ServerOptions {
 type Next = (err?: unknown) => void;
 const qrcode = createRequire(import.meta.url)('../vendor/qrcode.cjs');
 
-export class LSP2Server {
+export class LMBPServer {
   /** The protocol engine (advanced use). */
   readonly engine: any;
   readonly store: Store;
   private server?: http.Server;
 
-  constructor(opts: LSP2ServerOptions) {
+  constructor(opts: LMBPServerOptions) {
     this.store = opts.store ?? new MemoryStore();
     this.engine = new Gateway({ issuer: opts.issuer ?? '', store: this.store, seed: opts.signingSeed, maxConc: opts.maxConcurrency ?? 16,
       webDir: opts.chatUIDir ?? '', log: opts.log ?? console.error, ...(opts.tuning ?? {}) });
@@ -90,10 +90,10 @@ export class LSP2Server {
     app.addHook('onReady', async () => { this.attach(app.server); });
   }, { [Symbol.for('skip-override')]: true });
 
-  /** Route WebSocket upgrades for /v2/connect on an existing server (express/fastify/http). */
+  /** Route WebSocket upgrades for /lmbp/v1/connect on an existing server (express/fastify/http). */
   attach(server: http.Server): this {
     server.on('upgrade', (req, sock, head) => {
-      if (!req.url?.startsWith('/v2/connect')) return;
+      if (!req.url?.startsWith('/lmbp/v1/connect')) return;
       this.engine.upgrade(req, sock, head).catch(() => sock.destroy());
     });
     return this;
@@ -114,7 +114,7 @@ export class LSP2Server {
   }
 
   private fail(res: http.ServerResponse, e: unknown) {
-    this.engine.cfg.log('lsp2 handler error', e);
+    this.engine.cfg.log('lmbp handler error', e);
     if (!res.headersSent) { res.writeHead(500, { 'Content-Type': 'application/problem+json' }); res.end('{"title":"INTERNAL","status":500}'); } else res.end();
   }
 
@@ -132,7 +132,7 @@ export class LSP2Server {
   /** Generate a new 32-byte Ed25519 seed (store it in your secret manager). */
   static generateSigningSeed(): Buffer { return crypto.randomBytes(32); }
   /** Generate a tenant API key (keep it server-side only). */
-  static generateTenantKey(): string { return 'lsp2_' + crypto.randomBytes(24).toString('base64url'); }
+  static generateTenantKey(): string { return 'lmbp_' + crypto.randomBytes(24).toString('base64url'); }
 
   // ---------------- pairing ----------------
 
@@ -140,8 +140,8 @@ export class LSP2Server {
     /** §19.4 deep link for the desktop app. issuer defaults to the configured one. */
     link: (tenant: string, issuer?: string): string => {
       const iss = issuer ?? this.engine.cfg.issuer;
-      if (!iss) throw new Error('pairing.link needs an issuer (configure LSP2ServerOptions.issuer or pass one)');
-      return `lsp2://pair?v=2&gateway=${encodeURIComponent(L.origin(iss))}&tenant=${encodeURIComponent(tenant)}`;
+      if (!iss) throw new Error('pairing.link needs an issuer (configure LMBPServerOptions.issuer or pass one)');
+      return `lmbp://pair?v=1&gateway=${encodeURIComponent(L.origin(iss))}&tenant=${encodeURIComponent(tenant)}`;
     },
     /** Pair link plus its QR code as an SVG string and a PNG-free data: URL (GIF). */
     create: (tenant: string, issuer?: string): PairingInfo => {
@@ -196,8 +196,8 @@ function normCode(s: string): string {
 }
 
 /** Paths the SDK serves (for frameworks that need explicit routes). */
-export const PATHS = ['/healthz', '/.well-known/jwks.json', '/.well-known/lsp2-gateway', '/v2/device/authorize', '/v2/token', '/v2/connect',
-  '/v2/tenant/device-approvals', '/v2/tenant/devices', '/v2/tenant/devices/:id/revoke', '/v2/tenant/tasks/:id/events',
+export const PATHS = ['/healthz', '/.well-known/jwks.json', '/.well-known/lmbp-gateway', '/lmbp/v1/device/authorize', '/lmbp/v1/token', '/lmbp/v1/connect',
+  '/lmbp/v1/tenant/device-approvals', '/lmbp/v1/tenant/devices', '/lmbp/v1/tenant/devices/:id/revoke', '/lmbp/v1/tenant/tasks/:id/events',
   '/v1/models', '/v1/chat/completions', '/v1/messages'];
 
-export function createLSP2Server(opts: LSP2ServerOptions): LSP2Server { return new LSP2Server(opts); }
+export function createLMBPServer(opts: LMBPServerOptions): LMBPServer { return new LMBPServer(opts); }

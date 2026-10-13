@@ -1,4 +1,4 @@
-//! lsp2 extensions: E2EE (JWE ECDH-ES/X25519/A256GCM, sealed result frames,
+//! lmbp extensions: E2EE (JWE ECDH-ES/X25519/A256GCM, sealed result frames,
 //! key statements) and flow-control / resume bookkeeping.
 //! Crates: x25519-dalek (static_secrets), aes-gcm, sha2 — all RustCrypto/dalek.
 //! (josekit can also open the JWE; pin alg/enc and reject `zip` yourself.)
@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-pub const TYP_E2EE_KEY: &str = "lsp2-e2ee-key+jwt";
-pub const CTY_REQUEST: &str = "lsp2-request+json";
+pub const TYP_E2EE_KEY: &str = "lmbp-e2ee-key+jwt";
+pub const CTY_REQUEST: &str = "lmbp-request+json";
 
 pub fn x25519_thumbprint(pub_key: &[u8]) -> String {
     b64u(&Sha256::digest(format!(r#"{{"crv":"X25519","kty":"OKP","x":"{}"}}"#, b64u(pub_key))))
@@ -74,7 +74,7 @@ pub fn open_jwe(private: &[u8; 32], jwe: &str) -> Result<(Value, Vec<u8>)> {
 }
 
 pub fn chunk_nonce(seq: u64) -> [u8; 12] { let mut n = [0u8; 12]; n[4..].copy_from_slice(&seq.to_be_bytes()); n }
-pub fn chunk_aad(rid: &str, typ: &str, seq: u64) -> String { format!("lsp2-e2ee/v1|{rid}|{typ}|{seq}") }
+pub fn chunk_aad(rid: &str, typ: &str, seq: u64) -> String { format!("lmbp-e2ee/v1|{rid}|{typ}|{seq}") }
 
 pub fn seal_chunk(key: &[u8], rid: &str, typ: &str, seq: u64, plaintext: &[u8]) -> String {
     let aad = chunk_aad(rid, typ, seq);

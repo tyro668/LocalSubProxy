@@ -1,6 +1,6 @@
 /**
  * Pluggable persistence for the gateway. Mirrors the Go `store.Store`
- * (internal/lsp2/store): pairings, devices, idempotency keys, tasks and their
+ * (internal/lmbp/store): pairings, devices, idempotency keys, tasks and their
  * events, and secrets such as the gateway signing seed. The interface is
  * synchronous so the engine can call it inline; implement it over any
  * embedded or synchronous database. Live WebSocket sessions stay in-process,
@@ -135,52 +135,52 @@ export class SqliteStore implements Store {
       this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000');
     } else this.db = pathOrDb;
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS lsp2_secrets (name TEXT PRIMARY KEY, value BLOB NOT NULL);
-      CREATE TABLE IF NOT EXISTS lsp2_device_auths (code_hash TEXT PRIMARY KEY, tenant TEXT NOT NULL, user_code TEXT NOT NULL, doc TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS lsp2_device_auths_code ON lsp2_device_auths (tenant, user_code);
-      CREATE TABLE IF NOT EXISTS lsp2_devices (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, owner TEXT NOT NULL, doc TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS lsp2_devices_owner ON lsp2_devices (tenant, owner);
-      CREATE TABLE IF NOT EXISTS lsp2_idempotency (key TEXT PRIMARY KEY, doc TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS lsp2_tasks (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS lsp2_events (task_id TEXT NOT NULL, seq INTEGER NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (task_id, seq));`);
+      CREATE TABLE IF NOT EXISTS lmbp_secrets (name TEXT PRIMARY KEY, value BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS lmbp_device_auths (code_hash TEXT PRIMARY KEY, tenant TEXT NOT NULL, user_code TEXT NOT NULL, doc TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS lmbp_device_auths_code ON lmbp_device_auths (tenant, user_code);
+      CREATE TABLE IF NOT EXISTS lmbp_devices (id TEXT PRIMARY KEY, tenant TEXT NOT NULL, owner TEXT NOT NULL, doc TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS lmbp_devices_owner ON lmbp_devices (tenant, owner);
+      CREATE TABLE IF NOT EXISTS lmbp_idempotency (key TEXT PRIMARY KEY, doc TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS lmbp_tasks (id TEXT PRIMARY KEY, doc TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS lmbp_events (task_id TEXT NOT NULL, seq INTEGER NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (task_id, seq));`);
   }
   private one<T>(sql: string, ...a: unknown[]): T | undefined {
     const r = this.db.prepare(sql).get(...a);
     return r ? dec<T>(r.doc) : undefined;
   }
   getSecret(n: string) {
-    const r = this.db.prepare('SELECT value FROM lsp2_secrets WHERE name = ?').get(n);
+    const r = this.db.prepare('SELECT value FROM lmbp_secrets WHERE name = ?').get(n);
     return r ? Buffer.from(r.value) : undefined;
   }
-  putSecret(n: string, v: Buffer) { this.db.prepare('INSERT OR REPLACE INTO lsp2_secrets (name, value) VALUES (?, ?)').run(n, v); }
+  putSecret(n: string, v: Buffer) { this.db.prepare('INSERT OR REPLACE INTO lmbp_secrets (name, value) VALUES (?, ?)').run(n, v); }
   putDeviceAuth(a: DeviceAuth) {
-    this.db.prepare('INSERT OR REPLACE INTO lsp2_device_auths (code_hash, tenant, user_code, doc) VALUES (?, ?, ?, ?)').run(a.codeHash, a.tenant, a.userCode, enc(a));
+    this.db.prepare('INSERT OR REPLACE INTO lmbp_device_auths (code_hash, tenant, user_code, doc) VALUES (?, ?, ?, ?)').run(a.codeHash, a.tenant, a.userCode, enc(a));
   }
-  getDeviceAuth(h: string) { return this.one<DeviceAuth>('SELECT doc FROM lsp2_device_auths WHERE code_hash = ?', h); }
+  getDeviceAuth(h: string) { return this.one<DeviceAuth>('SELECT doc FROM lmbp_device_auths WHERE code_hash = ?', h); }
   deviceAuthByUserCode(t: string, c: string) {
-    return this.one<DeviceAuth>('SELECT doc FROM lsp2_device_auths WHERE tenant = ? AND user_code = ? ORDER BY rowid DESC LIMIT 1', t, c);
+    return this.one<DeviceAuth>('SELECT doc FROM lmbp_device_auths WHERE tenant = ? AND user_code = ? ORDER BY rowid DESC LIMIT 1', t, c);
   }
   putDevice(d: Device) {
-    this.db.prepare('INSERT OR REPLACE INTO lsp2_devices (id, tenant, owner, doc) VALUES (?, ?, ?, ?)').run(d.id, d.tenant, d.owner, enc({ ...d, created: d.created.toISOString() }));
+    this.db.prepare('INSERT OR REPLACE INTO lmbp_devices (id, tenant, owner, doc) VALUES (?, ?, ?, ?)').run(d.id, d.tenant, d.owner, enc({ ...d, created: d.created.toISOString() }));
   }
   private dev(doc: string): Device { const d = dec<any>(doc); d.created = new Date(d.created); return d; }
   getDevice(id: string) {
-    const r = this.db.prepare('SELECT doc FROM lsp2_devices WHERE id = ?').get(id);
+    const r = this.db.prepare('SELECT doc FROM lmbp_devices WHERE id = ?').get(id);
     return r ? this.dev(r.doc) : undefined;
   }
   listDevices(t: string, o?: string) {
-    const rows = o === undefined ? this.db.prepare('SELECT doc FROM lsp2_devices WHERE tenant = ? ORDER BY rowid').all(t)
-      : this.db.prepare('SELECT doc FROM lsp2_devices WHERE tenant = ? AND owner = ? ORDER BY rowid').all(t, o);
+    const rows = o === undefined ? this.db.prepare('SELECT doc FROM lmbp_devices WHERE tenant = ? ORDER BY rowid').all(t)
+      : this.db.prepare('SELECT doc FROM lmbp_devices WHERE tenant = ? AND owner = ? ORDER BY rowid').all(t, o);
     return rows.map((r) => this.dev(r.doc));
   }
-  getIdempotency(k: string) { return this.one<Idempotency>('SELECT doc FROM lsp2_idempotency WHERE key = ?', k); }
-  putIdempotency(k: string, r: Idempotency) { this.db.prepare('INSERT OR IGNORE INTO lsp2_idempotency (key, doc) VALUES (?, ?)').run(k, enc(r)); }
-  putTask(t: TaskRecord) { this.db.prepare('INSERT OR REPLACE INTO lsp2_tasks (id, doc) VALUES (?, ?)').run(t.id, enc({ ...t, events: [] })); }
+  getIdempotency(k: string) { return this.one<Idempotency>('SELECT doc FROM lmbp_idempotency WHERE key = ?', k); }
+  putIdempotency(k: string, r: Idempotency) { this.db.prepare('INSERT OR IGNORE INTO lmbp_idempotency (key, doc) VALUES (?, ?)').run(k, enc(r)); }
+  putTask(t: TaskRecord) { this.db.prepare('INSERT OR REPLACE INTO lmbp_tasks (id, doc) VALUES (?, ?)').run(t.id, enc({ ...t, events: [] })); }
   getTask(id: string) {
-    const t = this.one<TaskRecord>('SELECT doc FROM lsp2_tasks WHERE id = ?', id);
-    if (t) t.events = this.db.prepare('SELECT doc FROM lsp2_events WHERE task_id = ? ORDER BY seq').all(id).map((r) => dec<TaskEvent>(r.doc));
+    const t = this.one<TaskRecord>('SELECT doc FROM lmbp_tasks WHERE id = ?', id);
+    if (t) t.events = this.db.prepare('SELECT doc FROM lmbp_events WHERE task_id = ? ORDER BY seq').all(id).map((r) => dec<TaskEvent>(r.doc));
     return t;
   }
-  appendEvent(id: string, ev: TaskEvent) { this.db.prepare('INSERT OR IGNORE INTO lsp2_events (task_id, seq, doc) VALUES (?, ?, ?)').run(id, ev.seq, enc(ev)); }
+  appendEvent(id: string, ev: TaskEvent) { this.db.prepare('INSERT OR IGNORE INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)').run(id, ev.seq, enc(ev)); }
   close() { this.db.close(); }
 }

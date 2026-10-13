@@ -49,7 +49,7 @@ func (x *Connector) Status() map[string]any {
 			transport = "ws"
 		}
 	}
-	return map[string]any{"protocol": "lsp2", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
+	return map[string]any{"protocol": "lmbp", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
 		"issuer": issuer, "saas_name": saasName, "tenant": tenant, "audit": x.cfg.Audit != nil,
 		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
 		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}

@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
-// Anthropic Messages mapping (docs/protocol-v2.md §11.6):
+// Anthropic Messages mapping (docs/lmbp-spec.md §11.6):
 //   - system messages → top-level "system";
 //   - text parts → {"type":"text"}; image_url data: → {"type":"image","source":{"type":"base64"}},
 //     https → {"type":"image","source":{"type":"url"}};
@@ -24,7 +24,7 @@ import (
 //   - stream: tool_use blocks → tool_call deltas; stop_reason end_turn/tool_use/max_tokens →
 //     stop/tool_calls/length.
 
-func anthropicContent(c lsp2.Content) ([]map[string]any, error) {
+func anthropicContent(c lmbp.Content) ([]map[string]any, error) {
 	if c.Parts == nil {
 		if c.Text == "" {
 			return nil, nil
@@ -49,7 +49,7 @@ func anthropicContent(c lsp2.Content) ([]map[string]any, error) {
 	return out, nil
 }
 
-func anthropicRequest(model string, run lsp2.TaskRun, a AdapterConfig) (map[string]any, error) {
+func anthropicRequest(model string, run lmbp.TaskRun, a AdapterConfig) (map[string]any, error) {
 	var system []string
 	var messages []map[string]any
 	add := func(role string, blocks []map[string]any) {
@@ -124,7 +124,7 @@ func anthropicRequest(model string, run lsp2.TaskRun, a AdapterConfig) (map[stri
 	return payload, nil
 }
 
-func (x *Connector) callAnthropic(ctx context.Context, model string, run lsp2.TaskRun, a AdapterConfig, out *limitedEmitter) (*lsp2.TaskDone, error) {
+func (x *Connector) callAnthropic(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
 	payload, err := anthropicRequest(model, run, a)
 	if err != nil {
 		return nil, err
@@ -181,15 +181,15 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lsp2.Ta
 			case "tool_use":
 				i := idx
 				idx++
-				err = out.delta(lsp2.TaskDelta{ToolCalls: []lsp2.ToolCall{{Index: &i, ID: b.ID, Type: "function", Function: lsp2.FunctionCall{Name: b.Name, Arguments: string(b.Input)}}}})
+				err = out.delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, ID: b.ID, Type: "function", Function: lmbp.FunctionCall{Name: b.Name, Arguments: string(b.Input)}}}})
 			}
 			if err != nil {
 				return nil, err
 			}
 		}
-		return &lsp2.TaskDone{FinishReason: finish(msg.StopReason), Usage: &lsp2.Usage{PromptTokens: msg.Usage.InputTokens, CompletionTokens: msg.Usage.OutputTokens}}, nil
+		return &lmbp.TaskDone{FinishReason: finish(msg.StopReason), Usage: &lmbp.Usage{PromptTokens: msg.Usage.InputTokens, CompletionTokens: msg.Usage.OutputTokens}}, nil
 	}
-	done := &lsp2.TaskDone{FinishReason: "stop", Usage: &lsp2.Usage{}}
+	done := &lmbp.TaskDone{FinishReason: "stop", Usage: &lmbp.Usage{}}
 	toolIndex := map[int]int{} // content block index → tool call index
 	stopped := false
 	sc := bufio.NewScanner(res.Body)
@@ -233,7 +233,7 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lsp2.Ta
 			if ev.ContentBlock.Type == "tool_use" {
 				i := len(toolIndex)
 				toolIndex[ev.Index] = i
-				return out.delta(lsp2.TaskDelta{ToolCalls: []lsp2.ToolCall{{Index: &i, ID: ev.ContentBlock.ID, Type: "function", Function: lsp2.FunctionCall{Name: ev.ContentBlock.Name}}}})
+				return out.delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, ID: ev.ContentBlock.ID, Type: "function", Function: lmbp.FunctionCall{Name: ev.ContentBlock.Name}}}})
 			}
 		case "content_block_delta":
 			switch ev.Delta.Type {
@@ -241,7 +241,7 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lsp2.Ta
 				return out.text(ev.Delta.Text)
 			case "input_json_delta":
 				if i, ok := toolIndex[ev.Index]; ok && ev.Delta.PartialJSON != "" {
-					return out.delta(lsp2.TaskDelta{ToolCalls: []lsp2.ToolCall{{Index: &i, Function: lsp2.FunctionCall{Arguments: ev.Delta.PartialJSON}}}})
+					return out.delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, Function: lmbp.FunctionCall{Arguments: ev.Delta.PartialJSON}}}})
 				}
 			}
 		case "message_delta":

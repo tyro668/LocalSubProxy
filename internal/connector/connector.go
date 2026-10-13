@@ -1,7 +1,7 @@
 // Package connector is the desktop core: it manages local model adapters
 // (Ollama, OpenAI-compatible, Anthropic-compatible, Codex app-server) and
-// serves them to a paired remote service over protocol v2 (lsp2) as an
-// lsp2 client Executor.
+// serves them to a paired remote service over LMBP (Local Model Bridge Protocol) as an
+// lmbp client Executor.
 package connector
 
 import (
@@ -21,14 +21,14 @@ import (
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 )
 
 type Config struct {
 	// RemoteURL is the paired remote service (health is shown in the UI).
 	RemoteURL string
-	// Identity is the paired lsp2 device identity; nil means "not paired"
+	// Identity is the paired lmbp device identity; nil means "not paired"
 	// (adapters can still be managed and tested).
 	Identity *client.Identity
 	// DataKey is the hex AES-256 key that seals the adapter file.
@@ -93,7 +93,7 @@ type Connector struct {
 
 func New(cfg Config) (*Connector, error) {
 	if cfg.Identity != nil && !cfg.Identity.Valid() {
-		return nil, errors.New("lsp2 identity is invalid")
+		return nil, errors.New("lmbp identity is invalid")
 	}
 	if cfg.RemoteURL != "" {
 		if err := safeURL(cfg.RemoteURL); err != nil {
@@ -183,7 +183,7 @@ func validateAdapter(a *AdapterConfig) error {
 		}
 	}
 	for _, c := range a.Capabilities {
-		if c != lsp2.ModelCapTools && c != lsp2.ModelCapVision && c != lsp2.ModelCapAudio {
+		if c != lmbp.ModelCapTools && c != lmbp.ModelCapVision && c != lmbp.ModelCapAudio {
 			return fmt.Errorf("unknown model capability %q", c)
 		}
 	}
@@ -255,9 +255,9 @@ func capsOf(a AdapterConfig) []string {
 	}
 	switch a.Type {
 	case "openai_compatible", "anthropic_compatible":
-		return []string{lsp2.ModelCapTools, lsp2.ModelCapVision}
+		return []string{lmbp.ModelCapTools, lmbp.ModelCapVision}
 	case "ollama_http":
-		return []string{lsp2.ModelCapTools}
+		return []string{lmbp.ModelCapTools}
 	}
 	return []string{}
 }
@@ -285,7 +285,7 @@ type knownFailure string
 
 func (e knownFailure) Error() string { return string(e) }
 
-// ---------- lsp2 Executor ----------
+// ---------- lmbp Executor ----------
 
 // Models lists "adapterID/modelID" for enabled adapters that are not known to be unhealthy.
 func (x *Connector) Models() []string {
@@ -306,7 +306,7 @@ func (x *Connector) Models() []string {
 	return out
 }
 
-// ModelCapabilities advertises per-model flags (lsp2 model_capabilities).
+// ModelCapabilities advertises per-model flags (lmbp model_capabilities).
 func (x *Connector) ModelCapabilities() map[string][]string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -321,13 +321,13 @@ func (x *Connector) ModelCapabilities() map[string][]string {
 
 // Execute runs one verified (and, for E2EE tasks, already decrypted) task and
 // records it in the local audit log.
-func (x *Connector) Execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp2.TaskDelta) error) (*lsp2.TaskDone, *lsp2.ErrorBody) {
+func (x *Connector) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
 	if x.cfg.Audit == nil {
 		return x.execute(ctx, run, emit)
 	}
 	start := time.Now()
 	var first time.Time
-	done, fail := x.execute(ctx, run, func(d lsp2.TaskDelta) error {
+	done, fail := x.execute(ctx, run, func(d lmbp.TaskDelta) error {
 		if first.IsZero() {
 			first = time.Now()
 		}
@@ -337,7 +337,7 @@ func (x *Connector) Execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp
 	return done, fail
 }
 
-func (x *Connector) recordAudit(run lsp2.TaskRun, start, first time.Time, done *lsp2.TaskDone, fail *lsp2.ErrorBody) {
+func (x *Connector) recordAudit(run lmbp.TaskRun, start, first time.Time, done *lmbp.TaskDone, fail *lmbp.ErrorBody) {
 	r := audit.Record{At: start, TaskID: run.TaskID, Model: run.Model, Status: audit.StatusOK, LatencyMS: time.Since(start).Milliseconds(),
 		E2EE: run.E2EE != nil, Tools: len(run.Tools) > 0}
 	r.Adapter, _, _ = strings.Cut(run.Model, "/")
@@ -356,7 +356,7 @@ func (x *Connector) recordAudit(run lsp2.TaskRun, start, first time.Time, done *
 	}
 	if fail != nil {
 		r.Status, r.ErrorCode = audit.StatusError, fail.Code
-		if fail.Code == lsp2.ErrCancelled {
+		if fail.Code == lmbp.ErrCancelled {
 			r.Status = audit.StatusCancelled
 		}
 	} else if done != nil && done.Usage != nil {
@@ -369,13 +369,13 @@ func (x *Connector) recordAudit(run lsp2.TaskRun, start, first time.Time, done *
 	}
 }
 
-func (x *Connector) execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp2.TaskDelta) error) (*lsp2.TaskDone, *lsp2.ErrorBody) {
+func (x *Connector) execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
 	adapterID, modelID, ok := strings.Cut(run.Model, "/")
 	x.mu.Lock()
 	a, exists := x.adapters[adapterID]
 	if !ok || !exists || !a.Enabled || !has(a.Models, modelID) {
 		x.mu.Unlock()
-		return nil, &lsp2.ErrorBody{Code: lsp2.ErrForbidden, Message: "model not allowed by local adapter policy"}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: "model not allowed by local adapter policy"}
 	}
 	busy := 0
 	for _, id := range x.running {
@@ -385,7 +385,7 @@ func (x *Connector) execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp
 	}
 	if busy >= adapterSlots(a) {
 		x.mu.Unlock()
-		return nil, &lsp2.ErrorBody{Code: lsp2.ErrDeviceBusy, Message: "adapter is at its concurrency limit", Retryable: true}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "adapter is at its concurrency limit", Retryable: true}
 	}
 	x.running[run.TaskID] = adapterID
 	x.mu.Unlock()
@@ -396,12 +396,12 @@ func (x *Connector) execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp
 	ctx, cancel := context.WithTimeout(ctx, 600*time.Second)
 	defer cancel()
 	out := &limitedEmitter{emit: emit}
-	var done *lsp2.TaskDone
+	var done *lmbp.TaskDone
 	var err error
 	switch a.Type {
 	case "codex_app_server":
 		err = x.callCodex(ctx, modelID, run.Messages, a, out.text)
-		done = &lsp2.TaskDone{FinishReason: "stop"}
+		done = &lmbp.TaskDone{FinishReason: "stop"}
 	case "openai_compatible":
 		done, err = x.callOpenAI(ctx, modelID, run, a, out)
 	case "anthropic_compatible":
@@ -413,44 +413,44 @@ func (x *Connector) execute(ctx context.Context, run lsp2.TaskRun, emit func(lsp
 	case err == nil:
 		return done, nil
 	case errors.Is(err, errCodexInterrupted), errors.Is(err, context.Canceled):
-		return nil, &lsp2.ErrorBody{Code: lsp2.ErrCancelled, Message: "cancelled"}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}
 	case errors.Is(err, context.DeadlineExceeded):
-		return nil, &lsp2.ErrorBody{Code: lsp2.ErrTimeout, Message: "runtime deadline elapsed"}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrTimeout, Message: "runtime deadline elapsed"}
 	}
 	var known knownFailure
 	if errors.As(err, &known) {
 		switch {
 		case strings.HasPrefix(err.Error(), "POLICY_DENIED"):
-			return nil, &lsp2.ErrorBody{Code: lsp2.ErrForbidden, Message: err.Error()}
+			return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: err.Error()}
 		case strings.HasPrefix(err.Error(), "CAPABILITY_UNSUPPORTED"):
-			return nil, &lsp2.ErrorBody{Code: lsp2.ErrUnsupported, Message: err.Error()}
+			return nil, &lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: err.Error()}
 		}
 	}
 	retry := errors.As(err, &known) && (strings.HasPrefix(err.Error(), "PROVIDER_RATE_LIMITED") || strings.HasPrefix(err.Error(), "QUOTA_EXHAUSTED"))
-	return nil, &lsp2.ErrorBody{Code: lsp2.ErrUpstream, Message: err.Error(), Retryable: retry}
+	return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: err.Error(), Retryable: retry}
 }
 
 // checkCaps rejects inputs the adapter cannot represent (the gateway checks
 // the advertised flags first; this is the device's own enforcement).
-func checkCaps(a AdapterConfig, run lsp2.TaskRun) *lsp2.ErrorBody {
+func checkCaps(a AdapterConfig, run lmbp.TaskRun) *lmbp.ErrorBody {
 	caps := capsOf(a)
-	unsupported := func(msg string) *lsp2.ErrorBody {
-		return &lsp2.ErrorBody{Code: lsp2.ErrUnsupported, Message: msg}
+	unsupported := func(msg string) *lmbp.ErrorBody {
+		return &lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: msg}
 	}
-	if (len(run.Tools) > 0 || len(run.ToolChoice) > 0) && !has(caps, lsp2.ModelCapTools) {
+	if (len(run.Tools) > 0 || len(run.ToolChoice) > 0) && !has(caps, lmbp.ModelCapTools) {
 		return unsupported("model does not support tools")
 	}
 	for _, m := range run.Messages {
-		if (m.Role == "tool" || len(m.ToolCalls) > 0) && !has(caps, lsp2.ModelCapTools) {
+		if (m.Role == "tool" || len(m.ToolCalls) > 0) && !has(caps, lmbp.ModelCapTools) {
 			return unsupported("model does not support tool messages")
 		}
 		for _, p := range m.Content.Parts {
 			switch {
-			case p.ImageURL != nil && !has(caps, lsp2.ModelCapVision):
+			case p.ImageURL != nil && !has(caps, lmbp.ModelCapVision):
 				return unsupported("model does not accept images")
 			case p.ImageURL != nil && a.Type == "ollama_http" && !strings.HasPrefix(p.ImageURL.URL, "data:"):
 				return unsupported("Ollama accepts inline (data:) images only")
-			case p.InputAudio != nil && (!has(caps, lsp2.ModelCapAudio) || a.Type != "openai_compatible"):
+			case p.InputAudio != nil && (!has(caps, lmbp.ModelCapAudio) || a.Type != "openai_compatible"):
 				return unsupported("model does not accept audio")
 			}
 		}
@@ -460,13 +460,13 @@ func checkCaps(a AdapterConfig, run lsp2.TaskRun) *lsp2.ErrorBody {
 
 // limitedEmitter caps total output and splits large text deltas.
 type limitedEmitter struct {
-	emit  func(lsp2.TaskDelta) error
+	emit  func(lmbp.TaskDelta) error
 	total int
 }
 
 const maxOutputBytes = 10 << 20
 
-func (l *limitedEmitter) delta(d lsp2.TaskDelta) error {
+func (l *limitedEmitter) delta(d lmbp.TaskDelta) error {
 	l.total += len(d.Text)
 	for _, tc := range d.ToolCalls {
 		l.total += len(tc.Function.Arguments) + len(tc.Function.Name)
@@ -479,7 +479,7 @@ func (l *limitedEmitter) delta(d lsp2.TaskDelta) error {
 		for n > 0 && (d.Text[n]&0xC0) == 0x80 {
 			n--
 		}
-		if err := l.emit(lsp2.TaskDelta{Text: d.Text[:n]}); err != nil {
+		if err := l.emit(lmbp.TaskDelta{Text: d.Text[:n]}); err != nil {
 			return err
 		}
 		d.Text = d.Text[n:]
@@ -490,16 +490,16 @@ func (l *limitedEmitter) delta(d lsp2.TaskDelta) error {
 	return l.emit(d)
 }
 
-func (l *limitedEmitter) text(s string) error { return l.delta(lsp2.TaskDelta{Text: s}) }
+func (l *limitedEmitter) text(s string) error { return l.delta(lmbp.TaskDelta{Text: s}) }
 
 // ---------- session ----------
 
-// Run serves the adapters over lsp2 until ctx ends or the device is revoked.
+// Run serves the adapters over lmbp until ctx ends or the device is revoked.
 func (x *Connector) Run(ctx context.Context) error {
 	if x.cfg.Identity == nil {
 		return errors.New("device is not paired")
 	}
-	cl, err := client.New(client.Config{Executor: x, MaxConcurrency: x.cfg.MaxConcurrency, Client: "localsubproxy-desktop/lsp2",
+	cl, err := client.New(client.Config{Executor: x, MaxConcurrency: x.cfg.MaxConcurrency, Client: "localsubproxy-desktop/lmbp",
 		OnState: func(ok bool) { x.mu.Lock(); x.gatewayOK = ok; x.mu.Unlock() }}, *x.cfg.Identity)
 	if err != nil {
 		return err
@@ -539,7 +539,7 @@ func (x *Connector) Run(ctx context.Context) error {
 	}
 	x.mu.Unlock()
 	if err != nil && ctx.Err() == nil {
-		log.Printf("lsp2 session stopped: %v", err)
+		log.Printf("lmbp session stopped: %v", err)
 	}
 	return err
 }

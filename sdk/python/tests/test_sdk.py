@@ -2,7 +2,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from lsp2_server import LSP2APIError, LSP2Middleware, LSP2Server, PairingError, SQLiteStore, TenantConfig, anthropic
+from lmbp_server import LMBPAPIError, LMBPMiddleware, LMBPServer, PairingError, SQLiteStore, TenantConfig, anthropic
 from simdevice import pair_and_connect, start_pairing
 
 KEY = "k" * 40
@@ -10,7 +10,7 @@ T = "acme"
 
 
 def new(**kw):
-    return LSP2Server([TenantConfig(T, KEY, {"display_name": "Acme"})], log=lambda *a: None, **kw)
+    return LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], log=lambda *a: None, **kw)
 
 
 def test_anthropic_translation():
@@ -34,7 +34,7 @@ async def test_pairing_api(serve_app):
     lsp = new(issuer="https://gw.example.com")
     async with serve_app(lsp.asgi()) as base:
         info = lsp.pairing.create(T)
-        assert info.link == "lsp2://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme"
+        assert info.link == "lmbp://pair?v=1&gateway=https%3A%2F%2Fgw.example.com&tenant=acme"
         assert info.qr_svg.startswith("<svg")
         _, a = await start_pairing(base, T, "my-laptop")
         pend = lsp.pairing.lookup(T, a["user_code"].lower().replace("-", ""))
@@ -80,7 +80,7 @@ async def test_in_process_client(serve_app):
                 out += e["delta"]["text"]
         assert out == "echo: tool said sunny"
         assert names[0] == "message_start" and names[-2:] == ["message_delta", "message_stop"]
-        with pytest.raises(LSP2APIError) as ei:
+        with pytest.raises(LMBPAPIError) as ei:
             await c.messages.create(model="nope", max_tokens=1, messages=[{"role": "user", "content": "x"}])
         assert ei.value.status == 404 and ei.value.code == "MODEL_NOT_FOUND"
         await ws.close()
@@ -94,7 +94,7 @@ async def test_fastapi_middleware(serve_app):
     @app.get("/app/hello")
     async def hello():
         return {"hi": True}
-    app.add_middleware(LSP2Middleware, server=lsp)
+    app.add_middleware(LMBPMiddleware, server=lsp)
     async with serve_app(app) as base:
         async with httpx.AsyncClient(base_url=base) as h:
             assert (await h.get("/app/hello")).json() == {"hi": True}
@@ -124,5 +124,5 @@ async def test_sqlite_persistence(serve_app, tmp_path):
     assert [d.device_id for d in lsp.pairing.list_devices(T, "u1")] == [dev]
     async with serve_app(lsp.asgi()) as base:
         async with httpx.AsyncClient(base_url=base, headers={"Authorization": "Bearer " + KEY, "X-End-User": "u1"}) as h:
-            ev = await h.get(f"/v2/tenant/tasks/{r['id'].removeprefix('chatcmpl-')}/events")
+            ev = await h.get(f"/lmbp/v1/tenant/tasks/{r['id'].removeprefix('chatcmpl-')}/events")
             assert ev.status_code == 200 and "persist me" in ev.text

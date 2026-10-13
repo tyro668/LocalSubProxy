@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lsp2/gateway-metadata.json",
-  "title": "gateway metadata (GET /.well-known/lsp2-gateway[?tenant=])",
-  "description": "docs/protocol-v2.md §18.2 and §19.1. Also the payload of signed_metadata (typ lsp2-metadata+jwt), which then omits signed_metadata itself. Consumers MUST use the signed values.",
+  "$id": "https://localsubproxy.dev/spec/lmbp/gateway-metadata.json",
+  "title": "gateway metadata (GET /.well-known/lmbp-gateway[?tenant=])",
+  "description": "docs/lmbp-spec.md §18.2 and §19.1. Also the payload of signed_metadata (typ lmbp-metadata+jwt), which then omits signed_metadata itself. Consumers MUST use the signed values.",
   "type": "object",
   "required": ["issuer", "jwks_uri", "device_authorization_endpoint", "token_endpoint", "connect_endpoint", "protocol_versions", "capabilities", "scopes_supported"],
   "properties": {
@@ -41,6 +41,6 @@
   },
   "$defs": {
     "origin": { "type": "string", "pattern": "^(https://[a-z0-9.-]+(:[0-9]{1,5})?|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]{1,5})?)$" },
-    "scope": { "enum": ["lsp2.chat", "lsp2.tools", "lsp2.vision", "lsp2.audio"] }
+    "scope": { "enum": ["lmbp.chat", "lmbp.tools", "lmbp.vision", "lmbp.audio"] }
   }
 }

@@ -1,8 +1,8 @@
 // Package external runs the real Go desktop connector end to end against an
-// externally started LSP2 gateway (the Node or Python mocks, or any other
-// implementation). It is skipped unless LSP2_EXTERNAL_GATEWAY is set:
+// externally started LMBP gateway (the Node or Python mocks, or any other
+// implementation). It is skipped unless LMBP_EXTERNAL_GATEWAY is set:
 //
-//	LSP2_EXTERNAL_GATEWAY=http://127.0.0.1:8080 LSP2_TENANT=acme LSP2_TENANT_KEY=... \
+//	LMBP_EXTERNAL_GATEWAY=http://127.0.0.1:8080 LMBP_TENANT=acme LMBP_TENANT_KEY=... \
 //	  go test ./mock/external -run TestExternalGateway -v
 package external
 
@@ -27,8 +27,8 @@ import (
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 )
 
@@ -63,7 +63,7 @@ func (e *env) call(method, path string, body any, hdr ...string) (int, http.Head
 }
 
 func (e *env) link() string {
-	return lsp2.PairLink{Gateway: e.gw, Tenant: e.tenant}.String()
+	return lmbp.PairLink{Gateway: e.gw, Tenant: e.tenant}.String()
 }
 
 func sseText(b []byte) (string, bool) {
@@ -91,13 +91,13 @@ func sseText(b []byte) (string, bool) {
 }
 
 func TestExternalGateway(t *testing.T) {
-	gw := strings.TrimRight(os.Getenv("LSP2_EXTERNAL_GATEWAY"), "/")
+	gw := strings.TrimRight(os.Getenv("LMBP_EXTERNAL_GATEWAY"), "/")
 	if gw == "" {
-		t.Skip("LSP2_EXTERNAL_GATEWAY not set")
+		t.Skip("LMBP_EXTERNAL_GATEWAY not set")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	e := &env{t: t, ctx: ctx, gw: gw, tenant: os.Getenv("LSP2_TENANT"), key: os.Getenv("LSP2_TENANT_KEY"), u: "e2e-" + lsp2.RandomID("")[:8]}
+	e := &env{t: t, ctx: ctx, gw: gw, tenant: os.Getenv("LMBP_TENANT"), key: os.Getenv("LMBP_TENANT_KEY"), u: "e2e-" + lmbp.RandomID("")[:8]}
 	if e.tenant == "" {
 		e.tenant = "acme"
 	}
@@ -107,7 +107,7 @@ func TestExternalGateway(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	if !req.Consent.Verified || req.Consent.SaaS.Name == "" || req.Consent.Gateway != gw || req.Consent.Audience != lsp2.TokenAudience(gw, e.tenant) {
+	if !req.Consent.Verified || req.Consent.SaaS.Name == "" || req.Consent.Gateway != gw || req.Consent.Audience != lmbp.TokenAudience(gw, e.tenant) {
 		t.Fatalf("consent %+v", req.Consent)
 	}
 	// Local refusal never reaches the gateway and reports CONSENT_DENIED.
@@ -124,13 +124,13 @@ func TestExternalGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _, b := e.call("POST", "/v2/tenant/device-approvals", map[string]any{"user_code": pd.UserCode, "deny": true}); st != 200 {
+	if st, _, b := e.call("POST", "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": pd.UserCode, "deny": true}); st != 200 {
 		t.Fatalf("deny: %d %s", st, b)
 	}
-	st, h, b := e.call("POST", "/v2/tenant/device-approvals", map[string]any{"user_code": pd.UserCode})
+	st, h, b := e.call("POST", "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": pd.UserCode})
 	var prob map[string]any
 	_ = json.Unmarshal(b, &prob)
-	if st != 403 || prob["code"] != lsp2.ErrConsentDenied || !strings.HasPrefix(h.Get("Content-Type"), "application/problem+json") || prob["status"] != float64(403) {
+	if st != 403 || prob["code"] != lmbp.ErrConsentDenied || !strings.HasPrefix(h.Get("Content-Type"), "application/problem+json") || prob["status"] != float64(403) {
 		t.Fatalf("re-approve denied code: %d %s %s", st, h.Get("Content-Type"), b)
 	}
 	if _, err := pd.Wait(ctx); err == nil {
@@ -143,14 +143,14 @@ func TestExternalGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _, b := e.call("POST", "/v2/tenant/device-approvals", map[string]any{"user_code": p.UserCode, "jkt": p.JKT}); st != 200 {
+	if st, _, b := e.call("POST", "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": p.UserCode, "jkt": p.JKT}); st != 200 {
 		t.Fatalf("approve: %d %s", st, b)
 	}
 	id, err := p.Wait(ctx)
 	if err != nil {
 		t.Fatalf("wait: %v", err)
 	}
-	if id.Issuer != gw || id.Audience != lsp2.TokenAudience(gw, e.tenant) {
+	if id.Issuer != gw || id.Audience != lmbp.TokenAudience(gw, e.tenant) {
 		t.Fatalf("identity binding %+v", id)
 	}
 
@@ -195,7 +195,7 @@ func TestExternalGateway(t *testing.T) {
 	st, _, b = e.call("POST", "/v1/chat/completions", map[string]any{"model": full, "tools": tools, "messages": []map[string]string{{"role": "user", "content": "weather in Paris?"}}})
 	var cc struct {
 		Choices []struct {
-			Message      lsp2.Message `json:"message"`
+			Message      lmbp.Message `json:"message"`
 			FinishReason string       `json:"finish_reason"`
 		} `json:"choices"`
 	}
@@ -213,12 +213,12 @@ func TestExternalGateway(t *testing.T) {
 		t.Fatalf("image %d done=%v %q", st, done, txt)
 	}
 	// 4d. E2EE: seal to the device key published (and signed by the device) in the device list.
-	_, _, b = e.call("GET", "/v2/tenant/devices", nil)
+	_, _, b = e.call("GET", "/lmbp/v1/tenant/devices", nil)
 	var dl struct {
 		Devices []struct {
 			DeviceID  string   `json:"device_id"`
 			JKT       string   `json:"jkt"`
-			PublicKey lsp2.JWK `json:"public_key"`
+			PublicKey lmbp.JWK `json:"public_key"`
 			E2EEKey   string   `json:"e2ee_key"`
 		} `json:"devices"`
 	}
@@ -227,8 +227,8 @@ func TestExternalGateway(t *testing.T) {
 	var kid string
 	for _, d := range dl.Devices {
 		if d.DeviceID == id.DeviceID {
-			pub, _ := lsp2.UnB64(d.PublicKey.X)
-			xpub, kid, err = lsp2.VerifyE2EEKey(pub, p.JKT, id.DeviceID, d.E2EEKey, time.Now())
+			pub, _ := lmbp.UnB64(d.PublicKey.X)
+			xpub, kid, err = lmbp.VerifyE2EEKey(pub, p.JKT, id.DeviceID, d.E2EEKey, time.Now())
 		}
 	}
 	if err != nil || len(xpub) != 32 {
@@ -236,10 +236,10 @@ func TestExternalGateway(t *testing.T) {
 	}
 	rkey := make([]byte, 32)
 	_, _ = rand.Read(rkey)
-	rid := lsp2.RandomID("rid_")
-	plain, _ := json.Marshal(lsp2.E2EERequest{RID: rid, Iat: time.Now().Unix(), Model: "lm/m1", Messages: []lsp2.Message{{Role: "user", Content: lsp2.Text("sealed hello")}}, ResponseKey: lsp2.B64(rkey)})
-	jwe, _ := lsp2.SealJWE(xpub, kid, plain)
-	st, _, b = e.call("POST", "/v1/chat/completions", map[string]any{"model": full, "stream": true, "lsp2_e2ee": jwe})
+	rid := lmbp.RandomID("rid_")
+	plain, _ := json.Marshal(lmbp.E2EERequest{RID: rid, Iat: time.Now().Unix(), Model: "lm/m1", Messages: []lmbp.Message{{Role: "user", Content: lmbp.Text("sealed hello")}}, ResponseKey: lmbp.B64(rkey)})
+	jwe, _ := lmbp.SealJWE(xpub, kid, plain)
+	st, _, b = e.call("POST", "/v1/chat/completions", map[string]any{"model": full, "stream": true, "lmbp_e2ee": jwe})
 	if st != 200 || bytes.Contains(b, []byte("sealed hello")) {
 		t.Fatalf("e2ee %d leak=%v", st, bytes.Contains(b, []byte("sealed hello")))
 	}
@@ -251,15 +251,15 @@ func TestExternalGateway(t *testing.T) {
 				Seq  int64  `json:"seq"`
 				Type string `json:"type"`
 				Data string `json:"data"`
-			} `json:"lsp2_e2ee"`
+			} `json:"lmbp_e2ee"`
 		}
 		if l, ok := strings.CutPrefix(line, "data: "); ok && json.Unmarshal([]byte(l), &ch) == nil && ch.E.Data != "" {
-			pt, err := lsp2.OpenChunk(rkey, rid, ch.E.Type, ch.E.Seq, ch.E.Data)
+			pt, err := lmbp.OpenChunk(rkey, rid, ch.E.Type, ch.E.Seq, ch.E.Data)
 			if err != nil {
 				t.Fatalf("open chunk: %v", err)
 			}
 			frames++
-			var d lsp2.TaskDelta
+			var d lmbp.TaskDelta
 			_ = json.Unmarshal(pt, &d)
 			opened.WriteString(d.Text)
 		}
@@ -268,7 +268,7 @@ func TestExternalGateway(t *testing.T) {
 		t.Fatalf("e2ee frames %d text %q", frames, opened.String())
 	}
 	// 4e. Problem details on the gateway surface; OpenAI errors on /v1.
-	st, h, b = e.call("GET", "/v2/tenant/tasks/task_nope/events", nil)
+	st, h, b = e.call("GET", "/lmbp/v1/tenant/tasks/task_nope/events", nil)
 	_ = json.Unmarshal(b, &prob)
 	if st != 404 || !strings.HasPrefix(h.Get("Content-Type"), "application/problem+json") || prob["type"] == nil || prob["title"] == nil {
 		t.Fatalf("problem %d %s", st, b)
@@ -309,9 +309,9 @@ func TestExternalGateway(t *testing.T) {
 	}
 	// 5c. Optional: the official openai/anthropic client libraries, unchanged,
 	// with base_url pointed at the gateway (scripts/official-clients.sh).
-	if cmd := os.Getenv("LSP2_OFFICIAL_CLIENTS"); cmd != "" {
+	if cmd := os.Getenv("LMBP_OFFICIAL_CLIENTS"); cmd != "" {
 		x := exec.CommandContext(ctx, "bash", "-c", cmd)
-		x.Env = append(os.Environ(), "LSP2_BASE_URL="+gw, "LSP2_API_KEY="+e.key, "LSP2_END_USER="+e.u, "LSP2_MODEL="+full)
+		x.Env = append(os.Environ(), "LMBP_BASE_URL="+gw, "LMBP_API_KEY="+e.key, "LMBP_END_USER="+e.u, "LMBP_MODEL="+full)
 		out, err := x.CombinedOutput()
 		t.Logf("official clients:\n%s", out)
 		if err != nil {
@@ -321,7 +321,7 @@ func TestExternalGateway(t *testing.T) {
 
 	// 6. Refresh via RFC 7523 assertion happens inside the connector; force a
 	// reconnect by revoking and check the session ends and refresh is refused.
-	st, _, _ = e.call("POST", "/v2/tenant/devices/"+url.PathEscape(id.DeviceID)+"/revoke", nil)
+	st, _, _ = e.call("POST", "/lmbp/v1/tenant/devices/"+url.PathEscape(id.DeviceID)+"/revoke", nil)
 	if st != 200 {
 		t.Fatalf("revoke %d", st)
 	}

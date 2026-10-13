@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LSP2 模拟 SaaS · 本机模型聊天</title>
+<title>LMBP 模拟 SaaS · 本机模型聊天</title>
 <link rel="icon" href="data:,">
 <style>
 :root{--bd:#d8dee4;--mut:#656d76;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--bg:#f6f8fa}
@@ -59,14 +59,14 @@ footer textarea{resize:vertical;min-height:64px}
 </head>
 <body>
 <header>
-  <h1>LSP2 模拟 SaaS · 本机模型聊天</h1><span class="sp"></span>
+  <h1>LMBP 模拟 SaaS · 本机模型聊天</h1><span class="sp"></span>
   <span class="who" id="who"></span>
   <button id="logout" class="hidden">退出</button>
 </header>
 
 <section id="login">
   <h2>开发登录</h2>
-  <p class="note">这是一个模拟 SaaS 的开发页面。用租户 API Key 登录后，页面直接以“租户后端”的身份调用本网关的 <span class="mono">/v2/tenant/*</span> 与 <span class="mono">/v1/*</span>。Key 只保存在本标签页的 sessionStorage 中，关闭标签页即清除；页面本身不包含任何密钥。</p>
+  <p class="note">这是一个模拟 SaaS 的开发页面。用租户 API Key 登录后，页面直接以“租户后端”的身份调用本网关的 <span class="mono">/lmbp/v1/tenant/*</span> 与 <span class="mono">/v1/*</span>。Key 只保存在本标签页的 sessionStorage 中，关闭标签页即清除；页面本身不包含任何密钥。</p>
   <form id="loginForm" autocomplete="off">
     <label for="tenant">租户 ID</label><input id="tenant" required value="acme">
     <label for="user">最终用户（X-End-User）</label><input id="user" required value="alice" maxlength="128">

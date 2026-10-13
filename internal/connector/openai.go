@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 )
 
 func providerStatus(code int) error {
@@ -27,10 +27,10 @@ func providerStatus(code int) error {
 }
 
 // callOpenAI forwards the request to an OpenAI-compatible Chat Completions
-// endpoint. lsp2 messages, tools, tool_choice and content parts are the
+// endpoint. lmbp messages, tools, tool_choice and content parts are the
 // OpenAI shapes, so they pass through unchanged. The configured key never
 // enters the protocol, health reports or logs.
-func (x *Connector) callOpenAI(ctx context.Context, model string, run lsp2.TaskRun, a AdapterConfig, out *limitedEmitter) (*lsp2.TaskDone, error) {
+func (x *Connector) callOpenAI(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
 	payload := map[string]any{"model": model, "messages": run.Messages, "stream": true, "stream_options": map[string]bool{"include_usage": true}}
 	if len(run.Tools) > 0 {
 		payload["tools"] = run.Tools
@@ -74,11 +74,11 @@ func (x *Connector) callOpenAI(ctx context.Context, model string, run lsp2.TaskR
 			Choices []struct {
 				Message struct {
 					Content   string          `json:"content"`
-					ToolCalls []lsp2.ToolCall `json:"tool_calls"`
+					ToolCalls []lmbp.ToolCall `json:"tool_calls"`
 				} `json:"message"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
-			Usage *lsp2.Usage `json:"usage"`
+			Usage *lmbp.Usage `json:"usage"`
 		}
 		if err := json.NewDecoder(io.LimitReader(res.Body, maxOutputBytes+1)).Decode(&completion); err != nil {
 			return nil, err
@@ -91,16 +91,16 @@ func (x *Connector) callOpenAI(ctx context.Context, model string, run lsp2.TaskR
 			idx := i
 			ch.Message.ToolCalls[i].Index = &idx
 		}
-		if err := out.delta(lsp2.TaskDelta{Text: ch.Message.Content, ToolCalls: ch.Message.ToolCalls}); err != nil {
+		if err := out.delta(lmbp.TaskDelta{Text: ch.Message.Content, ToolCalls: ch.Message.ToolCalls}); err != nil {
 			return nil, err
 		}
 		if ch.FinishReason == "" {
 			ch.FinishReason = "stop"
 		}
-		return &lsp2.TaskDone{FinishReason: ch.FinishReason, Usage: completion.Usage}, nil
+		return &lmbp.TaskDone{FinishReason: ch.FinishReason, Usage: completion.Usage}, nil
 	}
 	var emitErr error
-	done, fail := client.RelayOpenAIStream(ctx, res.Body, func(d lsp2.TaskDelta) error {
+	done, fail := client.RelayOpenAIStream(ctx, res.Body, func(d lmbp.TaskDelta) error {
 		emitErr = out.delta(d)
 		return emitErr
 	})
@@ -108,7 +108,7 @@ func (x *Connector) callOpenAI(ctx context.Context, model string, run lsp2.TaskR
 		return nil, emitErr
 	}
 	if fail != nil {
-		if fail.Code == lsp2.ErrCancelled {
+		if fail.Code == lmbp.ErrCancelled {
 			return nil, context.Canceled
 		}
 		return nil, knownFailure("UPSTREAM_ERROR: " + fail.Message)
@@ -116,7 +116,7 @@ func (x *Connector) callOpenAI(ctx context.Context, model string, run lsp2.TaskR
 	return done, nil
 }
 
-func maxTokens(run lsp2.TaskRun, a AdapterConfig) int {
+func maxTokens(run lmbp.TaskRun, a AdapterConfig) int {
 	if run.MaxTokens > 0 && (a.MaxOutputTokens == 0 || run.MaxTokens < a.MaxOutputTokens) {
 		return run.MaxTokens
 	}

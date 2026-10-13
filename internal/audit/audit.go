@@ -1,7 +1,7 @@
 // Package audit is the desktop's local, per-connection request log: one row
 // per task served to a paired SaaS (connection, model, timing, token usage,
 // outcome). Prompt and completion content is never recorded. It backs the
-// usage statistics shown in the app and the CLI (docs/protocol-v2.md §20).
+// usage statistics shown in the app and the CLI (docs/lmbp-spec.md §20).
 package audit
 
 import (
@@ -19,7 +19,7 @@ const schema = `
 CREATE TABLE IF NOT EXISTS requests(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at INTEGER NOT NULL,              -- unix ms, task start
-  connection_id TEXT NOT NULL,      -- lsp2 device_id of the pairing
+  connection_id TEXT NOT NULL,      -- lmbp device_id of the pairing
   gateway TEXT NOT NULL,            -- issuer origin
   tenant TEXT NOT NULL,             -- SaaS (tenant) id
   saas_name TEXT NOT NULL DEFAULT '',

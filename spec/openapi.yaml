@@ -1,16 +1,16 @@
 openapi: 3.1.0
 info:
-  title: LocalSubProxy protocol v2 (lsp2) — HTTP surface
+  title: LMBP (Local Model Bridge Protocol) — HTTP surface
   version: 2.0.0
-  summary: Pairing (RFC 8628), token (RFC 6749/7523), tenant admin and OpenAI-compatible endpoints of an lsp2 gateway.
+  summary: Pairing (RFC 8628), token (RFC 6749/7523), tenant admin and OpenAI-compatible endpoints of an lmbp gateway.
   description: |
-    Normative text: docs/protocol-v2.md. The device WebSocket channel (`GET /v2/connect`,
-    subprotocol `lsp2`) is described in spec/asyncapi.yaml.
+    Normative text: docs/lmbp-spec.md. The device WebSocket channel (`GET /lmbp/v1/connect`,
+    subprotocol `lmbp`) is described in spec/asyncapi.yaml.
 
-    * OAuth endpoints (`/v2/device/authorize`, `/v2/token`) take
+    * OAuth endpoints (`/lmbp/v1/device/authorize`, `/lmbp/v1/token`) take
       `application/x-www-form-urlencoded` bodies (normative). Gateways MAY also accept JSON.
       Errors use the RFC 6749 §5.2 shape `{"error": "..."}`.
-    * Tenant admin endpoints (`/v2/tenant/*`) return RFC 9457 `application/problem+json` on error.
+    * Tenant admin endpoints (`/lmbp/v1/tenant/*`) return RFC 9457 `application/problem+json` on error.
     * OpenAI-compatible endpoints (`/v1/*`) return the OpenAI error object so existing SDKs work.
   license:
     name: See repository
@@ -46,7 +46,7 @@ paths:
           content:
             application/jwk-set+json:
               schema: { $ref: '#/components/schemas/JWKSet' }
-  /.well-known/lsp2-gateway:
+  /.well-known/lmbp-gateway:
     get:
       tags: [discovery]
       summary: Gateway metadata (§18.2); with ?tenant= adds the signed SaaS identity for the pairing consent screen (§19.1)
@@ -59,7 +59,7 @@ paths:
           schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' }
       responses:
         '200':
-          description: Metadata. issuer is the gateway https origin; endpoints are on that origin. With tenant, signed_metadata is a JWS (typ lsp2-metadata+jwt) by a JWKS key whose payload supersedes the unsigned fields.
+          description: Metadata. issuer is the gateway https origin; endpoints are on that origin. With tenant, signed_metadata is a JWS (typ lmbp-metadata+jwt) by a JWKS key whose payload supersedes the unsigned fields.
           headers:
             Cache-Control: { schema: { type: string } }
           content:
@@ -77,7 +77,7 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { status: { const: ok } } }
-  /v2/device/authorize:
+  /lmbp/v1/device/authorize:
     post:
       tags: [device-oauth]
       summary: RFC 8628 §3.1 device authorization request
@@ -99,7 +99,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DeviceAuthorizationResponse' }
         '400': { $ref: '#/components/responses/OAuthError' }
-  /v2/token:
+  /lmbp/v1/token:
     post:
       tags: [device-oauth]
       summary: Token endpoint (device_code grant RFC 8628 §3.4, jwt-bearer grant RFC 7523 §2.1)
@@ -121,7 +121,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TokenResponse' }
         '400': { $ref: '#/components/responses/OAuthError' }
-  /v2/connect:
+  /lmbp/v1/connect:
     get:
       tags: [device-oauth]
       summary: WebSocket upgrade for the device channel (see asyncapi.yaml)
@@ -132,13 +132,13 @@ paths:
         - in: header
           name: Sec-WebSocket-Protocol
           required: true
-          schema: { type: string, examples: [lsp2] }
+          schema: { type: string, examples: [lmbp] }
       responses:
-        '101': { description: Switching Protocols; the server selects subprotocol `lsp2`. }
+        '101': { description: Switching Protocols; the server selects subprotocol `lmbp`. }
         '400': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
-  /v2/tenant/device-approvals:
+  /lmbp/v1/tenant/device-approvals:
     post:
       tags: [tenant-admin]
       summary: Approve or deny a pending user code on behalf of an authenticated end user (RFC 8628 §3.3 back-channel)
@@ -181,7 +181,7 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '429': { $ref: '#/components/responses/Problem' }
-  /v2/tenant/devices:
+  /lmbp/v1/tenant/devices:
     get:
       tags: [tenant-admin]
       summary: List the end user's devices
@@ -203,7 +203,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Device' }
         '401': { $ref: '#/components/responses/Problem' }
-  /v2/tenant/devices/{device_id}/revoke:
+  /lmbp/v1/tenant/devices/{device_id}/revoke:
     post:
       tags: [tenant-admin]
       summary: Revoke a device; live sessions are closed immediately
@@ -280,8 +280,8 @@ paths:
             `stream=true`: `text/event-stream` (WHATWG HTML §9.2). Each event is
             `id: <seq>` + `data: <chat.completion.chunk JSON>`; the stream ends with `data: [DONE]`.
             The `id` lets a client re-attach after a disconnect (same Idempotency-Key + Last-Event-ID,
-            or GET /v2/tenant/tasks/{task_id}/events) and receive exactly the events after that id (§14.4).
-            For lsp2_e2ee requests each chunk carries `lsp2_e2ee: {seq, type, data}` (sealed) instead of
+            or GET /lmbp/v1/tenant/tasks/{task_id}/events) and receive exactly the events after that id (§14.4).
+            For lmbp_e2ee requests each chunk carries `lmbp_e2ee: {seq, type, data}` (sealed) instead of
             delta content; `finish_reason` and `usage` remain cleartext (§17.5).
             On a mid-stream failure the server sends `data: {"error":{...}}` and closes without `[DONE]`.
             Comment lines (`: keep-alive`) may appear at any time.
@@ -347,7 +347,7 @@ paths:
         '502': { $ref: '#/components/responses/AnthropicError' }
         '503': { $ref: '#/components/responses/AnthropicError' }
         '504': { $ref: '#/components/responses/AnthropicError' }
-  /v2/tenant/tasks/{task_id}/events:
+  /lmbp/v1/tenant/tasks/{task_id}/events:
     get:
       tags: [openai]
       summary: Re-attach to a task's SSE stream (resume after a client disconnect)
@@ -435,7 +435,7 @@ components:
                 required: [message, code]
                 properties:
                   message: { type: string }
-                  type: { type: string, examples: [lsp2_error] }
+                  type: { type: string, examples: [lmbp_error] }
                   code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
     AnthropicError:
       description: Anthropic-style error object (§6.7).
@@ -452,7 +452,7 @@ components:
                 properties:
                   type: { type: string, enum: [invalid_request_error, authentication_error, permission_error, not_found_error, request_too_large, rate_limit_error, api_error, overloaded_error] }
                   message: { type: string }
-                  lsp2_code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
+                  lmbp_code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
   schemas:
     MessagesRequest:
       type: object
@@ -526,7 +526,7 @@ components:
         gateway_url: { type: string, format: uri }
         tenant: { type: string }
         link_url: { type: string, format: uri, description: Page where a signed-in user enters the user_code (verification_uri). }
-        protocol: { const: lsp2 }
+        protocol: { const: lmbp }
     JWK:
       type: object
       required: [kty, crv, x]
@@ -567,13 +567,13 @@ components:
           properties:
             grant_type: { const: 'urn:ietf:params:oauth:grant-type:device_code' }
             device_code: { type: string }
-            proof: { type: string, description: 'Proof JWT, typ lsp2-proof+jwt, aud lsp2:token, iss "", ath = base64url(SHA-256(device_code)).' }
+            proof: { type: string, description: 'Proof JWT, typ lmbp-proof+jwt, aud lmbp:token, iss "", ath = base64url(SHA-256(device_code)).' }
         - type: object
           title: jwt-bearer grant (refresh with the device key)
           required: [grant_type, assertion]
           properties:
             grant_type: { const: 'urn:ietf:params:oauth:grant-type:jwt-bearer' }
-            assertion: { type: string, description: 'JWT typ JWT signed by the device key; iss=sub=device_id, aud <issuer>/v2/token (§18.3), exp-iat <= 300, unique jti.' }
+            assertion: { type: string, description: 'JWT typ JWT signed by the device key; iss=sub=device_id, aud <issuer>/lmbp/v1/token (§18.3), exp-iat <= 300, unique jti.' }
     TokenResponse:
       type: object
       required: [access_token, token_type, expires_in, device_id, gateway_key]
@@ -596,7 +596,7 @@ components:
         models: { type: array, items: { type: string } }
         public_key: { $ref: '#/components/schemas/JWK' }
         jkt: { type: string, description: RFC 7638 thumbprint of the device identity key }
-        e2ee_key: { type: string, description: 'Latest E2EE key statement (JWS, typ lsp2-e2ee-key+jwt). Tenants MUST verify it against the jkt they pinned at pairing, never against this response alone.' }
+        e2ee_key: { type: string, description: 'Latest E2EE key statement (JWS, typ lmbp-e2ee-key+jwt). Tenants MUST verify it against the jkt they pinned at pairing, never against this response alone.' }
         model_capabilities: { $ref: 'schemas/defs.json#/$defs/modelCapabilities' }
         capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/capability' } }
         max_concurrency: { type: integer }
@@ -614,11 +614,11 @@ components:
       type: object
       required: [model]
       additionalProperties: true
-      description: Either messages (cleartext) or lsp2_e2ee (sealed) MUST be present, not both.
+      description: Either messages (cleartext) or lmbp_e2ee (sealed) MUST be present, not both.
       oneOf:
         - required: [messages]
-          not: { required: [lsp2_e2ee] }
-        - required: [lsp2_e2ee]
+          not: { required: [lmbp_e2ee] }
+        - required: [lmbp_e2ee]
           properties:
             messages: false
             tools: false
@@ -638,9 +638,9 @@ components:
         stream: { type: boolean, default: false }
         max_tokens: { type: integer, minimum: 1 }
         temperature: { type: number, minimum: 0, maximum: 2 }
-        lsp2_e2ee:
+        lmbp_e2ee:
           type: string
-          description: 'JWE compact serialization (alg ECDH-ES, crv X25519, enc A256GCM, cty lsp2-request+json) of an E2EE request {rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key} sealed to the device key from its verified key statement (§17).'
+          description: 'JWE compact serialization (alg ECDH-ES, crv X25519, enc A256GCM, cty lmbp-request+json) of an E2EE request {rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key} sealed to the device key from its verified key statement (§17).'
     ChatCompletion:
       type: object
       required: [id, object, created, model, choices]
@@ -680,10 +680,10 @@ components:
                   tool_calls: { type: array, items: { $ref: 'schemas/defs.json#/$defs/toolCall' } }
               finish_reason: { type: [string, 'null'] }
         usage: { $ref: 'schemas/defs.json#/$defs/usage' }
-        lsp2_e2ee:
+        lmbp_e2ee:
           type: object
           required: [seq, type, data]
-          description: Sealed result frame; open with the request's response_key (nonce 0^32||BE64(seq), AAD "lsp2-e2ee/v1|rid|type|seq").
+          description: Sealed result frame; open with the request's response_key (nonce 0^32||BE64(seq), AAD "lmbp-e2ee/v1|rid|type|seq").
           properties:
             seq: { type: integer, minimum: 1 }
             type: { enum: [task.delta, task.done] }

@@ -4,7 +4,7 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 ## 使用流程
 
-1. 打开应用，在底部的「远端服务地址」输入服务地址（或粘贴 SaaS 提供的 `lsp2://pair?…` 配对链接），点击「连接」。按联调说明启动参考网关和模拟服务后，本机可填写 `http://127.0.0.1:3000`；远端地址使用 HTTPS。
+1. 打开应用，在底部的「远端服务地址」输入服务地址（或粘贴 SaaS 提供的 `lmbp://pair?…` 配对链接），点击「连接」。按联调说明启动参考网关和模拟服务后，本机可填写 `http://127.0.0.1:3000`；远端地址使用 HTTPS。
 2. 应用先显示**配对同意页**：SaaS 名称、logo、主页、隐私政策、网关地址、请求的模型与权限。这些信息都经过网关签名校验，不是链接里自带的。点击「同意并配对」后，应用显示一个 `XXXX-XXXX` 配对码和确认链接；点击「拒绝」则不会向网关发送任何请求。
 3. 在已登录的远端服务页面输入配对码并确认，应用会自动完成连接。界面会显示本机设备名称、服务地址和连接状态；设备私钥加密保存在本机。远端服务或网关停止时会显示「未连接」，服务恢复后自动重连，无需重新配对。
 4. 点击「添加方案」配置模型。你也可以先添加方案，再连接远端服务。
@@ -30,14 +30,14 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 ## 从源码构建
 
-macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。本机联调见 [mock/README.md](mock/README.md)；服务端接口见 [docs/protocol-v2.md](docs/protocol-v2.md)。
+macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。本机联调见 [mock/README.md](mock/README.md)；服务端接口见 [docs/lmbp-spec.md](docs/lmbp-spec.md)。
 
-## 协议 lsp2 与其他语言实现
+## 协议 lmbp 与其他语言实现
 
-设备与网关之间使用开放协议 **lsp2**。它完全基于公开标准：
+设备与网关之间使用开放协议 **lmbp**。它完全基于公开标准：
 - RFC 8628 设备配对；
 - 用 Ed25519/EdDSA 签名的 JWS/JWT，令牌与设备密钥绑定（`cnf.jkt`）；
-- WebSocket 子协议 `lsp2`；
+- WebSocket 子协议 `lmbp`；
 - OpenAI 兼容接口，支持 SSE 流式输出；
 - 可协商的扩展：断线续传（resume）、按字节窗口的流量控制（flow）、tools 与多模态输入（tools / multimodal）、基于 JWE（ECDH-ES + X25519, A256GCM）的端到端加密（e2ee）。
 
@@ -45,12 +45,12 @@ macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-window
 
 | 资料 | 位置 |
 |---|---|
-| 规范（RFC 风格） | [docs/protocol-v2.md](docs/protocol-v2.md) |
+| 规范（RFC 风格） | [docs/lmbp-spec.md](docs/lmbp-spec.md) |
 | 实现指南（各语言推荐库、陷阱、代码骨架） | [docs/implementers-guide.md](docs/implementers-guide.md) |
 | JSON Schema / OpenAPI 3.1 / AsyncAPI 3.0 | [spec/](spec) |
 | 测试向量 | [spec/testvectors/vectors.json](spec/testvectors/vectors.json) |
 | Python / Node.js / Rust 骨架（已用测试向量验证） | [spec/examples/](spec/examples) |
-| 黑盒一致性测试 | `LSP2_TENANT_KEY=... go run ./cmd/lsp2-conformance -gateway <url> -tenant <id>` |
+| 黑盒一致性测试 | `LMBP_TENANT_KEY=... go run ./cmd/lmbp-conformance -gateway <url> -tenant <id>` |
 | 一键校验 | `spec/validate.sh` |
 
-Go 参考实现位于 `internal/lsp2`，网关用 `localsubproxy server -issuer https://<网关公网地址> [-tenant-profiles profiles.json]` 启动。`profiles.json` 里配置每个租户的展示身份，它会出现在桌面端的同意页上。业务服务的模拟实现与端到端演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。
+Go 参考实现位于 `internal/lmbp`，网关用 `localsubproxy server -issuer https://<网关公网地址> [-tenant-profiles profiles.json]` 启动。`profiles.json` 里配置每个租户的展示身份，它会出现在桌面端的同意页上。业务服务的模拟实现与端到端演示见 [mock/README.md](mock/README.md)（`go run ./mock/cmd/lspmock demo`）。

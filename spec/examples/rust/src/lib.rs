@@ -1,4 +1,4 @@
-//! lsp2 critical-path primitives for a Rust gateway (reference skeleton).
+//! lmbp critical-path primitives for a Rust gateway (reference skeleton).
 //! Executed against spec/testvectors/vectors.json by `cargo test`.
 pub mod ext;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 
 pub const TYP_ACCESS_TOKEN: &str = "at+jwt";
 pub const TYP_ASSERTION: &str = "JWT";
-pub const TYP_PROOF: &str = "lsp2-proof+jwt";
-pub const TYP_TASK: &str = "lsp2-task+jws";
+pub const TYP_PROOF: &str = "lmbp-proof+jwt";
+pub const TYP_TASK: &str = "lmbp-task+jws";
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -74,13 +74,13 @@ pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &
     let sub = c["sub"].as_str().ok_or("sub")?.to_string();
     let dev = device_pub_of(&sub);
     if c["cnf"]["jkt"] != thumbprint(&dev).as_str() { return Err("token not bound to device key".into()); }
-    if frame["v"] != 2 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
-    verify_proof(&dev, frame["data"]["proof"].as_str().ok_or("proof")?, &sub, "lsp2:hello", token, now)?;
+    if frame["v"] != 1 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
+    verify_proof(&dev, frame["data"]["proof"].as_str().ok_or("proof")?, &sub, "lmbp:hello", token, now)?;
     Ok(c)
 }
 
 pub fn sign_task_run(gw: &SigningKey, kid: &str, payload: &Value) -> Value {
-    json!({"v":2,"type":"task.run","task_id":payload["task_id"],"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
+    json!({"v":1,"type":"task.run","task_id":payload["task_id"],"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
 }
 
 pub fn verify_task_run(gw: &[u8], frame: &Value) -> Result<Value> {

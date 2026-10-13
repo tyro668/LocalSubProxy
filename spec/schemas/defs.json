@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lsp2/defs.json",
-  "title": "lsp2 shared definitions",
+  "$id": "https://localsubproxy.dev/spec/lmbp/defs.json",
+  "title": "lmbp shared definitions",
   "$defs": {
     "id": {
       "type": "string",
@@ -31,7 +31,7 @@
     "errorCode": {
       "type": "string",
       "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
-      "description": "Stable error code; see docs/protocol-v2.md §9. Unknown codes MUST be treated as non-retryable unless retryable=true."
+      "description": "Stable error code; see docs/lmbp-spec.md §9. Unknown codes MUST be treated as non-retryable unless retryable=true."
     },
     "capability": {
       "type": "string",
@@ -232,7 +232,7 @@
           "properties": {
             "url": {
               "type": "string",
-              "description": "https:// URL, or lsp2-blob:<id> on the tunnel (data: URIs are moved into blobs by the gateway)."
+              "description": "https:// URL, or lmbp-blob:<id> on the tunnel (data: URIs are moved into blobs by the gateway)."
             },
             "detail": {
               "enum": [

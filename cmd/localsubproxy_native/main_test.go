@@ -6,15 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
-	"github.com/tyro668/LocalSubProxy/internal/lsp2/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 )
 
 func TestDeviceKeysAreEncryptedAtRest(t *testing.T) {
 	dir := t.TempDir()
 	id := localIdentity{DataKey: strings.Repeat("ab", 32), DeviceID: "dev_1"}
-	x, _ := lsp2.NewX25519()
-	v := client.Identity{GatewayURL: "https://gw.example", Tenant: "acme", DeviceID: "dev_1", PrivateKey: lsp2.B64(make([]byte, 64)), GatewayKey: lsp2.B64(make([]byte, 32)), E2EEKey: lsp2.B64(x), Issuer: "https://gw.example", Audience: lsp2.TokenAudience("https://gw.example", "acme")}
+	x, _ := lmbp.NewX25519()
+	v := client.Identity{GatewayURL: "https://gw.example", Tenant: "acme", DeviceID: "dev_1", PrivateKey: lmbp.B64(make([]byte, 64)), GatewayKey: lmbp.B64(make([]byte, 32)), E2EEKey: lmbp.B64(x), Issuer: "https://gw.example", Audience: lmbp.TokenAudience("https://gw.example", "acme")}
 	if err := saveDevice(dir, id, v); err != nil {
 		t.Fatal(err)
 	}

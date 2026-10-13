@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lsp2/hello.json",
+  "$id": "https://localsubproxy.dev/spec/lmbp/hello.json",
   "title": "hello",
   "description": "device→gateway",
   "type": "object",
@@ -41,7 +41,7 @@
     },
     "proof": {
       "$ref": "defs.json#/$defs/compactJws",
-      "description": "Proof JWT, typ lsp2-proof+jwt, aud lsp2:hello, ath=SHA-256(access token)."
+      "description": "Proof JWT, typ lmbp-proof+jwt, aud lmbp:hello, ath=SHA-256(access token)."
     },
     "model_capabilities": {
       "$ref": "defs.json#/$defs/modelCapabilities"
@@ -52,7 +52,7 @@
     },
     "e2ee_key": {
       "$ref": "defs.json#/$defs/compactJws",
-      "description": "E2EE key statement, typ lsp2-e2ee-key+jwt (capability e2ee, §17)."
+      "description": "E2EE key statement, typ lmbp-e2ee-key+jwt (capability e2ee, §17)."
     },
     "resume": {
       "type": "object",

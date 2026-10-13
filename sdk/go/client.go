@@ -1,4 +1,4 @@
-package lsp2server
+package lmbpserver
 
 import (
 	"bufio"
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tyro668/LocalSubProxy/internal/lsp2"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 // Transport is an http.RoundTripper that serves requests in-process through
@@ -67,12 +67,12 @@ func (w *pipeWriter) finish()                     { w.WriteHeader(200); w.pw.Clo
 // APIError is a non-2xx response from the gateway.
 type APIError struct {
 	Status  int
-	Code    string // lsp2 error code (MODEL_NOT_FOUND, DEVICE_OFFLINE, ...)
+	Code    string // lmbp error code (MODEL_NOT_FOUND, DEVICE_OFFLINE, ...)
 	Message string
 	Body    []byte
 }
 
-func (e *APIError) Error() string { return fmt.Sprintf("lsp2 %d %s: %s", e.Status, e.Code, e.Message) }
+func (e *APIError) Error() string { return fmt.Sprintf("lmbp %d %s: %s", e.Status, e.Code, e.Message) }
 
 // Client calls the gateway in-process as one end user of one tenant.
 type Client struct {
@@ -118,7 +118,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idem str
 		var e struct {
 			Error struct {
 				Code     string `json:"code"`
-				LSP2Code string `json:"lsp2_code"`
+				LMBPCode string `json:"lmbp_code"`
 				Message  string `json:"message"`
 			} `json:"error"`
 			Detail string `json:"detail"`
@@ -126,7 +126,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idem str
 		_ = json.Unmarshal(b, &e)
 		code := e.Error.Code
 		if code == "" {
-			code = e.Error.LSP2Code
+			code = e.Error.LMBPCode
 		}
 		msg := e.Error.Message
 		if msg == "" {
@@ -159,8 +159,8 @@ type Model struct {
 // ChatRequest is an OpenAI chat-completions request.
 type ChatRequest struct {
 	Model       string         `json:"model"`
-	Messages    []lsp2.Message `json:"messages"`
-	Tools       []lsp2.Tool    `json:"tools,omitempty"`
+	Messages    []lmbp.Message `json:"messages"`
+	Tools       []lmbp.Tool    `json:"tools,omitempty"`
 	ToolChoice  any            `json:"tool_choice,omitempty"`
 	MaxTokens   int            `json:"max_tokens,omitempty"`
 	Temperature *float64       `json:"temperature,omitempty"`
@@ -175,10 +175,10 @@ type ChatCompletion struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Index        int          `json:"index"`
-		Message      lsp2.Message `json:"message"`
+		Message      lmbp.Message `json:"message"`
 		FinishReason string       `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *lsp2.Usage `json:"usage,omitempty"`
+	Usage *lmbp.Usage `json:"usage,omitempty"`
 }
 
 // ChatCompletionChunk is one streamed event.
@@ -190,11 +190,11 @@ type ChatCompletionChunk struct {
 		Delta struct {
 			Role      string          `json:"role,omitempty"`
 			Content   string          `json:"content,omitempty"`
-			ToolCalls []lsp2.ToolCall `json:"tool_calls,omitempty"`
+			ToolCalls []lmbp.ToolCall `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *lsp2.Usage `json:"usage,omitempty"`
+	Usage *lmbp.Usage `json:"usage,omitempty"`
 }
 
 // Models lists the models on endUser's online devices.
@@ -404,14 +404,14 @@ func streamErr(data string) error {
 	var e struct {
 		Error struct {
 			Code     string `json:"code"`
-			LSP2Code string `json:"lsp2_code"`
+			LMBPCode string `json:"lmbp_code"`
 			Message  string `json:"message"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal([]byte(data), &e)
 	code := e.Error.Code
 	if code == "" {
-		code = e.Error.LSP2Code
+		code = e.Error.LMBPCode
 	}
 	return &APIError{Status: 502, Code: code, Message: e.Error.Message, Body: []byte(data)}
 }

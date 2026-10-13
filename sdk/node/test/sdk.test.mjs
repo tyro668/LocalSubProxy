@@ -4,14 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { LSP2Server, SqliteStore, PairingError, anthropic } from '../dist/index.js';
+import { LMBPServer, SqliteStore, PairingError, anthropic } from '../dist/index.js';
 import { pairAndConnect, startPairing } from '../test-support/simdevice.mjs';
 
 const KEY = 'k'.repeat(40);
 const T = 'acme';
 
 async function setup(opts = {}) {
-  const lsp = new LSP2Server({ tenants: [{ id: T, apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {}, ...opts });
+  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {}, ...opts });
   const srv = http.createServer(lsp.handler);
   lsp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
@@ -41,7 +41,7 @@ test('pairing API: link/QR, lookup, approve, list, revoke', async () => {
   const s = await setup({ issuer: 'https://gw.example.com' });
   try {
     const info = s.lsp.pairing.create(T);
-    assert.equal(info.link, 'lsp2://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme');
+    assert.equal(info.link, 'lmbp://pair?v=1&gateway=https%3A%2F%2Fgw.example.com&tenant=acme');
     assert.match(info.qrSVG, /^<svg/);
     assert.match(info.qrDataURL, /^data:image\/gif;base64,/);
     const p = await startPairing(s.base, T, 'my-laptop');
@@ -100,7 +100,7 @@ test('in-process client: OpenAI and Anthropic, streaming and not', async () => {
 });
 
 test('middleware falls through to next() for unknown paths', async () => {
-  const lsp = new LSP2Server({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
+  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
   const mw = lsp.middleware();
   const srv = http.createServer((req, res) => mw(req, res, () => { res.end('app'); }));
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
@@ -115,7 +115,7 @@ test('middleware falls through to next() for unknown paths', async () => {
 });
 
 test('SqliteStore persists signing key, devices and finished tasks across restarts', async () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lsp2-')), 'gw.db');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lmbp-')), 'gw.db');
   let s = await setup({ store: new SqliteStore(file) });
   const kid = s.lsp.keys.kid();
   const { ws, deviceId } = await pairAndConnect(s.lsp, s.base, T, 'u1');
@@ -130,7 +130,7 @@ test('SqliteStore persists signing key, devices and finished tasks across restar
     assert.equal(ds.length, 1);
     assert.equal(ds[0].deviceId, deviceId);
     const taskID = r.id.replace('chatcmpl-', '');
-    const ev = await fetch(`${s.base}/v2/tenant/tasks/${taskID}/events`, { headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1' } });
+    const ev = await fetch(`${s.base}/lmbp/v1/tenant/tasks/${taskID}/events`, { headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1' } });
     assert.equal(ev.status, 200);
     assert.match(await ev.text(), /persist me/);
   } finally { await s.close(); s.lsp.store.close(); }
