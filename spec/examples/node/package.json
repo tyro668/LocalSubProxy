@@ -1,0 +1,9 @@
+{
+  "name": "lsp2-node-skeleton",
+  "private": true,
+  "type": "module",
+  "description": "lsp2 critical-path primitives for a Node.js gateway, tested against spec/testvectors",
+  "engines": { "node": ">=18.4" },
+  "scripts": { "test": "node test_vectors.mjs" },
+  "devDependencies": { "ajv": "^8.17.1" }
+}

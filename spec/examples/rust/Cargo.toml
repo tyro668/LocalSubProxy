@@ -1,0 +1,12 @@
+[package]
+name = "lsp2-skeleton"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "lsp2 critical-path primitives for a Rust gateway, tested against spec/testvectors"
+
+[dependencies]
+ed25519-dalek = "2"
+base64 = "0.22"
+sha2 = "0.10"
+serde_json = { version = "1", features = ["preserve_order"] }
