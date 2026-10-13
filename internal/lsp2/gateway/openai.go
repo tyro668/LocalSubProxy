@@ -43,6 +43,10 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if r.Header.Get("Anthropic-Version") != "" {
+		anthropicModels(w, data)
+		return
+	}
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
 
@@ -432,6 +436,10 @@ func (g *Gateway) taskEvents(w http.ResponseWriter, r *http.Request) {
 
 // serve renders a task's events as an OpenAI response (SSE or aggregated JSON).
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after int64, stream bool) {
+	if isAnthropic(w) {
+		g.serveAnthropic(w, r, t, stream)
+		return
+	}
 	created := t.created
 	chunk := func(delta map[string]any, finish any, usage *lsp2.Usage, extra map[string]any) []byte {
 		m := map[string]any{"id": "chatcmpl-" + t.id, "object": "chat.completion.chunk", "created": created, "model": t.reqModel,

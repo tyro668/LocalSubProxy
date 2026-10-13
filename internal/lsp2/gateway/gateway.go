@@ -169,6 +169,7 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("/v2/tenant/tasks/", g.taskEvents)
 	m.HandleFunc("/v1/models", g.models)
 	m.HandleFunc("/v1/chat/completions", g.chat)
+	m.HandleFunc("/v1/messages", g.messages)
 	return m
 }
 
@@ -190,13 +191,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 // apiError writes an OpenAI-style error body carrying an lsp2 code.
 func apiError(w http.ResponseWriter, status int, code, msg string) {
+	if isAnthropic(w) {
+		anthropicError(w, status, code, msg)
+		return
+	}
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": "lsp2_error", "code": code}})
 }
 
 // httpError writes RFC 9457 problem details for gateway endpoints and the
 // OpenAI error object for the OpenAI-compatible /v1/* surface.
 func httpError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
-	if strings.HasPrefix(r.URL.Path, "/v1/") {
+	if strings.HasPrefix(r.URL.Path, "/v1/") || isAnthropic(w) {
 		apiError(w, status, code, msg)
 		return
 	}
@@ -275,6 +280,9 @@ func normCode(s string) string {
 // it acts for (X-End-User, asserted by the authenticated tenant backend).
 func (g *Gateway) tenantAuth(w http.ResponseWriter, r *http.Request) (store.Tenant, string, bool) {
 	a := r.Header.Get("Authorization")
+	if a == "" && r.Header.Get("X-Api-Key") != "" { // Anthropic clients send x-api-key
+		a = "Bearer " + r.Header.Get("X-Api-Key")
+	}
 	if !strings.HasPrefix(a, "Bearer ") {
 		httpError(w, r, 401, lsp2.ErrUnauthenticated, "tenant API key required")
 		return store.Tenant{}, "", false
