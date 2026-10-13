@@ -3,7 +3,6 @@ package client
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -19,9 +18,8 @@ func TestRejectsForgedTaskRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(lsp2.TaskRun{DeviceID: "dev_1", Model: "m", Exp: time.Now().Add(time.Minute).Unix(), Nonce: "n"})
-	sig := lsp2.B64(ed25519.Sign(attacker, lsp2.TaskRunSigningInput("task_1", data)))
-	c.onRun(lsp2.Envelope{Type: lsp2.TypeTaskRun, TaskID: "task_1", Data: data, Sig: sig})
+	jws := lsp2.SignTaskRun(attacker, "x", lsp2.TaskRun{TaskID: "task_1", DeviceID: "dev_1", Model: "m", Exp: time.Now().Add(time.Minute).Unix(), Nonce: "n"})
+	c.onRun(lsp2.Envelope{Type: lsp2.TypeTaskRun, TaskID: "task_1", JWS: jws})
 	if c.Running() != 0 {
 		t.Fatal("forged task started")
 	}

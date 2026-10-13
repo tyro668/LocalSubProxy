@@ -118,7 +118,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.runs, taskID); s.mu.Unlock() }()
 
-	run := lsp2.TaskRun{DeviceID: s.deviceID, Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Temperature: req.Temperature,
+	run := lsp2.TaskRun{TaskID: taskID, Iat: time.Now().Unix(), DeviceID: s.deviceID, Model: model, Messages: req.Messages, MaxTokens: req.MaxTokens, Temperature: req.Temperature,
 		Exp: time.Now().Add(time.Minute).Unix(), Nonce: lsp2.RandomID("n_")}
 	data, _ := json.Marshal(run)
 	ctx := context.WithoutCancel(r.Context())
@@ -127,8 +127,8 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
-	sig := lsp2.B64(edSign(g, lsp2.TaskRunSigningInput(taskID, data)))
-	if err := s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeTaskRun, TaskID: taskID, Data: data, Sig: sig}); err != nil {
+	jws := lsp2.SignTaskRun(g.cfg.SigningKey, g.kid, run)
+	if err := s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeTaskRun, TaskID: taskID, JWS: jws}); err != nil {
 		_ = g.cfg.Store.SetTaskState(ctx, taskID, "FAILED")
 		apiError(w, 503, lsp2.ErrDeviceOffline, "device disconnected")
 		return

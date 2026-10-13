@@ -13,8 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"localsubproxy/internal/protocol"
+
+	"github.com/gorilla/websocket"
 )
 
 const maxWSMessage = 256 << 10

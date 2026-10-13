@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"localsubproxy/internal/protocol"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestWebSocketEpochAndDurableEventACK(t *testing.T) {

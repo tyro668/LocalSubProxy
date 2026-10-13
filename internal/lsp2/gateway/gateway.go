@@ -25,13 +25,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"localsubproxy/internal/lsp2"
 	"localsubproxy/internal/lsp2/store"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
 	Audience       = "lsp2-gateway"
+	Issuer         = "lsp2-gateway"
 	userCodeChars  = "BCDFGHJKLMNPQRSTVWXZ" // RFC 8628 §6.1 recommendation
 	maxFrame       = 256 << 10
 	deviceGrant    = "urn:ietf:params:oauth:grant-type:device_code"
@@ -111,7 +113,7 @@ func New(cfg Config) (*Gateway, error) {
 		cfg.PingInterval = 20 * time.Second
 	}
 	pub := cfg.SigningKey.Public().(ed25519.PublicKey)
-	return &Gateway{cfg: cfg, pub: pub, kid: lsp2.Thumbprint(pub)[:16], sess: map[string]*session{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}}, nil
+	return &Gateway{cfg: cfg, pub: pub, kid: lsp2.Thumbprint(pub), sess: map[string]*session{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}}, nil
 }
 
 // PublicKey returns the key devices pin to verify task.run frames.
@@ -166,7 +168,58 @@ func apiError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": "lsp2_error", "code": code}})
 }
 
+// httpError writes RFC 9457 problem details for gateway endpoints and the
+// OpenAI error object for the OpenAI-compatible /v1/* surface.
+func httpError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		apiError(w, status, code, msg)
+		return
+	}
+	problem(w, status, code, msg)
+}
+
+func problem(w http.ResponseWriter, status int, code, msg string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"type": ProblemBase + strings.ToLower(strings.ReplaceAll(code, "_", "-")),
+		"title": code, "status": status, "detail": msg, "code": code})
+}
+
+// ProblemBase prefixes RFC 9457 problem type URIs.
+const ProblemBase = "https://localsubproxy.dev/problems/"
+
+// params reads an OAuth request either as application/x-www-form-urlencoded
+// (RFC 6749 §4.1.3 / RFC 8628 §3.1, normative) or as a JSON object (accepted).
+func params(r *http.Request, max int64) (map[string]string, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, max)
+	out := map[string]string{}
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		for k, v := range r.PostForm {
+			if len(v) != 1 {
+				return nil, errors.New("duplicate parameter " + k)
+			}
+			out[k] = v[0]
+		}
+		return out, nil
+	}
+	var m map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		return nil, err
+	}
+	for k, v := range m {
+		if sv, ok := v.(string); ok {
+			out[k] = sv
+		}
+	}
+	return out, nil
+}
+
 func oauthError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, status, map[string]string{"error": code})
 }
 
@@ -198,17 +251,17 @@ func normCode(s string) string {
 func (g *Gateway) tenantAuth(w http.ResponseWriter, r *http.Request) (store.Tenant, string, bool) {
 	a := r.Header.Get("Authorization")
 	if !strings.HasPrefix(a, "Bearer ") {
-		apiError(w, 401, lsp2.ErrUnauthenticated, "tenant API key required")
+		httpError(w, r, 401, lsp2.ErrUnauthenticated, "tenant API key required")
 		return store.Tenant{}, "", false
 	}
 	t, err := g.cfg.Store.TenantByAPIKeyHash(r.Context(), sha(strings.TrimPrefix(a, "Bearer ")))
 	if err != nil {
-		apiError(w, 401, lsp2.ErrUnauthenticated, "invalid tenant API key")
+		httpError(w, r, 401, lsp2.ErrUnauthenticated, "invalid tenant API key")
 		return t, "", false
 	}
 	user := r.Header.Get("X-End-User")
 	if user == "" || len(user) > 128 {
-		apiError(w, 400, lsp2.ErrBadRequest, "X-End-User header required")
+		httpError(w, r, 400, lsp2.ErrBadRequest, "X-End-User header required")
 		return t, "", false
 	}
 	return t, user, true
@@ -221,12 +274,9 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 405, "invalid_request")
 		return
 	}
-	var req struct {
-		Tenant     string `json:"tenant"`
-		PublicKey  string `json:"public_key"`
-		DeviceName string `json:"device_name"`
-	}
-	if decode(r, &req, 4096) != nil || req.Tenant == "" || len(req.DeviceName) > 100 {
+	ps, err := params(r, 4096)
+	req := struct{ Tenant, PublicKey, DeviceName string }{ps["tenant"], ps["public_key"], ps["device_name"]}
+	if err != nil || req.Tenant == "" || len(req.DeviceName) > 100 {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -242,12 +292,13 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 500, "server_error")
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"device_code": dc, "user_code": d.UserCode, "expires_in": int(g.cfg.CodeTTL.Seconds()), "interval": d.Interval})
 }
 
 func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		apiError(w, 405, lsp2.ErrBadRequest, "POST required")
+		httpError(w, r, 405, lsp2.ErrBadRequest, "POST required")
 		return
 	}
 	t, user, ok := g.tenantAuth(w, r)
@@ -259,18 +310,18 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 		Deny     bool   `json:"deny"`
 	}
 	if decode(r, &req, 4096) != nil {
-		apiError(w, 400, lsp2.ErrBadRequest, "invalid JSON")
+		httpError(w, r, 400, lsp2.ErrBadRequest, "invalid JSON")
 		return
 	}
 	if !g.allowAttempt(t.ID) {
-		apiError(w, 429, lsp2.ErrForbidden, "too many failed codes; wait a minute")
+		httpError(w, r, 429, lsp2.ErrForbidden, "too many failed codes; wait a minute")
 		return
 	}
 	code := normCode(req.UserCode)
 	d, err := g.cfg.Store.DeviceAuthByUserCode(r.Context(), t.ID, code)
 	if err != nil || d.Status != "pending" || time.Now().After(d.ExpiresAt) {
 		g.recordFailure(t.ID)
-		apiError(w, 404, lsp2.ErrBadRequest, "code invalid, expired or already used")
+		httpError(w, r, 404, lsp2.ErrBadRequest, "code invalid, expired or already used")
 		return
 	}
 	if req.Deny {
@@ -278,12 +329,12 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 	} else {
 		d.Status, d.OwnerID, d.DeviceID = "approved", user, lsp2.RandomID("dev_")
 		if err := g.cfg.Store.CreateDevice(r.Context(), store.Device{ID: d.DeviceID, TenantID: t.ID, OwnerID: user, Name: d.DeviceName, PublicKey: d.PublicKey, Status: "active", CreatedAt: time.Now()}); err != nil {
-			apiError(w, 500, lsp2.ErrInternal, "storage error")
+			httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 			return
 		}
 	}
 	if err := g.cfg.Store.UpdateDeviceAuth(r.Context(), d); err != nil {
-		apiError(w, 500, lsp2.ErrInternal, "storage error")
+		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": d.Status, "device_id": d.DeviceID, "device_name": d.DeviceName})
@@ -311,10 +362,10 @@ func (g *Gateway) recordFailure(tenant string) {
 
 func (g *Gateway) issue(d store.Device) map[string]any {
 	now := time.Now()
-	c := lsp2.Claims{Iss: "lsp2-gateway", Sub: d.ID, Aud: Audience, Tenant: d.TenantID, Iat: now.Unix(), Exp: now.Add(g.cfg.TokenTTL).Unix(),
+	c := lsp2.Claims{Iss: Issuer, Sub: d.ID, Aud: Audience, Tenant: d.TenantID, Iat: now.Unix(), Exp: now.Add(g.cfg.TokenTTL).Unix(),
 		Jti: lsp2.RandomID("jti_"), Cnf: map[string]string{"jkt": lsp2.Thumbprint(d.PublicKey)}}
-	return map[string]any{"access_token": lsp2.SignJWT(g.cfg.SigningKey, g.kid, c), "token_type": "Bearer", "expires_in": int(g.cfg.TokenTTL.Seconds()),
-		"device_id": d.ID, "gateway_key": map[string]string{"kid": g.kid, "alg": "EdDSA", "x": lsp2.B64(g.pub)}}
+	return map[string]any{"access_token": lsp2.SignJWT(g.cfg.SigningKey, lsp2.TypAccessToken, g.kid, c), "token_type": "Bearer", "expires_in": int(g.cfg.TokenTTL.Seconds()),
+		"device_id": d.ID, "gateway_key": lsp2.PublicJWK(g.pub)}
 }
 
 func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
@@ -322,13 +373,10 @@ func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 405, "invalid_request")
 		return
 	}
-	var req struct {
-		GrantType  string `json:"grant_type"`
-		DeviceCode string `json:"device_code"`
-		Proof      string `json:"proof"` // Ed25519("lsp2.token\n"+device_code) by the device key
-		Assertion  string `json:"assertion"`
-	}
-	if decode(r, &req, 8192) != nil {
+	ps, err := params(r, 8192)
+	// proof: proof JWT by the device key, aud "lsp2:token", ath = hash(device_code).
+	req := struct{ GrantType, DeviceCode, Proof, Assertion string }{ps["grant_type"], ps["device_code"], ps["proof"], ps["assertion"]}
+	if err != nil {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -340,8 +388,7 @@ func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		sig, _ := lsp2.UnB64(req.Proof)
-		if !ed25519.Verify(d.PublicKey, []byte("lsp2.token\n"+req.DeviceCode), sig) {
+		if pc, err := lsp2.VerifyProof(d.PublicKey, req.Proof, "", lsp2.ProofToken, req.DeviceCode, time.Now()); err != nil || !g.useJTI(pc.Jti, time.Now().Add(3*time.Minute)) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
@@ -395,7 +442,7 @@ func (g *Gateway) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		c, err := lsp2.VerifyJWT(dev.PublicKey, req.Assertion, Audience+"/token", time.Now())
+		c, err := lsp2.VerifyJWT(dev.PublicKey, req.Assertion, lsp2.TypAssertion, Audience+"/token", time.Now())
 		if err != nil || c.Iss != dev.ID || c.Exp-c.Iat > 300 || c.Jti == "" || !g.useJTI(c.Jti, time.Unix(c.Exp+60, 0)) {
 			oauthError(w, 400, "invalid_grant")
 			return
@@ -437,12 +484,12 @@ func (g *Gateway) listDevices(w http.ResponseWriter, r *http.Request) {
 	}
 	ds, err := g.cfg.Store.ListDevices(r.Context(), t.ID, user)
 	if err != nil {
-		apiError(w, 500, lsp2.ErrInternal, "storage error")
+		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
 	out := []map[string]any{}
 	for _, d := range ds {
-		item := map[string]any{"device_id": d.ID, "name": d.Name, "status": d.Status, "online": false, "models": []string{}}
+		item := map[string]any{"device_id": d.ID, "name": d.Name, "status": d.Status, "created_at": d.CreatedAt.UTC().Format(time.RFC3339), "online": false, "models": []string{}}
 		if s := g.online(d.ID); s != nil {
 			item["online"], item["models"] = true, s.modelList()
 		}
@@ -454,7 +501,7 @@ func (g *Gateway) listDevices(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) revoke(w http.ResponseWriter, r *http.Request) {
 	id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/v2/tenant/devices/"), "/revoke")
 	if !ok || r.Method != http.MethodPost {
-		apiError(w, 404, lsp2.ErrBadRequest, "not found")
+		httpError(w, r, 404, lsp2.ErrBadRequest, "not found")
 		return
 	}
 	t, user, ok := g.tenantAuth(w, r)
@@ -463,11 +510,11 @@ func (g *Gateway) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	d, err := g.cfg.Store.GetDevice(r.Context(), id)
 	if err != nil || d.TenantID != t.ID || d.OwnerID != user {
-		apiError(w, 404, lsp2.ErrForbidden, "device not found")
+		httpError(w, r, 404, lsp2.ErrForbidden, "device not found")
 		return
 	}
 	if err := g.cfg.Store.SetDeviceStatus(r.Context(), id, "revoked"); err != nil {
-		apiError(w, 500, lsp2.ErrInternal, "storage error")
+		httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 		return
 	}
 	if s := g.online(id); s != nil {
@@ -480,22 +527,22 @@ func (g *Gateway) revoke(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	if !contains(websocket.Subprotocols(r), lsp2.Subprotocol) {
-		apiError(w, 400, lsp2.ErrVersion, "WebSocket subprotocol lsp2 required")
+		httpError(w, r, 400, lsp2.ErrVersion, "WebSocket subprotocol lsp2 required")
 		return
 	}
 	if r.Header.Get("Origin") != "" {
-		apiError(w, 403, lsp2.ErrForbidden, "browser origins are not allowed")
+		httpError(w, r, 403, lsp2.ErrForbidden, "browser origins are not allowed")
 		return
 	}
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	claims, err := lsp2.VerifyJWT(g.pub, tok, Audience, time.Now())
+	claims, err := lsp2.VerifyJWT(g.pub, tok, lsp2.TypAccessToken, Audience, time.Now())
 	if err != nil {
-		apiError(w, 401, lsp2.ErrUnauthenticated, err.Error())
+		httpError(w, r, 401, lsp2.ErrUnauthenticated, err.Error())
 		return
 	}
 	dev, err := g.cfg.Store.GetDevice(r.Context(), claims.Sub)
 	if err != nil || dev.Status != "active" || dev.TenantID != claims.Tenant || claims.Cnf["jkt"] != lsp2.Thumbprint(dev.PublicKey) {
-		apiError(w, 403, lsp2.ErrForbidden, "device revoked or token not bound to device key")
+		httpError(w, r, 403, lsp2.ErrForbidden, "device revoked or token not bound to device key")
 		return
 	}
 	up := websocket.Upgrader{Subprotocols: []string{lsp2.Subprotocol}, CheckOrigin: func(*http.Request) bool { return true }}
@@ -515,8 +562,8 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		writeErr(conn, env.ID, lsp2.ErrVersion, "unsupported protocol version")
 		return
 	}
-	sig, _ := lsp2.UnB64(hello.Proof)
-	if hello.DeviceID != dev.ID || absI(time.Now().Unix()-hello.TS) > 60 || !ed25519.Verify(dev.PublicKey, lsp2.HelloSigningInput(dev.ID, claims.Jti, hello.TS), sig) {
+	pc, perr := lsp2.VerifyProof(dev.PublicKey, hello.Proof, dev.ID, lsp2.ProofHello, tok, time.Now())
+	if hello.DeviceID != dev.ID || perr != nil || !g.useJTI(pc.Jti, time.Now().Add(3*time.Minute)) {
 		writeErr(conn, env.ID, lsp2.ErrUnauthenticated, "invalid key proof")
 		return
 	}
@@ -542,7 +589,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		g.mu.Unlock()
 		close(s.closed)
 	}()
-	wb, _ := json.Marshal(lsp2.Welcome{SessionID: lsp2.RandomID("sess_"), HeartbeatSeconds: 20, MaxFrameBytes: maxFrame, TokenExpiresAt: claims.Exp})
+	wb, _ := json.Marshal(lsp2.Welcome{SessionID: lsp2.RandomID("sess_"), HeartbeatSeconds: 20, MaxFrameBytes: maxFrame, TokenExpiresAt: claims.Exp, Capabilities: intersect(hello.Capabilities, lsp2.Capabilities)})
 	if s.send(lsp2.Envelope{V: lsp2.Version, Type: lsp2.TypeWelcome, ID: env.ID, Data: wb}) != nil {
 		return
 	}
@@ -631,6 +678,16 @@ func absI(n int64) int64 {
 	return n
 }
 
+func intersect(a, b []string) []string {
+	out := []string{}
+	for _, x := range a {
+		if contains(b, x) && !contains(out, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 func contains(xs []string, x string) bool {
 	for _, v := range xs {
 		if v == x {
@@ -639,8 +696,6 @@ func contains(xs []string, x string) bool {
 	}
 	return false
 }
-
-func edSign(g *Gateway, msg []byte) []byte { return ed25519.Sign(g.cfg.SigningKey, msg) }
 
 // RegisterTenant stores a tenant with the SHA-256 of its API key.
 func (g *Gateway) RegisterTenant(ctx context.Context, id, name, apiKey string) error {
@@ -657,7 +712,7 @@ func (g *Gateway) refreshSession(ctx context.Context, s *session, dev store.Devi
 	if json.Unmarshal(in.Data, &st) != nil {
 		return false
 	}
-	c, err := lsp2.VerifyJWT(g.pub, st.AccessToken, Audience, time.Now())
+	c, err := lsp2.VerifyJWT(g.pub, st.AccessToken, lsp2.TypAccessToken, Audience, time.Now())
 	if err != nil || c.Sub != dev.ID || c.Cnf["jkt"] != lsp2.Thumbprint(dev.PublicKey) {
 		return false
 	}
@@ -665,8 +720,8 @@ func (g *Gateway) refreshSession(ctx context.Context, s *session, dev store.Devi
 	if err != nil || cur.Status != "active" {
 		return false
 	}
-	sig, _ := lsp2.UnB64(st.Proof)
-	if absI(time.Now().Unix()-st.TS) > 60 || !ed25519.Verify(dev.PublicKey, lsp2.HelloSigningInput(dev.ID, c.Jti, st.TS), sig) {
+	pc, err := lsp2.VerifyProof(dev.PublicKey, st.Proof, dev.ID, lsp2.ProofSessionToken, st.AccessToken, time.Now())
+	if err != nil || !g.useJTI(pc.Jti, time.Now().Add(3*time.Minute)) {
 		return false
 	}
 	s.mu.Lock()

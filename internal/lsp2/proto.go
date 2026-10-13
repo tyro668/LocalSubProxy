@@ -1,6 +1,7 @@
-// Package v2proto defines the LocalSubProxy protocol v2 ("lsp2") wire types,
-// error codes and the Ed25519 helpers shared by the mock gateway and connector.
-// See docs/protocol-v2.md.
+// Package lsp2 is the Go reference implementation of the LocalSubProxy
+// protocol v2 ("lsp2") wire format: envelope and message types, error codes,
+// and the JOSE profile (EdDSA JWS/JWT, RFC 7638 thumbprints, key-bound proof
+// JWTs). The normative spec is docs/protocol-v2.md; schemas live in spec/.
 package lsp2
 
 import (
@@ -43,7 +44,6 @@ const (
 // SessionToken carries a refreshed token plus a key proof over its jti.
 type SessionToken struct {
 	AccessToken string `json:"access_token,omitempty"`
-	TS          int64  `json:"ts,omitempty"`
 	Proof       string `json:"proof,omitempty"`
 	ExpiresAt   int64  `json:"token_expires_at,omitempty"`
 }
@@ -53,8 +53,9 @@ type ModelsUpdate struct {
 	MaxConcurrency int      `json:"max_concurrency,omitempty"`
 }
 
-// Envelope is the single frame shape on the wire. Data is kept raw so the
-// gateway signature (Sig) covers exactly the bytes that were transmitted.
+// Envelope is the single frame shape on the wire. task.run carries no Data;
+// its payload travels inside JWS (compact, EdDSA) so no JSON canonicalization
+// is ever needed.
 type Envelope struct {
 	V      int             `json:"v"`
 	Type   string          `json:"type"`
@@ -62,7 +63,7 @@ type Envelope struct {
 	TaskID string          `json:"task_id,omitempty"`
 	Seq    int64           `json:"seq,omitempty"`
 	Data   json.RawMessage `json:"data,omitempty"`
-	Sig    string          `json:"sig,omitempty"`
+	JWS    string          `json:"jws,omitempty"`
 }
 
 type Hello struct {
@@ -70,25 +71,31 @@ type Hello struct {
 	Client         string   `json:"client"`
 	Models         []string `json:"models"`
 	MaxConcurrency int      `json:"max_concurrency"`
-	// Proof binds the bearer token to the device key: Ed25519 over
-	// "lsp2.hello\n<device_id>\n<token jti>\n<ts>".
-	TS    int64  `json:"ts"`
+	Capabilities   []string `json:"capabilities,omitempty"`
+	// Proof is a proof JWT (aud "lsp2:hello", ath = hash of the access token).
 	Proof string `json:"proof"`
 }
 
 type Welcome struct {
-	SessionID        string `json:"session_id"`
-	HeartbeatSeconds int    `json:"heartbeat_seconds"`
-	MaxFrameBytes    int    `json:"max_frame_bytes"`
-	TokenExpiresAt   int64  `json:"token_expires_at"`
+	SessionID        string   `json:"session_id"`
+	HeartbeatSeconds int      `json:"heartbeat_seconds"`
+	MaxFrameBytes    int      `json:"max_frame_bytes"`
+	TokenExpiresAt   int64    `json:"token_expires_at"`
+	Capabilities     []string `json:"capabilities"`
 }
+
+// Capabilities this implementation understands (negotiated in hello/welcome).
+var Capabilities = []string{"session.token", "models.update"}
 
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
+// TaskRun is the JWS payload of task.run.
 type TaskRun struct {
+	TaskID      string    `json:"task_id"`
+	Iat         int64     `json:"iat"`
 	DeviceID    string    `json:"device_id"`
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
@@ -132,6 +139,7 @@ const (
 	ErrBadSignature    = "BAD_SIGNATURE"
 	ErrVersion         = "VERSION_UNSUPPORTED"
 	ErrInternal        = "INTERNAL"
+	ErrRateLimited     = "RATE_LIMITED"
 )
 
 func B64(b []byte) string            { return base64.RawURLEncoding.EncodeToString(b) }
@@ -143,21 +151,124 @@ func RandomID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-// Thumbprint is the base64url SHA-256 of the raw Ed25519 public key (used as cnf.jkt).
+// Thumbprint is the RFC 7638 JWK thumbprint (SHA-256, base64url) of an
+// Ed25519 public key, used as cnf.jkt (RFC 7800 / RFC 9449) and as kid.
 func Thumbprint(pub ed25519.PublicKey) string {
-	h := sha256.Sum256(pub)
+	h := sha256.Sum256([]byte(`{"crv":"Ed25519","kty":"OKP","x":"` + B64(pub) + `"}`))
 	return B64(h[:])
 }
 
-func HelloSigningInput(deviceID, jti string, ts int64) []byte {
-	return []byte("lsp2.hello\n" + deviceID + "\n" + jti + "\n" + itoa(ts))
+// JWK is the RFC 8037 OKP public key representation.
+type JWK struct {
+	Kty string `json:"kty"`
+	Crv string `json:"crv"`
+	X   string `json:"x"`
+	Kid string `json:"kid,omitempty"`
+	Alg string `json:"alg,omitempty"`
+	Use string `json:"use,omitempty"`
 }
 
-func TaskRunSigningInput(taskID string, data []byte) []byte {
-	return append([]byte("lsp2.task.run\n"+taskID+"\n"), data...)
+func PublicJWK(pub ed25519.PublicKey) JWK {
+	return JWK{Kty: "OKP", Crv: "Ed25519", X: B64(pub), Kid: Thumbprint(pub), Alg: "EdDSA", Use: "sig"}
 }
 
-func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+// JWS typ values (explicit typing, RFC 8725 §3.11).
+const (
+	TypAccessToken = "at+jwt"         // RFC 9068
+	TypAssertion   = "JWT"            // RFC 7523 client assertion
+	TypProof       = "lsp2-proof+jwt" // device key proof (DPoP-style)
+	TypTask        = "lsp2-task+jws"  // gateway-signed task.run payload
+)
+
+// Proof audiences.
+const (
+	ProofToken        = "lsp2:token"
+	ProofHello        = "lsp2:hello"
+	ProofSessionToken = "lsp2:session.token"
+)
+
+// SignJWS produces a compact JWS (RFC 7515) with alg EdDSA over payload bytes.
+func SignJWS(key ed25519.PrivateKey, typ, kid string, payload []byte) string {
+	h := map[string]string{"alg": "EdDSA", "typ": typ}
+	if kid != "" {
+		h["kid"] = kid
+	}
+	hb, _ := json.Marshal(h)
+	in := B64(hb) + "." + B64(payload)
+	return in + "." + B64(ed25519.Sign(key, []byte(in)))
+}
+
+// VerifyJWS checks a compact EdDSA JWS with the expected typ and returns its payload.
+func VerifyJWS(pub ed25519.PublicKey, jws, typ string) ([]byte, error) {
+	parts := strings.Split(jws, ".")
+	if len(parts) != 3 {
+		return nil, errors.New("malformed JWS")
+	}
+	var h map[string]any
+	hb, err := UnB64(parts[0])
+	if err != nil || json.Unmarshal(hb, &h) != nil || h["alg"] != "EdDSA" || h["typ"] != typ {
+		return nil, errors.New("bad JWS header")
+	}
+	if _, crit := h["crit"]; crit {
+		return nil, errors.New("unsupported crit header")
+	}
+	sig, err := UnB64(parts[2])
+	if err != nil || len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
+		return nil, errors.New("bad JWS signature")
+	}
+	return UnB64(parts[1])
+}
+
+// SignTaskRun signs a task.run payload; the envelope carries the result in jws.
+func SignTaskRun(key ed25519.PrivateKey, kid string, run TaskRun) string {
+	b, _ := json.Marshal(run)
+	return SignJWS(key, TypTask, kid, b)
+}
+
+// VerifyTaskRun verifies the gateway signature and binds it to the envelope task_id.
+func VerifyTaskRun(pub ed25519.PublicKey, envTaskID, jws string) (TaskRun, error) {
+	var run TaskRun
+	p, err := VerifyJWS(pub, jws, TypTask)
+	if err != nil {
+		return run, err
+	}
+	if json.Unmarshal(p, &run) != nil || run.TaskID == "" || run.TaskID != envTaskID {
+		return run, errors.New("task.run payload/task_id mismatch")
+	}
+	return run, nil
+}
+
+// ProofClaims are the claims of a device key proof JWT.
+type ProofClaims struct {
+	Iss string `json:"iss"` // device_id ("" before pairing completes)
+	Aud string `json:"aud"`
+	Iat int64  `json:"iat"`
+	Jti string `json:"jti"`
+	Ath string `json:"ath"` // base64url(SHA-256(bound credential)), as in RFC 9449
+}
+
+func Ath(credential string) string { h := sha256.Sum256([]byte(credential)); return B64(h[:]) }
+
+func SignProof(key ed25519.PrivateKey, deviceID, aud, credential string, now time.Time) string {
+	b, _ := json.Marshal(ProofClaims{Iss: deviceID, Aud: aud, Iat: now.Unix(), Jti: RandomID("p_"), Ath: Ath(credential)})
+	return SignJWS(key, TypProof, "", b)
+}
+
+// VerifyProof checks a proof JWT: signature by pub, aud, iss, ath and |iat-now| <= 60s.
+func VerifyProof(pub ed25519.PublicKey, proof, deviceID, aud, credential string, now time.Time) (ProofClaims, error) {
+	var c ProofClaims
+	p, err := VerifyJWS(pub, proof, TypProof)
+	if err != nil {
+		return c, err
+	}
+	if json.Unmarshal(p, &c) != nil || c.Aud != aud || c.Iss != deviceID || c.Jti == "" || c.Ath != Ath(credential) {
+		return c, errors.New("proof claims invalid")
+	}
+	if d := now.Unix() - c.Iat; d > 60 || d < -60 {
+		return c, errors.New("proof iat outside allowed skew")
+	}
+	return c, nil
+}
 
 // ---- Minimal EdDSA JWT (RFC 7519 / RFC 8037) ----
 
@@ -165,38 +276,26 @@ type Claims struct {
 	Iss    string            `json:"iss"`
 	Sub    string            `json:"sub"`
 	Aud    string            `json:"aud"`
-	Tenant string            `json:"ten,omitempty"`
+	Tenant string            `json:"tenant,omitempty"`
 	Iat    int64             `json:"iat"`
 	Exp    int64             `json:"exp"`
 	Jti    string            `json:"jti"`
 	Cnf    map[string]string `json:"cnf,omitempty"`
 }
 
-func SignJWT(key ed25519.PrivateKey, kid string, c Claims) string {
-	h, _ := json.Marshal(map[string]string{"alg": "EdDSA", "typ": "JWT", "kid": kid})
+func SignJWT(key ed25519.PrivateKey, typ, kid string, c Claims) string {
 	p, _ := json.Marshal(c)
-	in := B64(h) + "." + B64(p)
-	return in + "." + B64(ed25519.Sign(key, []byte(in)))
+	return SignJWS(key, typ, kid, p)
 }
 
-// VerifyJWT checks signature, aud and time; leeway 30s.
-func VerifyJWT(pub ed25519.PublicKey, tok, aud string, now time.Time) (Claims, error) {
+// VerifyJWT checks signature, typ, aud and time; leeway 30s.
+func VerifyJWT(pub ed25519.PublicKey, tok, typ, aud string, now time.Time) (Claims, error) {
 	var c Claims
-	parts := strings.Split(tok, ".")
-	if len(parts) != 3 {
-		return c, errors.New("malformed token")
+	pb, err := VerifyJWS(pub, tok, typ)
+	if err != nil {
+		return c, err
 	}
-	var h map[string]string
-	hb, err := UnB64(parts[0])
-	if err != nil || json.Unmarshal(hb, &h) != nil || h["alg"] != "EdDSA" {
-		return c, errors.New("bad token header")
-	}
-	sig, err := UnB64(parts[2])
-	if err != nil || !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
-		return c, errors.New("bad token signature")
-	}
-	pb, err := UnB64(parts[1])
-	if err != nil || json.Unmarshal(pb, &c) != nil {
+	if json.Unmarshal(pb, &c) != nil {
 		return c, errors.New("bad token payload")
 	}
 	if c.Aud != aud {

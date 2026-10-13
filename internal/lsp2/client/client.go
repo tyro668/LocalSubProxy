@@ -6,7 +6,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -21,8 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"localsubproxy/internal/lsp2"
+
+	"github.com/gorilla/websocket"
 )
 
 // Executor runs one verified task. emit streams text; return either done or an error body.
@@ -79,13 +79,18 @@ func defaultHTTP() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-func postJSON(ctx context.Context, hc *http.Client, u string, in, out any) (int, error) {
-	b, _ := json.Marshal(in)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
+// postForm sends an OAuth-style application/x-www-form-urlencoded request.
+func postForm(ctx context.Context, hc *http.Client, u string, in map[string]string, out any) (int, error) {
+	f := url.Values{}
+	for k, v := range in {
+		f.Set(k, v)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(f.Encode()))
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
 	resp, err := hc.Do(req)
 	if err != nil {
 		return 0, err
@@ -154,7 +159,7 @@ func StartPairing(ctx context.Context, hc *http.Client, remoteURL, deviceName st
 		ExpiresIn  int    `json:"expires_in"`
 		Interval   int    `json:"interval"`
 	}
-	st, err := postJSON(ctx, hc, disc.GatewayURL+"/v2/device/authorize", map[string]string{"tenant": disc.Tenant, "public_key": lsp2.B64(pub), "device_name": deviceName}, &auth)
+	st, err := postForm(ctx, hc, disc.GatewayURL+"/v2/device/authorize", map[string]string{"tenant": disc.Tenant, "public_key": lsp2.B64(pub), "device_name": deviceName}, &auth)
 	if err != nil || st != 200 || auth.DeviceCode == "" {
 		return nil, fmt.Errorf("device authorization failed: %v (HTTP %d)", err, st)
 	}
@@ -170,7 +175,6 @@ func StartPairing(ctx context.Context, hc *http.Client, remoteURL, deviceName st
 
 // Wait polls the token endpoint until the user approves, denies or the code expires.
 func (p *Pairing) Wait(ctx context.Context) (Identity, error) {
-	proof := lsp2.B64(ed25519.Sign(p.key, []byte("lsp2.token\n"+p.code)))
 	for time.Now().Before(p.ExpiresAt) {
 		select {
 		case <-ctx.Done():
@@ -178,7 +182,8 @@ func (p *Pairing) Wait(ctx context.Context) (Identity, error) {
 		case <-time.After(p.interval):
 		}
 		var tok map[string]any
-		st, err := postJSON(ctx, p.hc, p.disc.GatewayURL+"/v2/token", map[string]string{"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": p.code, "proof": proof}, &tok)
+		proof := lsp2.SignProof(p.key, "", lsp2.ProofToken, p.code, time.Now())
+		st, err := postForm(ctx, p.hc, p.disc.GatewayURL+"/v2/token", map[string]string{"grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": p.code, "proof": proof}, &tok)
 		if err != nil {
 			continue
 		}
@@ -258,12 +263,12 @@ func (c *Client) Running() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.
 // accessToken exchanges a device-key-signed assertion for a short-lived token.
 func (c *Client) accessToken(ctx context.Context) (string, lsp2.Claims, error) {
 	now := time.Now()
-	a := lsp2.SignJWT(c.key, "device", lsp2.Claims{Iss: c.id.DeviceID, Sub: c.id.DeviceID, Aud: "lsp2-gateway/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
+	a := lsp2.SignJWT(c.key, lsp2.TypAssertion, lsp2.Thumbprint(c.key.Public().(ed25519.PublicKey)), lsp2.Claims{Iss: c.id.DeviceID, Sub: c.id.DeviceID, Aud: "lsp2-gateway/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: lsp2.RandomID("a_")})
 	var tok struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
 	}
-	st, err := postJSON(ctx, c.cfg.HTTP, c.id.GatewayURL+"/v2/token", map[string]string{"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": a}, &tok)
+	st, err := postForm(ctx, c.cfg.HTTP, c.id.GatewayURL+"/v2/token", map[string]string{"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": a}, &tok)
 	if err != nil || st != 200 {
 		if tok.Error == "invalid_grant" {
 			return "", lsp2.Claims{}, ErrRevoked
@@ -344,9 +349,9 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	defer scancel()
 	stop := context.AfterFunc(sctx, func() { conn.Close() })
 	defer stop()
-	ts := time.Now().Unix()
+	_ = claims
 	hb, _ := json.Marshal(lsp2.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.cfg.Executor.Models(), MaxConcurrency: c.cfg.MaxConcurrency,
-		TS: ts, Proof: lsp2.B64(ed25519.Sign(c.key, lsp2.HelloSigningInput(c.id.DeviceID, claims.Jti, ts)))})
+		Capabilities: lsp2.Capabilities, Proof: lsp2.SignProof(c.key, c.id.DeviceID, lsp2.ProofHello, tok, time.Now())})
 	c.wmu.Lock()
 	c.conn = conn
 	c.wmu.Unlock()
@@ -425,8 +430,7 @@ func (c *Client) refreshLoop(ctx context.Context, exp int64) {
 			exp = time.Now().Add(20 * time.Second).Unix() // retry soon; gateway grants a short grace
 			continue
 		}
-		ts := time.Now().Unix()
-		b, _ := json.Marshal(lsp2.SessionToken{AccessToken: tok, TS: ts, Proof: lsp2.B64(ed25519.Sign(c.key, lsp2.HelloSigningInput(c.id.DeviceID, claims.Jti, ts)))})
+		b, _ := json.Marshal(lsp2.SessionToken{AccessToken: tok, Proof: lsp2.SignProof(c.key, c.id.DeviceID, lsp2.ProofSessionToken, tok, time.Now())})
 		if c.send(lsp2.Envelope{Type: lsp2.TypeSessionToken, ID: lsp2.RandomID("t_"), Data: b}) != nil {
 			return
 		}
@@ -441,13 +445,12 @@ func (c *Client) reject(taskID string, seq int64, code, msg string) {
 
 // onRun enforces the local policy before any model call.
 func (c *Client) onRun(e lsp2.Envelope) {
-	sig, _ := lsp2.UnB64(e.Sig)
-	if !ed25519.Verify(c.gw, lsp2.TaskRunSigningInput(e.TaskID, e.Data), sig) {
+	run, err := lsp2.VerifyTaskRun(c.gw, e.TaskID, e.JWS)
+	if err != nil {
 		c.reject(e.TaskID, 1, lsp2.ErrBadSignature, "task.run signature invalid")
 		return
 	}
-	var run lsp2.TaskRun
-	if json.Unmarshal(e.Data, &run) != nil || run.DeviceID != c.id.DeviceID || time.Now().Unix() > run.Exp {
+	if run.DeviceID != c.id.DeviceID || time.Now().Unix() > run.Exp {
 		c.reject(e.TaskID, 1, lsp2.ErrBadRequest, "task not for this device or expired")
 		return
 	}

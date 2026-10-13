@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"localsubproxy/internal/protocol"
+
+	"github.com/gorilla/websocket"
 )
 
 func devicePost(s *Server, path string, body any) *httptest.ResponseRecorder {

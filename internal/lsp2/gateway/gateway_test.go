@@ -53,14 +53,19 @@ func TestDeviceFlow(t *testing.T) {
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	_, a := post(t, s.URL+"/v2/device/authorize", "", "", map[string]string{"tenant": "acme", "public_key": lsp2.B64(pub), "device_name": "pc"})
 	dc, uc := a["device_code"].(string), a["user_code"].(string)
-	proof := lsp2.B64(ed25519.Sign(key, []byte("lsp2.token\n"+dc)))
+	proof := func() string { return lsp2.SignProof(key, "", lsp2.ProofToken, dc, time.Now()) }
 	tok := func(p string) (int, map[string]any) {
 		return post(t, s.URL+"/v2/token", "", "", map[string]string{"grant_type": deviceGrant, "device_code": dc, "proof": p})
 	}
-	if _, m := tok(proof); m["error"] != "authorization_pending" && m["error"] != "slow_down" {
+	if _, m := tok(proof()); m["error"] != "authorization_pending" && m["error"] != "slow_down" {
 		t.Fatalf("expected pending, got %v", m)
 	}
-	if _, m := tok(proof); m["error"] != "slow_down" {
+	replayed := proof()
+	_, _ = tok(replayed)
+	if _, m := tok(replayed); m["error"] != "invalid_grant" {
+		t.Fatalf("replayed proof accepted: %v", m)
+	}
+	if _, m := tok(proof()); m["error"] != "slow_down" {
 		t.Fatalf("expected slow_down, got %v", m)
 	}
 	// Another tenant cannot approve this code.
@@ -74,21 +79,21 @@ func TestDeviceFlow(t *testing.T) {
 		t.Fatalf("approve %d %v", st, m)
 	}
 	_, other, _ := ed25519.GenerateKey(rand.Reader)
-	if _, m := tok(lsp2.B64(ed25519.Sign(other, []byte("lsp2.token\n"+dc)))); m["error"] != "invalid_grant" {
+	if _, m := tok(lsp2.SignProof(other, "", lsp2.ProofToken, dc, time.Now())); m["error"] != "invalid_grant" {
 		t.Fatal("token issued without device-key proof")
 	}
 	time.Sleep(2 * time.Second)
-	st, m := tok(proof)
+	st, m := tok(proof())
 	if st != 200 || m["access_token"] == nil {
 		t.Fatalf("token %d %v", st, m)
 	}
-	if _, m := tok(proof); m["error"] != "invalid_grant" {
+	if _, m := tok(proof()); m["error"] != "invalid_grant" {
 		t.Fatal("device code reusable")
 	}
 	// Key-bound refresh via device-signed assertion; replayed assertion rejected.
 	now := time.Now()
 	devID := m["device_id"].(string)
-	as := lsp2.SignJWT(key, "d", lsp2.Claims{Iss: devID, Sub: devID, Aud: Audience + "/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x1"})
+	as := lsp2.SignJWT(key, lsp2.TypAssertion, "d", lsp2.Claims{Iss: devID, Sub: devID, Aud: Audience + "/token", Iat: now.Unix(), Exp: now.Add(time.Minute).Unix(), Jti: "x1"})
 	if st, _ := post(t, s.URL+"/v2/token", "", "", map[string]string{"grant_type": jwtBearerGrant, "assertion": as}); st != 200 {
 		t.Fatal("refresh failed")
 	}
