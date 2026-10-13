@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"localsubproxy/mock/fakemodel"
 )
 
 func TestEndToEnd(t *testing.T) {
@@ -23,5 +25,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if r.BobModels != 0 || r.BobRevokeStatus != 404 || r.PromptInDB || !r.RevokedRefresh || r.TokenRefreshes < 1 {
 		t.Fatalf("isolation/encryption/revoke %+v", r)
+	}
+	if !r.ResumeLossless || r.Resumes < 2 {
+		t.Fatalf("resume lossless=%v resumes=%d", r.ResumeLossless, r.Resumes)
+	}
+	if r.BackpressureAt <= 0 || r.BackpressureAt >= fakemodel.VeryLongChunks || r.BackpressureAll != fakemodel.VeryLongChunks {
+		t.Fatalf("backpressure stalled at %d, delivered %d", r.BackpressureAt, r.BackpressureAll)
+	}
+	if !strings.Contains(r.ToolCall, "get_weather") || !strings.Contains(r.ToolAnswer, "晴，22°C") {
+		t.Fatalf("tools %q %q", r.ToolCall, r.ToolAnswer)
+	}
+	if !strings.Contains(r.ImageReply, "image/png") {
+		t.Fatalf("image %q", r.ImageReply)
+	}
+	if !strings.Contains(r.E2EEText, "青鸾") || r.E2EEPlainInStore || r.E2EEPlainInLogs || !r.E2EECiphertext {
+		t.Fatalf("e2ee %+v", r)
 	}
 }

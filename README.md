@@ -9,12 +9,6 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 3. 在已登录的远端服务页面输入配对码并确认，应用会自动完成连接。界面会显示本机设备名称、服务地址和连接状态；设备私钥加密保存在本机。远端服务或网关停止时会显示「未连接」，服务恢复后自动重连，无需重新配对。
 4. 点击「添加方案」配置模型。你也可以先添加方案，再连接远端服务。
 
-![输入远端服务地址](design/screenshots/connect.png)
-
-![远端服务页面弹出验证码](design/screenshots/server.png)
-
-![连接成功后的状态](design/screenshots/status.png)
-
 ## 配置模型方案
 
 点击「添加方案」，填写方案名称并选择「API 提供商」。目前可以新建三种方案：
@@ -35,7 +29,7 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 ## 从源码构建
 
-macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。构建环境与联调见 [实现与集成设计](design/实现与集成设计.md)；服务端接口见 [远端服务接入协议](design/远端服务接入协议.md)；原始架构方案见 [详细设计方案](design/SaaS本地大模型连接器详细设计方案.html)。
+macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。本机联调见 [mock/README.md](mock/README.md)；服务端接口见 [docs/protocol-v2.md](docs/protocol-v2.md)。
 
 ## 协议 lsp2 与其他语言实现
 
@@ -43,7 +37,8 @@ macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-window
 - RFC 8628 设备配对；
 - 用 Ed25519/EdDSA 签名的 JWS/JWT，令牌与设备密钥绑定（`cnf.jkt`）；
 - WebSocket 子协议 `lsp2`；
-- OpenAI 兼容接口，支持 SSE 流式输出。
+- OpenAI 兼容接口，支持 SSE 流式输出；
+- 可协商的扩展：断线续传（resume）、按字节窗口的流量控制（flow）、tools 与多模态输入（tools / multimodal）、基于 JWE（ECDH-ES + X25519, A256GCM）的端到端加密（e2ee）。
 
 任何语言（Java、Node.js、Python、Go、Rust……）都可以实现网关或租户后端：
 

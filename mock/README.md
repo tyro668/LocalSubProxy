@@ -2,7 +2,7 @@
 
 > 网关、存储和设备端已移到 `internal/lsp2/*`，作为正式代码使用。本目录只保留业务服务模拟（`saas/`）、假模型、演示和 `lspmock` 命令行。
 
-本目录补上了原仓库缺少的业务服务（即原文档里 `sophorn-mock-server` 的角色），同时提供一个已修复三项 P0 问题的 **v2 参考网关**和**参考连接器**。协议说明见 [docs/protocol-v2.md](../docs/protocol-v2.md)。
+本目录提供业务服务（SaaS）的模拟实现，配合 `internal/lsp2` 中的参考网关与设备端使用。协议说明见 [docs/protocol-v2.md](../docs/protocol-v2.md)。
 
 | 包 | 作用 |
 |---|---|
@@ -17,7 +17,7 @@
 go run ./mock/cmd/lspmock demo
 ```
 
-演示依次覆盖：配对、握手、流式回答、中途取消、上游报错与模型不存在、同租户其他用户被隔离、数据库中查不到明文提示词、吊销设备。
+演示依次覆盖：配对（链接携带设备公钥指纹 jkt）、握手与能力协商、流式回答、**断线续传**（流式途中两次断开设备 WebSocket，结果逐字一致）、**流控背压**（客户端暂停读取时设备执行器被阻塞）、**tools 往返**、**图片输入**（120 KiB data: URI 走 blob 分块）、**端到端加密**（`/api/chat/e2ee`，网关存储与日志中无明文）、中途取消、上游报错与模型不存在、同租户隔离、静态加密、令牌续期、吊销设备。
 
 ## 分进程运行（可接真实的 LM Studio 或 Ollama）
 
@@ -31,10 +31,10 @@ export LSP_SIGNING_SEED=$(openssl rand -hex 32)      # 网关签名私钥的种�
 bin/lspmock fakemodel &                               # 用真实 LM Studio 时可跳过这一步
 bin/lspmock gateway -db gateway.db -tenants acme:LSP_TENANT_KEY_ACME &
 bin/lspmock saas -tenant acme -users alice:alice-pw,bob:bob-pw &
-bin/lspmock connector -saas http://127.0.0.1:3000 -model-url http://127.0.0.1:11500 -models qwen3-8b
+bin/lspmock connector -saas http://127.0.0.1:3000 -model-url http://127.0.0.1:11500 -models qwen3-8b -caps tools,vision
 ```
 
-连接器启动后会打印配对码。用浏览器打开 http://127.0.0.1:3000 ，以 `alice / alice-pw` 登录，在“连接新设备”页面输入配对码。之后首页会显示设备在线，可以直接流式对话，点“停止”即可取消当前任务。
+连接器启动后会打印配对码。用浏览器打开 http://127.0.0.1:3000 ，以 `alice / alice-pw` 登录，在“连接新设备”页面输入配对码。之后首页会显示设备在线，可以直接流式对话，点“停止”即可取消当前任务。端到端加密对话走 `POST /api/chat/e2ee`（SaaS 用配对时钉住的 jkt 校验设备 X25519 密钥声明后封装 JWE）。
 
 - 接 LM Studio：`-model-url http://127.0.0.1:1234 -models <模型名>`
 - 接 Ollama：`-model-url http://127.0.0.1:11434 -models llama3.2`（使用 Ollama 自带的 `/v1` 接口）

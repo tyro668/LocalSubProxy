@@ -75,6 +75,7 @@ func main() {
 		modelURL := f.String("model-url", "http://127.0.0.1:11500", "local OpenAI-compatible base URL")
 		models := f.String("models", "qwen3-8b", "allowlisted model IDs")
 		conc := f.Int("concurrency", 2, "")
+		capsFlag := f.String("caps", "tools,vision", "model capabilities advertised for every allowlisted model (tools,vision,audio)")
 		f.Parse(os.Args[2:])
 		ident, ok, e := client.LoadIdentityFile(*id)
 		if e != nil {
@@ -94,7 +95,13 @@ func main() {
 			}
 			log.Printf("paired as %s", ident.DeviceID)
 		}
-		c, e := client.New(client.Config{Executor: &client.OpenAIExecutor{BaseURL: *modelURL, ModelList: strings.Split(*models, ",")}, MaxConcurrency: *conc}, ident)
+		caps := map[string][]string{}
+		for _, m := range strings.Split(*models, ",") {
+			if *capsFlag != "" {
+				caps[m] = strings.Split(*capsFlag, ",")
+			}
+		}
+		c, e := client.New(client.Config{Executor: &client.OpenAIExecutor{BaseURL: *modelURL, ModelList: strings.Split(*models, ","), Caps: caps}, MaxConcurrency: *conc}, ident)
 		if e != nil {
 			log.Fatal(e)
 		}

@@ -32,14 +32,17 @@ type Server struct {
 	cfg      Config
 	mu       sync.Mutex
 	sessions map[string]string
-	client   *http.Client
+	// pins records, per user, the device key thumbprint (jkt) received through
+	// the pairing link; it anchors trust in the device's E2EE key.
+	pins   map[string]map[string]string
+	client *http.Client
 }
 
 func New(cfg Config) *Server {
 	if cfg.PublicGatewayURL == "" {
 		cfg.PublicGatewayURL = cfg.GatewayURL
 	}
-	return &Server{cfg: cfg, sessions: map[string]string{}, client: &http.Client{}}
+	return &Server{cfg: cfg, sessions: map[string]string{}, pins: map[string]map[string]string{}, client: &http.Client{}}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -53,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("/api/devices", s.auth(s.proxy("GET", "/v2/tenant/devices")))
 	m.HandleFunc("/api/models", s.auth(s.proxy("GET", "/v1/models")))
 	m.HandleFunc("/api/chat", s.auth(s.proxy("POST", "/v1/chat/completions")))
+	m.HandleFunc("/api/chat/e2ee", s.auth(s.e2eeChat))
 	m.HandleFunc("/api/devices/revoke", s.auth(s.revoke))
 	return m
 }
@@ -133,6 +137,11 @@ func (s *Server) gw(r *http.Request, method, path string, body io.Reader, user s
 	if err != nil {
 		return nil, err
 	}
+	for _, h := range []string{"Idempotency-Key", "Last-Event-ID"} {
+		if v := r.Header.Get(h); v != "" {
+			req.Header.Set(h, v)
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+s.cfg.TenantAPIKey)
 	req.Header.Set("X-End-User", user) // identity comes from our session, never from the browser
 	req.Header.Set("Content-Type", "application/json")
@@ -148,7 +157,7 @@ func (s *Server) proxy(method, path string) userHandler {
 		}
 		var body io.Reader
 		if method == http.MethodPost {
-			body = http.MaxBytesReader(w, r.Body, 1<<20)
+			body = http.MaxBytesReader(w, r.Body, 40<<20) // images travel inline as data: URIs
 		}
 		resp, err := s.gw(r, method, path, body, user)
 		if err != nil {
@@ -181,9 +190,10 @@ func (s *Server) proxy(method, path string) userHandler {
 }
 
 func (s *Server) link(w http.ResponseWriter, r *http.Request, user string) {
-	data := map[string]any{"User": user, "Code": r.URL.Query().Get("user_code")}
+	data := map[string]any{"User": user, "Code": r.URL.Query().Get("user_code"), "JKT": r.URL.Query().Get("jkt")}
 	if r.Method == http.MethodPost {
-		b, _ := json.Marshal(map[string]any{"user_code": r.FormValue("user_code"), "deny": r.FormValue("deny") == "1"})
+		jkt := r.FormValue("jkt")
+		b, _ := json.Marshal(map[string]any{"user_code": r.FormValue("user_code"), "deny": r.FormValue("deny") == "1", "jkt": jkt})
 		resp, err := s.gw(r, "POST", "/v2/tenant/device-approvals", strings.NewReader(string(b)), user)
 		if err != nil {
 			data["Error"] = "网关不可达"
@@ -193,6 +203,14 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, user string) {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
 				data["Result"] = out
+				if dev, _ := out["device_id"].(string); dev != "" && jkt != "" && out["status"] == "approved" {
+					s.mu.Lock()
+					if s.pins[user] == nil {
+						s.pins[user] = map[string]string{}
+					}
+					s.pins[user][dev] = jkt // the gateway verified it matches the paired key
+					s.mu.Unlock()
+				}
 			} else {
 				e, _ := out["error"].(map[string]any)
 				data["Error"] = e["message"]
@@ -242,7 +260,7 @@ pre{background:#0d1117;color:#e6edf3;padding:12px;border-radius:8px;white-space:
 <div class="card"><h3>连接本机设备</h3><p>在桌面连接器上会显示一个 8 位代码（如 <span class="code">BCDF-GHJK</span>），请在这里输入并确认。只有你登录的账号能认领这台设备。</p>
 {{if .Result}}<p class="ok">已{{if eq (index .Result "status") "approved"}}连接{{else}}拒绝{{end}}设备：{{index .Result "device_name"}} {{index .Result "device_id"}}</p>{{end}}
 {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-<form method="post" action="/link"><input name="user_code" value="{{.Code}}" placeholder="XXXX-XXXX" class="code" size="10" autocomplete="off">
+<form method="post" action="/link"><input type="hidden" name="jkt" value="{{.JKT}}"><input name="user_code" value="{{.Code}}" placeholder="XXXX-XXXX" class="code" size="10" autocomplete="off">
 <button>确认连接</button> <button name="deny" value="1" style="background:#888">拒绝</button></form></div></body></html>{{end}}
 {{define "home"}}{{template "head"}}<p>当前用户：<b>{{.User}}</b>（租户 {{.Tenant}}）· <a href="/link">连接新设备</a> · <form style="display:inline" method="post" action="/logout"><button style="background:#888">退出</button></form></p>
 <div class="card"><h3>我的设备</h3><div id="devices">加载中…</div>
