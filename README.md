@@ -32,9 +32,9 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。本机联调见 [mock/README.md](mock/README.md)；服务端接口见 [docs/lmbp-spec.md](docs/lmbp-spec.md)。
 
-## 协议 lmbp 与其他语言实现
+## LMBP 协议与其他语言实现
 
-设备与网关之间使用开放协议 **lmbp**。它完全基于公开标准：
+设备与网关之间使用开放协议 **LMBP（Local Model Bridge Protocol）1.0**。它完全基于公开标准：
 - RFC 8628 设备配对；
 - 用 Ed25519/EdDSA 签名的 JWS/JWT，令牌与设备密钥绑定（`cnf.jkt`）；
 - WebSocket 子协议 `lmbp`；
