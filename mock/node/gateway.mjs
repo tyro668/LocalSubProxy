@@ -1,0 +1,987 @@
+#!/usr/bin/env node
+// LSP2 mock SaaS gateway (Node.js). Behaviourally equivalent to the Go
+// reference gateway (internal/lsp2/gateway): RFC 8628 pairing, EdDSA tokens
+// bound to issuer/tenant audiences, gateway metadata + signed_metadata,
+// RFC 7523 refresh, the lsp2 WebSocket tunnel (seq/ack/resume, credit flow
+// control, tools, multimodal blobs, E2EE relay) and an OpenAI-compatible API.
+// State is in memory: this is a mock / interop target, not a production server.
+import http from 'node:http';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { parseArgs } from 'node:util';
+import { WebSocketServer } from 'ws';
+import * as L from './lsp2.mjs';
+
+const PROBLEM_BASE = 'https://localsubproxy.dev/problems/';
+const USER_CODE_CHARS = 'BCDFGHJKLMNPQRSTVWXZ';
+const STATUS_OF = {
+  BAD_REQUEST: 400, CAPABILITY_UNSUPPORTED: 400, PAYLOAD_TOO_LARGE: 413, IDEMPOTENCY_KEY_REUSED: 422, MODEL_NOT_FOUND: 404,
+  DEVICE_OFFLINE: 503, DEVICE_BUSY: 429, TIMEOUT: 504, CANCELLED: 499, RATE_LIMITED: 429, UNAUTHENTICATED: 401, FORBIDDEN: 403,
+  CONSENT_DENIED: 409,
+};
+const errStatus = (code) => STATUS_OF[code] ?? 502;
+const isTerminal = (t) => t === 'task.done' || t === 'task.error';
+const errorBody = (code, message, retryable = false) => ({ code, message, retryable });
+
+export class Gateway {
+  constructor(cfg = {}) {
+    this.cfg = {
+      issuer: cfg.issuer ? L.origin(cfg.issuer) : '', codeTTL: 600, tokenTTL: 900, maxConc: 16, pingInterval: 20_000,
+      resumeWindow: 30_000, taskTimeout: 10 * 60_000, slowConsumer: 60_000, attachGrace: 30_000,
+      flow: { task_window: 1 << 20, conn_window: 4 << 20 }, log: console.error, ...cfg,
+    };
+    if (cfg.issuer) this.cfg.issuer = L.origin(cfg.issuer);
+    const seed = cfg.seed ?? crypto.randomBytes(32);
+    ({ priv: this.priv, pub: this.pub } = L.signingKey(seed));
+    this.kid = L.thumbprint(this.pub);
+    this.tenants = new Map();     // id → {id, name, keyHash, profile}
+    this.auths = new Map();       // device_code hash → device auth
+    this.devices = new Map();     // id → {id, tenant, owner, name, pub, status, created, e2eeKey}
+    this.idem = new Map();        // tenant|owner|key → {taskID, bodyHash}
+    this.taskRecs = new Map();    // id → {id, tenant, owner, device, model, state, events}
+    this.devs = new Map();        // device id → DState (live / resumable)
+    this.tasks = new Map();       // task id → Task hub
+    this.jtis = new Map();
+    this.fails = new Map();
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: L.MAX_FRAME_BYTES, perMessageDeflate: false,
+      handleProtocols: (ps) => (ps.has(L.SUBPROTOCOL) ? L.SUBPROTOCOL : false) });
+  }
+
+  registerTenant(id, apiKey, profile = {}) {
+    if (!L.TENANT_ID_RE.test(id)) throw new Error('invalid tenant id ' + id);
+    if (!apiKey || apiKey.length < 32) throw new Error('tenant API key must be at least 32 characters');
+    for (const s of profile.requested_scopes ?? []) if (!L.SCOPES.includes(s)) throw new Error('unknown scope ' + s);
+    this.tenants.set(id, { id, name: profile.display_name || id, keyHash: L.shaHex(apiKey), profile });
+  }
+
+  issuer(req) {
+    if (this.cfg.issuer) return this.cfg.issuer;
+    const scheme = req.socket.encrypted ? 'https' : 'http';
+    try { return L.origin(`${scheme}://${req.headers.host}`); } catch { return `${scheme}://${String(req.headers.host).toLowerCase()}`; }
+  }
+
+  useJTI(j, untilMs) {
+    const t = Date.now();
+    for (const [k, v] of this.jtis) if (t > v) this.jtis.delete(k);
+    if (this.jtis.has(j)) return false;
+    this.jtis.set(j, untilMs);
+    return true;
+  }
+
+  verifyAccess(tok, iss) {
+    const uc = L.unverifiedClaims(tok);
+    const c = L.verifyJWT(this.pub, tok, L.TYP.access, L.tokenAudience(iss, uc.tenant), L.now());
+    if (c.iss !== iss) throw new Error('token issuer mismatch');
+    return c;
+  }
+
+  online(id) { const ds = this.devs.get(id); return ds && ds.connected() ? ds : null; }
+
+  // ---------- HTTP plumbing ----------
+  listen(port, host) {
+    this.server = http.createServer((req, res) => this.handle(req, res).catch((e) => {
+      this.cfg.log('handler error', e);
+      if (!res.headersSent) problem(res, 500, 'INTERNAL', 'internal error'); else res.end();
+    }));
+    this.server.on('upgrade', (req, sock, head) => this.upgrade(req, sock, head).catch(() => sock.destroy()));
+    return new Promise((ok) => this.server.listen(port, host, () => ok(this.server.address())));
+  }
+
+  async handle(req, res) {
+    const u = new URL(req.url, 'http://x');
+    const p = u.pathname;
+    const err = (s, code, msg) => (p.startsWith('/v1/') ? apiError(res, s, code, msg) : problem(res, s, code, msg));
+    if (p === '/healthz') return json(res, 200, { status: 'ok' });
+    if (p === '/.well-known/jwks.json') { res.setHeader('Cache-Control', 'public, max-age=300'); return json(res, 200, { keys: [L.publicJWK(this.pub)] }); }
+    if (p === '/.well-known/lsp2-gateway') return this.metadata(req, res, u);
+    if (p === '/v2/device/authorize') return this.authorize(req, res);
+    if (p === '/v2/token') return this.token(req, res);
+    if (p === '/v2/connect') return problem(res, 400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lsp2 required');
+    if (p === '/v2/tenant/device-approvals') return this.approve(req, res, err);
+    if (p === '/v2/tenant/devices') return this.listDevices(req, res, err);
+    let m;
+    if ((m = p.match(/^\/v2\/tenant\/devices\/([^/]+)\/revoke$/))) return this.revoke(req, res, err, decodeURIComponent(m[1]));
+    if ((m = p.match(/^\/v2\/tenant\/tasks\/([^/]+)\/events$/)) && req.method === 'GET') return this.taskEvents(req, res, err, m[1]);
+    if (p === '/v1/models') return this.models(req, res, err);
+    if (p === '/v1/chat/completions') return this.chat(req, res, err);
+    return err(404, 'BAD_REQUEST', 'not found');
+  }
+
+  tenantAuth(req, err) {
+    const a = req.headers.authorization || '';
+    if (!a.startsWith('Bearer ')) { err(401, 'UNAUTHENTICATED', 'tenant API key required'); return null; }
+    const h = L.shaHex(a.slice(7));
+    const t = [...this.tenants.values()].find((t) => crypto.timingSafeEqual(Buffer.from(t.keyHash), Buffer.from(h)));
+    if (!t) { err(401, 'UNAUTHENTICATED', 'invalid tenant API key'); return null; }
+    const user = req.headers['x-end-user'];
+    if (!user || user.length > 128) { err(400, 'BAD_REQUEST', 'X-End-User header required'); return null; }
+    return { t, user };
+  }
+
+  // ---------- §18 metadata ----------
+  buildMetadata(iss, t) {
+    const ws = 'ws' + iss.slice(4);
+    const m = { issuer: iss, jwks_uri: iss + '/.well-known/jwks.json', device_authorization_endpoint: iss + '/v2/device/authorize',
+      token_endpoint: iss + '/v2/token', connect_endpoint: ws + '/v2/connect', chat_completions_endpoint: iss + '/v1/chat/completions',
+      protocol_versions: ['2'], capabilities: L.CAPABILITIES, scopes_supported: L.SCOPES };
+    if (!t) return m;
+    const p = t.profile || {};
+    const saas = { name: p.display_name || t.name };
+    for (const k of ['logo_uri', 'homepage_uri', 'policy_uri', 'tos_uri', 'pairing_uri']) if (p[k]) saas[k] = p[k];
+    const iat = L.now();
+    Object.assign(m, { tenant: t.id, audience: L.tokenAudience(iss, t.id), saas });
+    if (p.requested_models?.length) m.requested_models = p.requested_models;
+    Object.assign(m, { requested_scopes: p.requested_scopes?.length ? p.requested_scopes : ['lsp2.chat'], iat, exp: iat + 3600 });
+    m.signed_metadata = L.signJWS(this.priv, L.TYP.metadata, this.kid, m);
+    return m;
+  }
+
+  metadata(req, res, u) {
+    if (req.method !== 'GET') return problem(res, 405, 'BAD_REQUEST', 'GET required');
+    let t = null;
+    const id = u.searchParams.get('tenant');
+    if (id) {
+      t = L.TENANT_ID_RE.test(id) ? this.tenants.get(id) : null;
+      if (!t) return problem(res, 404, 'BAD_REQUEST', 'unknown tenant');
+    }
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    return json(res, 200, this.buildMetadata(this.issuer(req), t));
+  }
+
+  // ---------- RFC 8628 pairing ----------
+  async authorize(req, res) {
+    if (req.method !== 'POST') return oauthError(res, 405, 'invalid_request');
+    const ps = await params(req, 4096);
+    if (!ps || !ps.tenant || (ps.device_name?.length ?? 0) > 100) return oauthError(res, 400, 'invalid_request');
+    let pub;
+    try { pub = L.unb64(ps.public_key || ''); } catch { return oauthError(res, 400, 'invalid_request'); }
+    if (pub.length !== 32) return oauthError(res, 400, 'invalid_request');
+    const dc = L.randomID('dc_');
+    const d = { codeHash: L.shaHex(dc), userCode: userCode(), tenant: ps.tenant, pub, name: ps.device_name || '', status: 'pending',
+      expires: Date.now() + this.cfg.codeTTL * 1000, interval: 2, lastPoll: 0, deviceID: '', owner: '' };
+    this.auths.set(d.codeHash, d);
+    res.setHeader('Cache-Control', 'no-store');
+    return json(res, 200, { device_code: dc, user_code: d.userCode, expires_in: this.cfg.codeTTL, interval: d.interval });
+  }
+
+  allowAttempt(tenant) {
+    const cut = Date.now() - 60_000;
+    const keep = (this.fails.get(tenant) || []).filter((t) => t > cut);
+    this.fails.set(tenant, keep);
+    return keep.length < 10;
+  }
+  recordFailure(tenant) { (this.fails.get(tenant) || this.fails.set(tenant, []).get(tenant)).push(Date.now()); }
+
+  async approve(req, res, err) {
+    if (req.method !== 'POST') return err(405, 'BAD_REQUEST', 'POST required');
+    const a = this.tenantAuth(req, err);
+    if (!a) return;
+    const body = await readJSON(req, 4096);
+    if (!body || typeof body !== 'object') return err(400, 'BAD_REQUEST', 'invalid JSON');
+    if (!this.allowAttempt(a.t.id)) return err(429, 'RATE_LIMITED', 'too many failed codes; wait a minute');
+    const code = normCode(body.user_code);
+    const d = [...this.auths.values()].find((d) => d.tenant === a.t.id && d.userCode === code);
+    if (d && d.status === 'denied' && Date.now() <= d.expires) {
+      // §19: the pairing was declined (by the SaaS user or withdrawn by the device user).
+      this.recordFailure(a.t.id);
+      return err(409, 'CONSENT_DENIED', 'pairing consent was denied for this code');
+    }
+    if (!d || d.status !== 'pending' || Date.now() > d.expires) {
+      this.recordFailure(a.t.id);
+      return err(404, 'BAD_REQUEST', 'code invalid, expired or already used');
+    }
+    if (body.jkt && body.jkt !== L.thumbprint(d.pub)) {
+      this.recordFailure(a.t.id);
+      return err(409, 'FORBIDDEN', 'device key thumbprint does not match the pairing request');
+    }
+    if (body.deny === true) d.status = 'denied';
+    else {
+      Object.assign(d, { status: 'approved', owner: a.user, deviceID: L.randomID('dev_') });
+      this.devices.set(d.deviceID, { id: d.deviceID, tenant: a.t.id, owner: a.user, name: d.name, pub: d.pub, status: 'active', created: new Date(), e2eeKey: '' });
+    }
+    return json(res, 200, { status: d.status, device_id: d.deviceID, device_name: d.name, jkt: L.thumbprint(d.pub) });
+  }
+
+  issue(dev, iss) {
+    const iat = L.now();
+    const c = { iss, sub: dev.id, aud: L.tokenAudience(iss, dev.tenant), tenant: dev.tenant, iat, exp: iat + this.cfg.tokenTTL,
+      jti: L.randomID('jti_'), cnf: { jkt: L.thumbprint(dev.pub) } };
+    return { access_token: L.signJWS(this.priv, L.TYP.access, this.kid, c), token_type: 'Bearer', expires_in: this.cfg.tokenTTL,
+      device_id: dev.id, gateway_key: L.publicJWK(this.pub), issuer: iss };
+  }
+
+  async token(req, res) {
+    if (req.method !== 'POST') return oauthError(res, 405, 'invalid_request');
+    const ps = await params(req, 8192);
+    if (!ps) return oauthError(res, 400, 'invalid_request');
+    const iss = this.issuer(req);
+    if (ps.grant_type === 'urn:ietf:params:oauth:grant-type:device_code') {
+      const d = this.auths.get(L.shaHex(ps.device_code || ''));
+      if (!d) return oauthError(res, 400, 'invalid_grant');
+      try {
+        const pc = L.verifyProof(d.pub, ps.proof, '', L.PROOF.token, ps.device_code);
+        if (!this.useJTI(pc.jti, Date.now() + 180_000)) throw new Error('replay');
+      } catch { return oauthError(res, 400, 'invalid_grant'); }
+      if (Date.now() > d.expires) return oauthError(res, 400, 'expired_token');
+      if (d.status === 'denied') return oauthError(res, 400, 'access_denied');
+      if (d.status === 'consumed') return oauthError(res, 400, 'invalid_grant');
+      if (d.status === 'pending') {
+        const t = Date.now();
+        const slow = t - d.lastPoll < d.interval * 1000 - 200;
+        d.lastPoll = t;
+        if (slow) d.interval += 5;
+        return oauthError(res, 400, slow ? 'slow_down' : 'authorization_pending');
+      }
+      const dev = this.devices.get(d.deviceID);
+      if (!dev) return oauthError(res, 500, 'server_error');
+      d.status = 'consumed';
+      return json(res, 200, this.issue(dev, iss));
+    }
+    if (ps.grant_type === 'urn:ietf:params:oauth:grant-type:jwt-bearer') {
+      try {
+        const uc = L.unverifiedClaims(ps.assertion);
+        const dev = this.devices.get(uc.sub);
+        if (!dev || dev.status !== 'active') throw new Error('device');
+        const c = L.verifyJWT(dev.pub, ps.assertion, L.TYP.assertion, L.assertionAudience(iss));
+        if (c.iss !== dev.id || c.exp - c.iat > 300 || !c.jti || !this.useJTI(c.jti, (c.exp + 60) * 1000)) throw new Error('claims');
+        return json(res, 200, this.issue(dev, iss));
+      } catch { return oauthError(res, 400, 'invalid_grant'); }
+    }
+    return oauthError(res, 400, 'unsupported_grant_type');
+  }
+
+  // ---------- tenant device management ----------
+  ownDevices(tenant, owner) { return [...this.devices.values()].filter((d) => d.tenant === tenant && d.owner === owner); }
+
+  listDevices(req, res, err) {
+    const a = this.tenantAuth(req, err);
+    if (!a) return;
+    const out = this.ownDevices(a.t.id, a.user).map((d) => {
+      const item = { device_id: d.id, name: d.name, status: d.status, created_at: d.created.toISOString().replace(/\.\d+Z$/, 'Z'), online: false, models: [],
+        public_key: L.publicJWK(d.pub), jkt: L.thumbprint(d.pub) };
+      if (d.e2eeKey) item.e2ee_key = d.e2eeKey;
+      const s = this.online(d.id);
+      if (s) Object.assign(item, { online: true, models: [...s.models], model_capabilities: { ...s.modelCaps }, capabilities: [...s.caps], max_concurrency: s.maxConc });
+      return item;
+    });
+    return json(res, 200, { devices: out });
+  }
+
+  revoke(req, res, err, id) {
+    if (req.method !== 'POST') return err(404, 'BAD_REQUEST', 'not found');
+    const a = this.tenantAuth(req, err);
+    if (!a) return;
+    const d = this.devices.get(id);
+    if (!d || d.tenant !== a.t.id || d.owner !== a.user) return err(404, 'FORBIDDEN', 'device not found');
+    d.status = 'revoked';
+    this.dropDevice(id, 'UNAUTHENTICATED', 'device revoked');
+    return json(res, 200, { device_id: id, status: 'revoked' });
+  }
+
+  dropDevice(id, code, msg) {
+    const ds = this.devs.get(id);
+    if (ds) { this.devs.delete(id); ds.drop(code, msg); }
+  }
+
+  // ---------- WebSocket tunnel ----------
+  async upgrade(req, sock, head) {
+    const u = new URL(req.url, 'http://x');
+    const reject = (status, code, msg) => {
+      const b = JSON.stringify(problemBody(status, code, msg));
+      sock.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nContent-Type: application/problem+json\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(b)}\r\nConnection: close\r\n\r\n${b}`);
+    };
+    if (u.pathname !== '/v2/connect') return reject(404, 'BAD_REQUEST', 'not found');
+    const protos = String(req.headers['sec-websocket-protocol'] || '').split(',').map((s) => s.trim());
+    if (!protos.includes(L.SUBPROTOCOL)) return reject(400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lsp2 required');
+    if (req.headers.origin) return reject(403, 'FORBIDDEN', 'browser origins are not allowed');
+    const tok = String(req.headers.authorization || '').replace(/^Bearer /, '');
+    const iss = this.issuer(req);
+    let claims;
+    try { claims = this.verifyAccess(tok, iss); } catch (e) { return reject(401, 'UNAUTHENTICATED', e.message); }
+    const dev = this.devices.get(claims.sub);
+    if (!dev || dev.status !== 'active' || dev.tenant !== claims.tenant || claims.cnf?.jkt !== L.thumbprint(dev.pub))
+      return reject(403, 'FORBIDDEN', 'device revoked or token not bound to device key');
+    this.wss.handleUpgrade(req, sock, head, (ws) => this.session(ws, dev, tok, claims, iss));
+  }
+
+  session(ws, dev, tok, claims, iss) {
+    const helloTimer = setTimeout(() => ws.terminate(), 15_000);
+    ws.once('message', (raw, isBinary) => {
+      clearTimeout(helloTimer);
+      let env, hello;
+      try { env = JSON.parse(raw.toString()); hello = env.data; } catch { return ws.close(); }
+      if (isBinary || env?.type !== 'hello' || !hello || typeof hello !== 'object') return ws.close();
+      const early = (code, msg) => { ws.send(JSON.stringify(envelope('error', { id: env.id, data: errorBody(code, msg) }))); ws.close(); };
+      if (env.v !== L.VERSION) return early('VERSION_UNSUPPORTED', 'unsupported protocol version');
+      try {
+        if (hello.device_id !== dev.id) throw new Error('device');
+        const pc = L.verifyProof(dev.pub, hello.proof, dev.id, L.PROOF.hello, tok);
+        if (!this.useJTI(pc.jti, Date.now() + 180_000)) throw new Error('replay');
+      } catch { return early('UNAUTHENTICATED', 'invalid key proof'); }
+      let caps = intersect(Array.isArray(hello.capabilities) ? hello.capabilities : [], L.CAPABILITIES);
+      if (hello.e2ee_key && caps.includes('e2ee')) {
+        try { L.verifyE2EEKey(dev.pub, dev.id, hello.e2ee_key); } catch { return early('BAD_REQUEST', 'invalid e2ee key statement'); }
+        dev.e2eeKey = hello.e2ee_key;
+      } else caps = caps.filter((c) => c !== 'e2ee');
+      const conc = Math.min(Math.max(hello.max_concurrency | 0, 1), this.cfg.maxConc);
+      this.attachSession(ws, dev, claims, iss, env, hello, caps, conc);
+    });
+  }
+
+  attachSession(ws, dev, claims, iss, env, hello, caps, conc) {
+    const old = this.devs.get(dev.id);
+    const resumed = !!(old && hello.resume && caps.includes('resume') && hello.resume.token && hello.resume.token === old.resumeToken);
+    if (old && !resumed) { this.devs.delete(dev.id); old.drop('OUTCOME_UNKNOWN', 'device reconnected without resuming'); }
+    const ds = resumed ? old : new DState(this, dev);
+    if (!resumed) this.devs.set(dev.id, ds);
+    const prev = ds.ws;
+    const gen = ++ds.gen;
+    Object.assign(ds, { ws, models: Array.isArray(hello.models) ? hello.models : [], modelCaps: hello.model_capabilities || {}, caps, maxConc: conc,
+      tokenExp: claims.exp, issuer: iss, resumeToken: L.randomID('rt_') });
+    if (!ds.inb) ds.inb = new L.Inbound(caps.includes('flow') ? this.cfg.flow : null);
+    else ds.inb.resetWindows();
+    const resumeTasks = [], deviceRecv = new Map(), lost = [];
+    if (resumed) {
+      for (const rt of hello.resume.tasks || []) deviceRecv.set(rt.task_id, rt.recv_seq | 0);
+      for (const [id, t] of ds.tasks) {
+        if (!deviceRecv.has(id) && t.sentRun) { lost.push(t); continue; }
+        resumeTasks.push({ task_id: id, recv_seq: ds.inb.recv(id) });
+      }
+    }
+    if (prev && prev !== ws) prev.terminate();
+    for (const t of lost) t.failOffline('OUTCOME_UNKNOWN', 'device resumed without this task; outcome unknown');
+    ds.out.setFlow(caps.includes('flow') ? (validFlow(hello.flow) ? { task_window: hello.flow.task_window, conn_window: hello.flow.conn_window } : { task_window: 1 << 20, conn_window: 4 << 20 }) : null);
+    const welcome = { session_id: L.randomID('sess_'), heartbeat_seconds: Math.max(1, Math.floor(this.cfg.pingInterval / 1000)), max_frame_bytes: L.MAX_FRAME_BYTES,
+      token_expires_at: claims.exp, capabilities: caps, max_concurrency: conc };
+    if (caps.includes('flow')) welcome.flow = this.cfg.flow;
+    if (caps.includes('resume')) {
+      welcome.resume_token = ds.resumeToken;
+      welcome.resume_window_seconds = Math.floor(this.cfg.resumeWindow / 1000);
+      if (hello.resume) welcome.resume = { resumed, tasks: resumeTasks };
+    }
+    ds.control(envelope('welcome', { id: env.id, data: welcome }));
+    ds.out.attach((raw) => { if (ws.readyState !== ws.OPEN) throw new Error('closed'); ws.send(raw); });
+    if (resumed) {
+      for (const rt of resumeTasks) ds.out.retransmit(rt.task_id, deviceRecv.get(rt.task_id) ?? 0);
+      this.cfg.log(`device ${dev.id} resumed ${resumeTasks.length} task(s)`);
+    } else this.cfg.log(`device ${dev.id} (tenant ${dev.tenant}) online, models=${ds.models} caps=${caps} conc=${conc}`);
+
+    const ping = setInterval(() => {
+      if (L.now() > ds.tokenExp + 30) return ws.terminate();
+      if (Date.now() - ds.lastSeen > 60_000) return ws.terminate();
+      try { ws.ping(); } catch { /* closed */ }
+    }, this.cfg.pingInterval);
+    ds.lastSeen = Date.now();
+    ws.on('pong', () => { ds.lastSeen = Date.now(); });
+    ws.on('message', (raw, isBinary) => {
+      ds.lastSeen = Date.now();
+      if (isBinary) return ws.close(1003, 'text frames only');
+      let inp;
+      try { inp = JSON.parse(raw.toString()); } catch { inp = null; }
+      if (!inp || typeof inp !== 'object' || inp.v !== L.VERSION) return ds.sendErr(inp?.id, 'BAD_REQUEST', 'malformed frame');
+      switch (inp.type) {
+        case 'task.delta': case 'task.done': case 'task.error':
+          if (!this.onDeviceData(ds, inp, raw.length)) ws.close();
+          break;
+        case 'task.ack':
+          if (inp.data && Number.isInteger(inp.data.seq)) ds.out.ack(inp.task_id, inp.data.seq);
+          break;
+        case 'session.token':
+          if (!this.refreshSession(ds, dev, inp)) { ds.sendErr(inp.id, 'UNAUTHENTICATED', 'session token rejected'); ws.close(); }
+          break;
+        case 'models.update': {
+          const mu = inp.data;
+          if (mu && Array.isArray(mu.models) && mu.models.length <= 500) {
+            ds.models = mu.models; ds.modelCaps = mu.model_capabilities || {};
+            if (mu.max_concurrency >= 1) { ds.maxConc = Math.min(mu.max_concurrency, this.cfg.maxConc); ds.wakeSlots(); }
+            if (mu.e2ee_key && ds.caps.includes('e2ee')) { try { L.verifyE2EEKey(dev.pub, dev.id, mu.e2ee_key); dev.e2eeKey = mu.e2ee_key; } catch { /* ignore */ } }
+          }
+          break;
+        }
+        case 'ping': ds.control(envelope('pong', { id: inp.id })); break;
+        case 'pong': break;
+        default: ds.sendErr(inp.id, 'BAD_REQUEST', 'unknown message type ' + inp.type);
+      }
+    });
+    ws.on('close', () => {
+      clearInterval(ping);
+      if (ds.gen !== gen) return; // replaced by a newer connection
+      ds.out.attach(null);
+      ds.ws = null;
+      if (!ds.caps.includes('resume') || ds.dropped) return this.dropDevice(dev.id, 'DEVICE_OFFLINE', 'device disconnected');
+      setTimeout(() => {
+        if (ds.gen === gen && !ds.ws) {
+          if (this.devs.get(dev.id) === ds) this.devs.delete(dev.id);
+          ds.drop('DEVICE_OFFLINE', 'device did not resume in time');
+        }
+      }, this.cfg.resumeWindow).unref();
+    });
+  }
+
+  onDeviceData(ds, inp, size) {
+    const t = ds.tasks.get(inp.task_id);
+    if (!t) { ds.control(envelope('task.cancel', { task_id: inp.task_id, data: { reason: 'unknown_task' } })); return true; }
+    switch (ds.inb.accept(inp.task_id, Number(inp.seq) || 0, size)) {
+      case L.DUPLICATE: t.maybeAck(); return true;
+      case L.GAP: t.cancel('protocol_error'); t.failLocal('INTERNAL', 'sequence gap from device'); return true;
+      case L.OVERFLOW:
+        ds.sendErr('', 'FLOW_CONTROL', 'flow-control window exceeded');
+        t.failLocal('FLOW_CONTROL', 'device exceeded the flow-control window');
+        return false;
+    }
+    t.onDeviceFrame(inp);
+    return true;
+  }
+
+  refreshSession(ds, dev, inp) {
+    const st = inp.data || {};
+    try {
+      const c = this.verifyAccess(st.access_token, ds.issuer);
+      if (c.sub !== dev.id || c.cnf?.jkt !== L.thumbprint(dev.pub) || this.devices.get(dev.id)?.status !== 'active') return false;
+      const pc = L.verifyProof(dev.pub, st.proof, dev.id, L.PROOF.sessionToken, st.access_token);
+      if (!this.useJTI(pc.jti, Date.now() + 180_000)) return false;
+      ds.tokenExp = c.exp;
+      ds.control(envelope('session.token', { id: inp.id, data: { token_expires_at: c.exp } }));
+      return true;
+    } catch { return false; }
+  }
+
+  // ---------- OpenAI-compatible surface ----------
+  models(req, res, err) {
+    const a = this.tenantAuth(req, err);
+    if (!a) return;
+    const data = [];
+    for (const d of this.ownDevices(a.t.id, a.user)) {
+      const s = this.online(d.id);
+      if (!s || d.status !== 'active') continue;
+      for (const m of s.models) data.push({ id: `${d.id}/${m}`, object: 'model', owned_by: d.name, capabilities: s.modelCaps[m] || [] });
+    }
+    return json(res, 200, { object: 'list', data });
+  }
+
+  resolve(tenant, user, model) {
+    const ds = this.ownDevices(tenant, user);
+    let want = model, bare = true, devID = '';
+    const i = model.indexOf('/');
+    if (i > 0 && model.startsWith('dev_')) { devID = model.slice(0, i); want = model.slice(i + 1); bare = false; }
+    let known = false;
+    for (const d of ds) {
+      if (d.status !== 'active' || (!bare && d.id !== devID)) continue;
+      known = known || !bare;
+      const s = this.online(d.id);
+      if (s && s.models.includes(want)) return { ds: s, model: want };
+    }
+    if (known) return { code: 'DEVICE_OFFLINE', status: 503 };
+    if (ds.length && bare && !ds.some((d) => this.online(d.id))) return { code: 'DEVICE_OFFLINE', status: 503 };
+    return { code: 'MODEL_NOT_FOUND', status: 404 };
+  }
+
+  async chat(req, res, err) {
+    if (req.method !== 'POST') return err(405, 'BAD_REQUEST', 'POST required');
+    const a = this.tenantAuth(req, err);
+    if (!a) return;
+    const body = await readBody(req, 48 << 20);
+    if (!body) return err(413, 'PAYLOAD_TOO_LARGE', 'request body too large');
+    let r;
+    try { r = JSON.parse(body.toString()); } catch { r = null; }
+    if (!r || typeof r !== 'object' || typeof r.model !== 'string' || !r.model) return err(400, 'BAD_REQUEST', 'invalid JSON body or missing model');
+    const idemKey = req.headers['idempotency-key'] || '';
+    if (idemKey.length > 255) return err(400, 'BAD_REQUEST', 'Idempotency-Key too long');
+    const bodyHash = L.sha256(body).toString('hex');
+    const ikey = `${a.t.id}|${a.user}|${idemKey}`;
+    if (idemKey && this.idem.has(ikey)) {
+      const rec = this.idem.get(ikey);
+      if (rec.bodyHash !== bodyHash) return err(422, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency-Key was used with a different request body');
+      return this.reattach(req, res, err, rec.taskID, r.model, !!r.stream);
+    }
+    const msgs = Array.isArray(r.messages) ? r.messages : [];
+    const tools = Array.isArray(r.tools) ? r.tools : [];
+    const hasToolChoice = r.tool_choice !== undefined && r.tool_choice !== null;
+    if (r.lsp2_e2ee) {
+      if (msgs.length || tools.length) return err(400, 'BAD_REQUEST', 'lsp2_e2ee requests must not carry cleartext messages or tools');
+    } else {
+      if (!msgs.length || msgs.length > 500) return err(400, 'BAD_REQUEST', '1-500 messages required');
+      for (const m of msgs) {
+        if (!m || !['system', 'user', 'assistant', 'tool', 'developer'].includes(m.role)) return err(400, 'BAD_REQUEST', 'unsupported role ' + m?.role);
+        if (m.role === 'tool' && !m.tool_call_id) return err(400, 'BAD_REQUEST', 'tool messages need tool_call_id');
+      }
+    }
+    const rs = this.resolve(a.t.id, a.user, r.model);
+    if (!rs.ds) return err(rs.status, rs.code, { DEVICE_OFFLINE: 'your device is offline', MODEL_NOT_FOUND: 'model not found on your devices' }[rs.code]);
+    const { ds, model } = rs;
+    const run = { task_id: '', iat: 0, device_id: ds.deviceID, model };
+    let blobs = [];
+    if (r.lsp2_e2ee) {
+      if (!ds.caps.includes('e2ee')) return err(400, 'CAPABILITY_UNSUPPORTED', 'device does not support end-to-end encryption');
+      const jwe = String(r.lsp2_e2ee);
+      if (jwe.split('.').length !== 5 || jwe.length > L.MAX_TASK_BLOB_BYTES) return err(400, 'BAD_REQUEST', 'lsp2_e2ee must be a compact JWE');
+      const id = L.randomID('blob_');
+      const data = Buffer.from(jwe);
+      blobs = [{ ref: { id, size: data.length, sha256: L.b64(L.sha256(data)), media_type: 'application/jose' }, data }];
+      run.e2ee = { blob: id };
+    } else {
+      const ex = extractBlobs(msgs);
+      if (ex.code) return err(errStatus(ex.code), ex.code, ex.msg);
+      blobs = ex.blobs;
+      if (tools.length || hasToolChoice) {
+        if (!ds.caps.includes('tools') || !(ds.modelCaps[model] || []).includes('tools')) return err(400, 'CAPABILITY_UNSUPPORTED', `model ${model} does not support tools`);
+        for (const tl of tools) if (tl?.type !== 'function' || !tl.function?.name) return err(400, 'BAD_REQUEST', 'tools must be type function with a name');
+      }
+      if ((ex.vision || ex.audio) && !ds.caps.includes('multimodal')) return err(400, 'CAPABILITY_UNSUPPORTED', 'device does not support multimodal input');
+      if (ex.vision && !(ds.modelCaps[model] || []).includes('vision')) return err(400, 'CAPABILITY_UNSUPPORTED', `model ${model} does not accept images`);
+      if (ex.audio && !(ds.modelCaps[model] || []).includes('audio')) return err(400, 'CAPABILITY_UNSUPPORTED', `model ${model} does not accept audio`);
+      run.messages = msgs.map(normMessage);
+      if (tools.length) run.tools = tools;
+      if (hasToolChoice) run.tool_choice = r.tool_choice;
+    }
+    if (Number.isInteger(r.max_tokens) && r.max_tokens > 0) run.max_tokens = r.max_tokens;
+    if (typeof r.temperature === 'number') run.temperature = r.temperature;
+    if (blobs.length) run.blobs = blobs.map((b) => b.ref);
+
+    const taskID = L.randomID('task_');
+    if (idemKey) this.idem.set(ikey, { taskID, bodyHash });
+    this.taskRecs.set(taskID, { id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] });
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    const got = await ds.acquire(15_000, abort.signal);
+    if (!got || !ds.connected()) {
+      if (got) ds.release();
+      this.taskRecs.get(taskID).state = 'FAILED';
+      if (!ds.connected()) return err(503, 'DEVICE_OFFLINE', 'device disconnected');
+      if (abort.signal.aborted) return;
+      res.setHeader('Retry-After', '2');
+      return err(429, 'DEVICE_BUSY', 'device is at max concurrency');
+    }
+    const task = new Task(this, ds, taskID, a.t.id, a.user, r.model, !!run.e2ee, !!idemKey);
+    task.slot = true;
+    this.taskRecs.get(taskID).state = 'RUNNING';
+    const iat = L.now();
+    run.task_id = taskID; run.iat = iat;
+    const signed = { ...run, exp: iat + 60, nonce: L.randomID('n_') };
+    const jws = L.signJWS(this.priv, L.TYP.task, this.kid, signed);
+    this.dispatch(task, jws, blobs);
+    res.setHeader('X-Task-Id', taskID);
+    return this.serve(req, res, task, 0, !!r.stream, abort.signal);
+  }
+
+  async dispatch(t, jws, blobs) {
+    t.sentRun = true;
+    try { await t.ds.out.send(t.id, () => ({ type: 'task.run', jws }), t.abort.signal); } catch {
+      t.sentRun = false;
+      return t.failOffline('DEVICE_OFFLINE', 'device disconnected');
+    }
+    for (const b of blobs) {
+      for (let off = 0; ; off += L.BLOB_CHUNK_BYTES) {
+        const end = Math.min(off + L.BLOB_CHUNK_BYTES, b.data.length);
+        const data = { blob_id: b.ref.id, offset: off, data: L.b64(b.data.subarray(off, end)) };
+        if (end === b.data.length) data.last = true;
+        try { await t.ds.out.send(t.id, () => ({ type: 'blob.chunk', data }), t.abort.signal); } catch { return; }
+        if (end === b.data.length) break;
+      }
+    }
+  }
+
+  reattach(req, res, err, taskID, reqModel, stream) {
+    let t = this.tasks.get(taskID);
+    if (!t) {
+      const rec = this.taskRecs.get(taskID);
+      if (!rec) return err(404, 'BAD_REQUEST', 'task no longer available');
+      t = Task.finished(this, rec, reqModel);
+    }
+    const after = parseInt(req.headers['last-event-id'] || '0', 10) || 0;
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    res.setHeader('X-Task-Id', taskID);
+    return this.serve(req, res, t, after, stream, abort.signal);
+  }
+
+  taskEvents(req, res, err, id) {
+    const a = this.tenantAuth(req, err);
+    if (!a) return;
+    const rec = this.taskRecs.get(id);
+    if (!rec || rec.tenant !== a.t.id || rec.owner !== a.user) return err(404, 'BAD_REQUEST', 'task not found');
+    return this.reattach(req, res, err, id, `${rec.device}/${rec.model}`, true);
+  }
+
+  async serve(req, res, t, after, stream, signal) {
+    const chunk = (delta, finish, usage, extra) => {
+      const m = { id: 'chatcmpl-' + t.id, object: 'chat.completion.chunk', created: t.created, model: t.reqModel, choices: [{ index: 0, delta, finish_reason: finish }] };
+      if (usage) m.usage = usage;
+      return JSON.stringify(Object.assign(m, extra || {}));
+    };
+    const sealed = (e) => (typeof e.data?.e2ee === 'string' && e.data.e2ee ? { lsp2_e2ee: { seq: e.seq, type: e.type, data: e.data.e2ee } } : null);
+    if (stream) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      if (after === 0) res.write(`id: 0\ndata: ${chunk({ role: 'assistant', content: '' }, null)}\n\n`);
+      await t.stream(after, signal, () => res.write(': keep-alive\n\n'), (e) => {
+        let b, tail = '';
+        if (e.type === 'task.delta') {
+          if (t.e2ee) b = chunk({}, null, null, sealed(e));
+          else {
+            const delta = {};
+            if (e.data?.text) delta.content = e.data.text;
+            if (e.data?.tool_calls?.length) delta.tool_calls = e.data.tool_calls;
+            b = chunk(delta, null);
+          }
+        } else if (e.type === 'task.done') {
+          b = chunk({}, e.data?.finish_reason || 'stop', e.data?.usage, t.e2ee ? sealed(e) : null);
+          tail = 'data: [DONE]\n\n';
+        } else {
+          const eb = e.data || {};
+          b = JSON.stringify({ error: { message: eb.message, type: 'lsp2_error', code: eb.code, retryable: !!eb.retryable } });
+        }
+        res.write(`id: ${e.seq}\ndata: ${b}\n\n${tail}`);
+      });
+      return res.end();
+    }
+    let text = '';
+    const calls = [], sealedFrames = [];
+    let done = null, fail = null;
+    const ok = await t.stream(after, signal, null, (e) => {
+      if (e.type === 'task.delta') {
+        if (t.e2ee) { const s = sealed(e); if (s) sealedFrames.push(s.lsp2_e2ee); return; }
+        text += e.data?.text || '';
+        for (const c of e.data?.tool_calls || []) {
+          const idx = Number.isInteger(c.index) ? c.index : 0;
+          while (calls.length <= idx) calls.push({ type: 'function', function: { name: '', arguments: '' } });
+          if (c.id) calls[idx].id = c.id;
+          calls[idx].function.name += c.function?.name || '';
+          calls[idx].function.arguments += c.function?.arguments || '';
+        }
+      } else if (e.type === 'task.done') {
+        done = e.data || {};
+        if (t.e2ee) { const s = sealed(e); if (s) sealedFrames.push(s.lsp2_e2ee); }
+      } else fail = e.data || {};
+    });
+    if (!ok) return;
+    if (fail) return apiError(res, errStatus(fail.code), fail.code, fail.message);
+    const finish = done.finish_reason || 'stop';
+    const msg = { role: 'assistant', content: text };
+    if (calls.length) {
+      msg.tool_calls = calls.map((c) => ({ ...(c.id ? { id: c.id } : {}), type: 'function', function: c.function }));
+      if (!text) msg.content = null;
+    }
+    const out = { id: 'chatcmpl-' + t.id, object: 'chat.completion', created: t.created, model: t.reqModel, choices: [{ index: 0, message: msg, finish_reason: finish }] };
+    if (t.e2ee) { out.choices = [{ index: 0, message: { role: 'assistant', content: null }, finish_reason: finish }]; out.lsp2_e2ee = sealedFrames; }
+    if (done.usage) out.usage = done.usage;
+    return json(res, 200, out);
+  }
+}
+
+// DState is one device's protocol state; it outlives a socket for the resume window.
+class DState {
+  constructor(g, dev) {
+    Object.assign(this, { g, deviceID: dev.id, tenant: dev.tenant, owner: dev.owner, out: new L.Outbox(), inb: null, ws: null, gen: 0,
+      models: [], modelCaps: {}, caps: [], maxConc: 1, tokenExp: 0, issuer: '', resumeToken: '', tasks: new Map(), slots: 0, slotWait: [], dropped: false, lastSeen: Date.now() });
+  }
+  connected() { return !!this.ws && !this.dropped; }
+  control(e) {
+    if (!this.ws || this.ws.readyState !== this.ws.OPEN) return false;
+    this.ws.send(JSON.stringify(e));
+    return true;
+  }
+  sendErr(id, code, msg) { this.control(envelope('error', { id, data: errorBody(code, msg) })); }
+  acquire(timeoutMs, signal) {
+    if (this.slots < this.maxConc && !this.slotWait.length) { this.slots++; return Promise.resolve(true); }
+    return new Promise((resolve) => {
+      const w = { resolve: (v) => { clearTimeout(timer); resolve(v); } };
+      const give = () => { const i = this.slotWait.indexOf(w); if (i >= 0) { this.slotWait.splice(i, 1); resolve(false); } };
+      const timer = setTimeout(give, timeoutMs);
+      signal?.addEventListener('abort', give, { once: true });
+      this.slotWait.push(w);
+    });
+  }
+  release() { this.slots--; this.wakeSlots(); }
+  wakeSlots() { while (this.slotWait.length && this.slots < this.maxConc) { this.slots++; this.slotWait.shift().resolve(true); } }
+  drop(code, msg) {
+    this.dropped = true;
+    const ws = this.ws;
+    for (const w of this.slotWait.splice(0)) w.resolve(true);
+    this.out.close();
+    for (const t of [...this.tasks.values()]) t.failOffline(code, msg);
+    if (ws) ws.close();
+  }
+}
+
+// Task is the gateway-side hub of one task: it buffers device frames, fans
+// them out to (re-)attached HTTP subscribers and paces task.ack (§8).
+class Task {
+  constructor(g, ds, id, tenant, owner, reqModel, e2ee, idempotent) {
+    Object.assign(this, { g, ds, id, tenant, owner, reqModel, e2ee, idempotent, created: L.now(), sentRun: false, abort: new AbortController(),
+      events: [], waiters: [], done: false, subs: new Map(), nextSub: 0, acked: 0, ackAt: Date.now(), grace: null, slot: false });
+    g.tasks.set(id, this);
+    if (ds) {
+      ds.tasks.set(id, this);
+      this.timeout = setTimeout(() => { if (this.cancel('timeout')) this.failLocal('TIMEOUT', 'task timed out'); }, g.cfg.taskTimeout);
+      this.watch = setInterval(() => {
+        const stalled = this.subs.size > 0 && this.recvSeq() > this.acked && Date.now() - this.ackAt > g.cfg.slowConsumer;
+        if (stalled && this.cancel('slow_consumer')) this.failLocal('SLOW_CONSUMER', 'client did not consume the stream in time');
+      }, 1000);
+    }
+  }
+  static finished(g, rec, reqModel) {
+    const t = Object.create(Task.prototype);
+    Object.assign(t, { g, ds: null, id: rec.id, reqModel, e2ee: false, created: L.now(), events: [...rec.events], waiters: [], done: true, subs: new Map(), nextSub: 0 });
+    if (!t.events.length || !isTerminal(t.events.at(-1).type)) t.events.push({ seq: t.events.length + 1, type: 'task.error', data: errorBody('OUTCOME_UNKNOWN', 'task outcome unknown') });
+    return t;
+  }
+  recvSeq() { return this.ds?.inb ? this.ds.inb.recv(this.id) : 0; }
+  broadcast() { for (const w of this.waiters.splice(0)) w(); }
+  record(ev) { this.events.push(ev); this.g.taskRecs.get(this.id)?.events.push(ev); this.broadcast(); }
+  onDeviceFrame(inp) {
+    if (this.done) return this.maybeAck();
+    let data = inp.data && typeof inp.data === 'object' ? inp.data : {};
+    if (inp.type === 'task.delta' && !this.e2ee && data.e2ee) { data = { ...data }; delete data.e2ee; }
+    this.record({ seq: inp.seq, type: inp.type, data });
+    if (isTerminal(inp.type)) {
+      let state = 'SUCCEEDED';
+      if (inp.type === 'task.error') state = data.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED';
+      return this.finish(state, true);
+    }
+    this.maybeAck();
+  }
+  maybeAck() {
+    if (!this.ds) return;
+    let target = this.recvSeq();
+    if (!this.done) for (const d of this.subs.values()) target = Math.min(target, d);
+    if (target <= this.acked) return;
+    this.acked = target; this.ackAt = Date.now();
+    this.ds.inb?.acked(this.id, target);
+    this.ds.control(envelope('task.ack', { task_id: this.id, data: { seq: target } }));
+  }
+  cancel(reason) {
+    if (this.done) return false;
+    if (this.ds && this.sentRun) this.ds.control(envelope('task.cancel', { task_id: this.id, data: { reason } }));
+    return true;
+  }
+  failLocal(code, msg, retryable = false) {
+    if (this.done) return;
+    this.record({ seq: (this.events.at(-1)?.seq ?? 0) + 1, type: 'task.error', data: errorBody(code, msg, retryable) });
+    this.finish(code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', false);
+  }
+  failOffline(code, msg) {
+    if (code === 'DEVICE_OFFLINE' && this.sentRun) { code = 'OUTCOME_UNKNOWN'; msg += '; outcome unknown'; }
+    this.failLocal(code, msg, code === 'DEVICE_OFFLINE');
+  }
+  finish(state, fromDevice) {
+    if (this.done) return;
+    this.done = true;
+    const slot = this.slot;
+    this.slot = false;
+    clearTimeout(this.grace); clearTimeout(this.timeout); clearInterval(this.watch);
+    this.broadcast();
+    const rec = this.g.taskRecs.get(this.id);
+    if (rec) rec.state = state;
+    const ds = this.ds;
+    if (ds) {
+      if (fromDevice) this.maybeAck();
+      ds.tasks.delete(this.id);
+      ds.out.forget(this.id);
+      ds.inb?.forget(this.id);
+      if (slot) ds.release();
+    }
+    this.abort.abort();
+    setTimeout(() => { if (this.g.tasks.get(this.id) === this) this.g.tasks.delete(this.id); }, this.g.cfg.attachGrace + 600_000).unref();
+  }
+  attach(after) {
+    const id = ++this.nextSub;
+    this.subs.set(id, after);
+    clearTimeout(this.grace); this.grace = null;
+    return id;
+  }
+  detach(id) {
+    this.subs.delete(id);
+    const left = this.subs.size === 0 && !this.done;
+    if (left && this.idempotent) {
+      this.grace = setTimeout(() => {
+        if (this.subs.size === 0 && this.cancel('client_disconnected')) this.failLocal('CANCELLED', 'client did not re-attach');
+      }, this.g.cfg.attachGrace);
+    }
+    if (left && !this.idempotent) { if (this.cancel('client_disconnected')) this.failLocal('CANCELLED', 'client disconnected'); return; }
+    this.maybeAck();
+  }
+  // stream delivers events with seq > after until the terminal one; false if aborted.
+  async stream(after, signal, keepalive, fn) {
+    const sub = this.attach(after);
+    let keep;
+    try {
+      for (;;) {
+        if (signal?.aborted) return false;
+        const batch = this.events.filter((e) => e.seq > after);
+        for (const e of batch) {
+          fn(e);
+          after = e.seq;
+          if (this.subs.has(sub)) this.subs.set(sub, after);
+          if (isTerminal(e.type)) return true;
+        }
+        this.maybeAck();
+        if (batch.length) continue;
+        await new Promise((resolve) => {
+          const wake = () => { clearTimeout(keep); signal?.removeEventListener('abort', wake); resolve(); };
+          this.waiters.push(wake);
+          signal?.addEventListener('abort', wake, { once: true });
+          if (keepalive) keep = setTimeout(() => { try { keepalive(); } catch { /* closed */ } wake(); }, 15_000);
+        });
+      }
+    } finally { clearTimeout(keep); this.detach(sub); }
+  }
+}
+
+// ---------- helpers ----------
+function envelope(type, { id, task_id, data } = {}) {
+  const e = { v: L.VERSION, type };
+  if (id) e.id = id;
+  if (task_id) e.task_id = task_id;
+  if (data !== undefined) e.data = data;
+  return e;
+}
+function json(res, status, body) {
+  const b = JSON.stringify(body);
+  res.writeHead(status, { 'Content-Type': res.getHeader('Content-Type') || 'application/json', 'Content-Length': Buffer.byteLength(b) });
+  res.end(b);
+}
+function problemBody(status, code, detail) {
+  return { type: PROBLEM_BASE + code.toLowerCase().replaceAll('_', '-'), title: code, status, detail, code };
+}
+function problem(res, status, code, detail) {
+  res.setHeader('Content-Type', 'application/problem+json');
+  res.setHeader('Cache-Control', 'no-store');
+  json(res, status, problemBody(status, code, detail));
+}
+function apiError(res, status, code, message) { json(res, status, { error: { message, type: 'lsp2_error', code } }); }
+function oauthError(res, status, error) { res.setHeader('Cache-Control', 'no-store'); json(res, status, { error }); }
+function readBody(req, max) {
+  return new Promise((resolve) => {
+    const parts = []; let n = 0, over = false;
+    req.on('data', (c) => { n += c.length; if (n > max) over = true; else parts.push(c); });
+    req.on('end', () => resolve(over ? null : Buffer.concat(parts)));
+    req.on('error', () => resolve(null));
+  });
+}
+async function readJSON(req, max) {
+  const b = await readBody(req, max);
+  try { return b ? JSON.parse(b.toString()) : null; } catch { return null; }
+}
+// params reads an OAuth request as form-urlencoded (normative) or JSON (accepted).
+async function params(req, max) {
+  const b = await readBody(req, max);
+  if (!b) return null;
+  if (String(req.headers['content-type'] || '').startsWith('application/x-www-form-urlencoded')) {
+    const out = {};
+    for (const [k, v] of new URLSearchParams(b.toString())) { if (k in out) return null; out[k] = v; }
+    return out;
+  }
+  try {
+    const m = JSON.parse(b.toString());
+    if (!m || typeof m !== 'object') return null;
+    return Object.fromEntries(Object.entries(m).filter(([, v]) => typeof v === 'string'));
+  } catch { return null; }
+}
+function userCode() {
+  let s = '';
+  for (let i = 0; i < 8; i++) s += USER_CODE_CHARS[crypto.randomInt(USER_CODE_CHARS.length)];
+  return s.slice(0, 4) + '-' + s.slice(4);
+}
+function normCode(s) {
+  s = String(s || '').trim().replaceAll('-', '').replaceAll(' ', '').toUpperCase();
+  return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4) : '';
+}
+const intersect = (a, b) => a.filter((x, i) => b.includes(x) && a.indexOf(x) === i);
+const validFlow = (f) => f && Number.isInteger(f.task_window) && Number.isInteger(f.conn_window) && f.task_window > 0 && f.conn_window > 0;
+function normMessage(m) {
+  const o = { role: m.role, content: m.content === undefined ? '' : m.content };
+  for (const k of ['name', 'tool_calls', 'tool_call_id']) if (m[k] !== undefined && m[k] !== '' && m[k] !== null) o[k] = m[k];
+  return o;
+}
+// extractBlobs moves large inline binaries (data: URIs, input_audio) into blobs (§16.3).
+function extractBlobs(msgs) {
+  const blobs = [];
+  let total = 0, vision = false, audio = false;
+  const add = (data, mt) => {
+    if (data.length > L.MAX_BLOB_BYTES || (total += data.length) > L.MAX_TASK_BLOB_BYTES) return null;
+    const id = L.randomID('blob_');
+    blobs.push({ ref: { id, size: data.length, sha256: L.b64(L.sha256(data)), media_type: mt }, data });
+    return L.BLOB_SCHEME + id;
+  };
+  const strictB64 = (s) => (/^[A-Za-z0-9+/]*={0,2}$/.test(s) && s.length % 4 === 0 ? Buffer.from(s, 'base64') : null);
+  for (const m of msgs) {
+    if (!Array.isArray(m.content)) continue;
+    for (const p of m.content) {
+      switch (p?.type) {
+        case 'text': break;
+        case 'image_url': {
+          vision = true;
+          const u = p.image_url?.url;
+          if (typeof u !== 'string') return { code: 'BAD_REQUEST', msg: 'image_url part without url' };
+          if (u.startsWith('https://')) break;
+          if (!u.startsWith('data:')) return { code: 'BAD_REQUEST', msg: 'image_url must be https:// or a data: URI' };
+          const comma = u.indexOf(',');
+          const meta = comma < 0 ? '' : u.slice(5, comma);
+          if (comma < 0 || !meta.endsWith(';base64') || !meta.startsWith('image/')) return { code: 'BAD_REQUEST', msg: 'image data URI must be data:image/*;base64,' };
+          if (u.length <= L.INLINE_DATA_URI_BYTES) break;
+          const raw = strictB64(u.slice(comma + 1));
+          if (!raw) return { code: 'BAD_REQUEST', msg: 'invalid base64 in image data URI' };
+          const ref = add(raw, meta.slice(0, -7));
+          if (!ref) return { code: 'PAYLOAD_TOO_LARGE', msg: 'image exceeds size limits' };
+          p.image_url.url = ref;
+          break;
+        }
+        case 'input_audio': {
+          audio = true;
+          const a = p.input_audio;
+          if (!a || typeof a.data !== 'string' || (a.format !== 'wav' && a.format !== 'mp3')) return { code: 'BAD_REQUEST', msg: 'input_audio needs data and format wav|mp3' };
+          if (a.data.length <= L.INLINE_DATA_URI_BYTES) break;
+          const raw = strictB64(a.data);
+          if (!raw) return { code: 'BAD_REQUEST', msg: 'invalid base64 in input_audio' };
+          const ref = add(raw, 'audio/' + a.format);
+          if (!ref) return { code: 'PAYLOAD_TOO_LARGE', msg: 'audio exceeds size limits' };
+          a.data = ref;
+          break;
+        }
+        default: return { code: 'BAD_REQUEST', msg: 'unsupported content part ' + p?.type };
+      }
+    }
+  }
+  return { blobs, vision, audio };
+}
+
+// ---------- CLI ----------
+async function main() {
+  const { values: o } = parseArgs({ options: {
+    listen: { type: 'string', default: process.env.LSP2_LISTEN || '127.0.0.1:8080' },
+    issuer: { type: 'string', default: process.env.LSP2_ISSUER || '' },
+    tenant: { type: 'string', multiple: true, default: [] },
+    'tenant-profiles': { type: 'string', default: process.env.LSP2_TENANT_PROFILES || '' },
+    'signing-key-env': { type: 'string', default: 'LSP2_SIGNING_SEED' },
+    'max-concurrency': { type: 'string', default: '16' },
+    help: { type: 'boolean', short: 'h' },
+  } });
+  if (o.help) {
+    console.log(`usage: node gateway.mjs [--listen host:port] [--issuer https://gw.example] [--tenant id:ENV_VAR]... [--tenant-profiles profiles.json]
+  --tenant id:ENV       register tenant <id> whose API key (>= 32 chars) is read from env var ENV
+  --tenant-profiles F   JSON {"<tenant>": {"api_key_env": "...", "display_name": "...", "requested_scopes": [...], ...}}
+  LSP2_SIGNING_SEED     hex Ed25519 seed (32 bytes); ephemeral key if unset`);
+    return;
+  }
+  const seedHex = process.env[o['signing-key-env']];
+  if (!seedHex) console.error('warning: no signing key; using an ephemeral key (tokens do not survive restarts)');
+  const g = new Gateway({ issuer: o.issuer, seed: seedHex ? Buffer.from(seedHex, 'hex') : undefined, maxConc: Number(o['max-concurrency']) });
+  for (const t of o.tenant) {
+    const [id, env] = t.split(':');
+    if (!process.env[env]) throw new Error(`tenant ${id}: env ${env} is empty`);
+    g.registerTenant(id, process.env[env]);
+  }
+  if (o['tenant-profiles']) {
+    for (const [id, p] of Object.entries(JSON.parse(fs.readFileSync(o['tenant-profiles'], 'utf8')))) {
+      const key = process.env[p.api_key_env || ''];
+      if (!key) throw new Error(`tenant ${id}: api_key_env ${p.api_key_env} is empty`);
+      g.registerTenant(id, key, p);
+    }
+  }
+  if (!g.tenants.size) console.error('warning: no tenants registered (use --tenant id:ENV_VAR)');
+  const i = o.listen.lastIndexOf(':');
+  const addr = await g.listen(Number(o.listen.slice(i + 1)), o.listen.slice(0, i) || '0.0.0.0');
+  console.error(`lsp2 node mock gateway listening on ${addr.address}:${addr.port} issuer=${g.cfg.issuer || '(request origin, dev mode)'} kid=${g.kid}`);
+}
+
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('gateway.mjs')) main().catch((e) => { console.error(e.message); process.exit(1); });

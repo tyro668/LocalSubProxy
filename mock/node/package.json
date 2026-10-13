@@ -1,0 +1,11 @@
+{
+  "name": "lsp2-mock-gateway-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LSP2 mock SaaS gateway in Node.js (equivalent to the Go reference gateway)",
+  "engines": { "node": ">=18.17" },
+  "bin": { "lsp2-mock-gateway": "gateway.mjs" },
+  "scripts": { "start": "node gateway.mjs", "test": "node --test test/" },
+  "dependencies": { "ws": "^8.18.0" }
+}
