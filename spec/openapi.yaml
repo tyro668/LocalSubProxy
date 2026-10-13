@@ -173,6 +173,11 @@ paths:
                   jkt: { type: string }
         '400': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: The code was denied earlier (code CONSENT_DENIED, §19.3); a denied pairing cannot be re-approved.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '429': { $ref: '#/components/responses/Problem' }

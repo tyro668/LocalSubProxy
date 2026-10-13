@@ -397,11 +397,11 @@ func (g *Gateway) reattach(w http.ResponseWriter, r *http.Request, taskID, reqMo
 	if t == nil {
 		st, err := g.cfg.Store.GetTask(r.Context(), taskID)
 		if err != nil {
-			apiError(w, 404, lsp2.ErrBadRequest, "task no longer available")
+			httpError(w, r, 404, lsp2.ErrBadRequest, "task no longer available")
 			return
 		}
 		if t, err = g.finishedTask(st, reqModel); err != nil {
-			apiError(w, 500, lsp2.ErrInternal, "storage error")
+			httpError(w, r, 500, lsp2.ErrInternal, "storage error")
 			return
 		}
 	}
@@ -415,7 +415,7 @@ func (g *Gateway) taskEvents(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v2/tenant/tasks/")
 	id, ok := strings.CutSuffix(rest, "/events")
 	if !ok || r.Method != http.MethodGet || id == "" {
-		apiError(w, 404, lsp2.ErrBadRequest, "not found")
+		httpError(w, r, 404, lsp2.ErrBadRequest, "not found")
 		return
 	}
 	t, user, ok := g.tenantAuth(w, r)
@@ -424,7 +424,7 @@ func (g *Gateway) taskEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	st, err := g.cfg.Store.GetTask(r.Context(), id)
 	if err != nil || st.TenantID != t.ID || st.OwnerID != user {
-		apiError(w, 404, lsp2.ErrBadRequest, "task not found")
+		httpError(w, r, 404, lsp2.ErrBadRequest, "task not found")
 		return
 	}
 	g.reattach(w, r, id, st.DeviceID+"/"+st.Model, true)

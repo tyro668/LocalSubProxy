@@ -17,7 +17,7 @@ const USER_CODE_CHARS = 'BCDFGHJKLMNPQRSTVWXZ';
 const STATUS_OF = {
   BAD_REQUEST: 400, CAPABILITY_UNSUPPORTED: 400, PAYLOAD_TOO_LARGE: 413, IDEMPOTENCY_KEY_REUSED: 422, MODEL_NOT_FOUND: 404,
   DEVICE_OFFLINE: 503, DEVICE_BUSY: 429, TIMEOUT: 504, CANCELLED: 499, RATE_LIMITED: 429, UNAUTHENTICATED: 401, FORBIDDEN: 403,
-  CONSENT_DENIED: 409,
+  CONSENT_DENIED: 403,
 };
 const errStatus = (code) => STATUS_OF[code] ?? 502;
 const isTerminal = (t) => t === 'task.done' || t === 'task.error';
@@ -184,7 +184,7 @@ export class Gateway {
     if (d && d.status === 'denied' && Date.now() <= d.expires) {
       // §19: the pairing was declined (by the SaaS user or withdrawn by the device user).
       this.recordFailure(a.t.id);
-      return err(409, 'CONSENT_DENIED', 'pairing consent was denied for this code');
+      return err(403, 'CONSENT_DENIED', 'pairing consent was denied for this code');
     }
     if (!d || d.status !== 'pending' || Date.now() > d.expires) {
       this.recordFailure(a.t.id);

@@ -638,6 +638,7 @@ LSP2_TENANT_KEY=<租户 key> go run ./cmd/lsp2-conformance \
 4. 拒绝：设备不向网关发送任何请求，本地 API 返回 `CONSENT_DENIED`。
 5. 同意：设备才生成设备密钥并调用 `device_authorize`（§6.2），在本机显示 `user_code`，并打开 `pairing_uri?user_code=…&jkt=…`。
 6. SaaS 侧用户拒绝时，令牌端点返回 `access_denied`，设备将其映射为 `CONSENT_DENIED`。
+7. 被拒绝（`deny: true`）的 `user_code` 在过期前不可再被批准：网关对再次提交的 `/v2/tenant/device-approvals` 返回 403 Problem Details，`code` 为 `CONSENT_DENIED`。
 
 只用于自动化（测试、脚本、`connector -yes`）的实现 MAY 跳过第 2–3 步，但交互式应用 MUST NOT。
 

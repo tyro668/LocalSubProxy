@@ -345,6 +345,12 @@ func (g *Gateway) approve(w http.ResponseWriter, r *http.Request) {
 	}
 	code := normCode(req.UserCode)
 	d, err := g.cfg.Store.DeviceAuthByUserCode(r.Context(), t.ID, code)
+	if err == nil && d.Status == "denied" && !time.Now().After(d.ExpiresAt) {
+		// §19: a declined pairing cannot be overridden by a later approval.
+		g.recordFailure(t.ID)
+		httpError(w, r, 403, lsp2.ErrConsentDenied, "pairing consent was denied for this code")
+		return
+	}
 	if err != nil || d.Status != "pending" || time.Now().After(d.ExpiresAt) {
 		g.recordFailure(t.ID)
 		httpError(w, r, 404, lsp2.ErrBadRequest, "code invalid, expired or already used")

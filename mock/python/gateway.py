@@ -32,7 +32,7 @@ USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ"
 STATUS_OF = {
     "BAD_REQUEST": 400, "CAPABILITY_UNSUPPORTED": 400, "PAYLOAD_TOO_LARGE": 413, "IDEMPOTENCY_KEY_REUSED": 422,
     "MODEL_NOT_FOUND": 404, "DEVICE_OFFLINE": 503, "DEVICE_BUSY": 429, "TIMEOUT": 504, "CANCELLED": 499,
-    "RATE_LIMITED": 429, "UNAUTHENTICATED": 401, "FORBIDDEN": 403, "CONSENT_DENIED": 409,
+    "RATE_LIMITED": 429, "UNAUTHENTICATED": 401, "FORBIDDEN": 403, "CONSENT_DENIED": 403,
 }
 DEFAULT_FLOW = {"task_window": 1 << 20, "conn_window": 4 << 20}
 
@@ -652,7 +652,7 @@ class Gateway:
         if d is not None and d["status"] == "denied" and time.time() <= d["expires"]:
             # §19: the pairing was declined; a later approval cannot override it.
             self.record_failure(t["id"])
-            return err(409, "CONSENT_DENIED", "pairing consent was denied for this code")
+            return err(403, "CONSENT_DENIED", "pairing consent was denied for this code")
         if d is None or d["status"] != "pending" or time.time() > d["expires"]:
             self.record_failure(t["id"])
             return err(404, "BAD_REQUEST", "code invalid, expired or already used")
