@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,8 +17,9 @@ func TestRecordStatsPurge(t *testing.T) {
 	day1 := time.Date(2026, 10, 12, 9, 15, 0, 0, time.UTC)
 	day2 := time.Date(2026, 10, 13, 14, 5, 0, 0, time.UTC)
 	rec := func(at time.Time, tenant, model, status string, p, c int, lat int64) {
+		adapter, _, _ := strings.Cut(model, "/")
 		r := Record{At: at, ConnectionID: "dev_" + tenant, Gateway: "https://gw.example", Tenant: tenant, SaaSName: tenant + " Inc", TaskID: "t", Model: model,
-			Status: status, PromptTokens: p, CompletionTokens: c, UsageReported: p+c > 0, LatencyMS: lat}
+			Adapter: adapter, Status: status, PromptTokens: p, CompletionTokens: c, UsageReported: p+c > 0, LatencyMS: lat}
 		if status == StatusError {
 			r.ErrorCode = "UPSTREAM_ERROR"
 		}
@@ -44,6 +46,10 @@ func TestRecordStatsPurge(t *testing.T) {
 	byDayModel, _ := l.Stats(ctx, Filter{Tenant: "acme"}, []string{ByDay, ByModel}, false)
 	if len(byDayModel) != 2 || byDayModel[0].Day != "2026-10-12" || byDayModel[0].Model != "ollama/qwen3" || byDayModel[0].AvgLatencyMS != 2000 || byDayModel[1].Day != "2026-10-13" {
 		t.Fatalf("by day/model %+v", byDayModel)
+	}
+	byAdapter, _ := l.Stats(ctx, Filter{}, []string{ByAdapter}, false)
+	if len(byAdapter) != 2 || byAdapter[0].Adapter != "codex" || byAdapter[1].Adapter != "ollama" || byAdapter[1].Requests != 3 || byAdapter[1].TotalTokens != 165 {
+		t.Fatalf("by adapter %+v", byAdapter)
 	}
 	byHour, _ := l.Stats(ctx, Filter{Since: day1, Until: day2}, []string{ByHour}, false)
 	if len(byHour) != 2 || byHour[0].Hour != "2026-10-12T09:00" || byHour[1].Hour != "2026-10-12T10:00" {

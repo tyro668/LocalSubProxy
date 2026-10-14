@@ -419,8 +419,9 @@ func (x *Connector) execute(ctx context.Context, run lmbp.TaskRun, emit func(lmb
 	var err error
 	switch a.Type {
 	case "codex_app_server":
-		err = x.callCodex(ctx, modelID, run.Messages, a, out.text)
-		done = &lmbp.TaskDone{FinishReason: "stop"}
+		var usage *lmbp.Usage
+		usage, err = x.callCodex(ctx, modelID, run.Messages, a, out.text)
+		done = &lmbp.TaskDone{FinishReason: "stop", Usage: usage}
 	case "openai_compatible":
 		done, err = x.callOpenAI(ctx, modelID, run, a, out)
 	case "anthropic_compatible":

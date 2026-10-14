@@ -115,6 +115,7 @@ func fakeCodex() {
 			write(map[string]any{"method": "item/agentMessage/delta", "params": map[string]string{"turnId": "turn_1", "itemId": "item_1", "delta": "hello "}})
 			write(map[string]any{"method": "item/agentMessage/delta", "params": map[string]string{"turnId": "turn_1", "itemId": "item_1", "delta": "world"}})
 			write(map[string]any{"method": "item/completed", "params": map[string]any{"turnId": "turn_1", "item": map[string]string{"id": "item_1", "type": "agentMessage", "phase": "final_answer", "text": "hello world"}}})
+			write(map[string]any{"method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": "thread_1", "turnId": "turn_1", "tokenUsage": map[string]any{"last": map[string]any{"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}, "total": map[string]any{"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}}})
 			write(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "thread_1", "turn": map[string]string{"id": "turn_1", "status": "completed"}}})
 		case "turn/interrupt":
 			if strings.HasPrefix(mode, "cancel:") {
@@ -149,7 +150,7 @@ func TestCodexProbeAndStreaming(t *testing.T) {
 		t.Fatalf("probe: %#v", h)
 	}
 	var answer string
-	if err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if _, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -162,7 +163,7 @@ func TestCodexFinalAnswerFromTurnSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var answer string
-	if err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if _, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -176,7 +177,7 @@ func TestCodexRejectsUnsupportedExecution(t *testing.T) {
 			t.Setenv("CODEX_HOME", mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+			_, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
 			var known knownFailure
 			if !errors.As(err, &known) {
 				t.Fatalf("expected known failure, got %v", err)
@@ -203,7 +204,8 @@ func TestCodexCancellationSendsInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		_, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -236,7 +238,8 @@ func TestCodexCancellationWithoutCompletionIsUncertain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		_, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -276,6 +279,9 @@ func TestCodexTaskThroughExecutor(t *testing.T) {
 	done, fail := x.Execute(ctx, run, func(d lmbp.TaskDelta) error { out.WriteString(d.Text); return nil })
 	if fail != nil || done.FinishReason != "stop" || out.String() != "hello world" {
 		t.Fatalf("execute: %v %v %q", done, fail, out.String())
+	}
+	if done.Usage == nil || done.Usage.PromptTokens != 11 || done.Usage.CompletionTokens != 7 {
+		t.Fatalf("usage not reported: %+v", done.Usage)
 	}
 	run.Tools = []lmbp.Tool{{Type: "function", Function: lmbp.FunctionDef{Name: "f"}}}
 	if _, fail := x.Execute(ctx, run, func(lmbp.TaskDelta) error { return nil }); fail == nil || fail.Code != lmbp.ErrUnsupported {

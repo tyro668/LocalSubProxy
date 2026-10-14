@@ -183,12 +183,13 @@ func (l *Log) List(ctx context.Context, f Filter) ([]Record, error) {
 
 // Group-by dimensions accepted by Stats.
 const (
-	BySaaS   = "saas" // tenant (+ display name)
-	ByModel  = "model"
-	ByDay    = "day"  // YYYY-MM-DD
-	ByHour   = "hour" // YYYY-MM-DDTHH:00
-	ByStatus = "status"
-	ByConn   = "connection"
+	BySaaS    = "saas" // tenant (+ display name)
+	ByModel   = "model"
+	ByAdapter = "adapter" // local adapter (方案) id
+	ByDay     = "day"     // YYYY-MM-DD
+	ByHour    = "hour"    // YYYY-MM-DDTHH:00
+	ByStatus  = "status"
+	ByConn    = "connection"
 )
 
 // Bucket is one aggregated row.
@@ -196,6 +197,7 @@ type Bucket struct {
 	SaaS             string  `json:"saas,omitempty"`
 	SaaSName         string  `json:"saas_name,omitempty"`
 	Model            string  `json:"model,omitempty"`
+	Adapter          string  `json:"adapter,omitempty"`
 	Day              string  `json:"day,omitempty"`
 	Hour             string  `json:"hour,omitempty"`
 	Status           string  `json:"status,omitempty"`
@@ -216,14 +218,14 @@ func (l *Log) Stats(ctx context.Context, f Filter, groupBy []string, local bool)
 	if local {
 		mod = ",'localtime'"
 	}
-	cols := map[string]string{BySaaS: "tenant", ByModel: "model", ByStatus: "status", ByConn: "connection_id",
+	cols := map[string]string{BySaaS: "tenant", ByModel: "model", ByAdapter: "adapter", ByStatus: "status", ByConn: "connection_id",
 		ByDay: "strftime('%Y-%m-%d', at/1000, 'unixepoch'" + mod + ")", ByHour: "strftime('%Y-%m-%dT%H:00', at/1000, 'unixepoch'" + mod + ")"}
 	var sel, grp, dims []string
 	seen := map[string]bool{}
 	for _, g := range groupBy {
 		c, ok := cols[g]
 		if !ok {
-			return nil, fmt.Errorf("unknown group %q (want saas, model, day, hour, status, connection)", g)
+			return nil, fmt.Errorf("unknown group %q (want saas, model, adapter, day, hour, status, connection)", g)
 		}
 		if seen[g] {
 			continue
@@ -254,6 +256,8 @@ func (l *Log) Stats(ctx context.Context, f Filter, groupBy []string, local bool)
 				dst = append(dst, &b.SaaS, &b.SaaSName)
 			case ByModel:
 				dst = append(dst, &b.Model)
+			case ByAdapter:
+				dst = append(dst, &b.Adapter)
 			case ByDay:
 				dst = append(dst, &b.Day)
 			case ByHour:
