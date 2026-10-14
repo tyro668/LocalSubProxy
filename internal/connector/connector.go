@@ -32,9 +32,13 @@ type Config struct {
 	// (adapters can still be managed and tested).
 	Identity *client.Identity
 	// DataKey is the hex AES-256 key that seals the adapter file.
-	DataKey     string
-	AdapterFile string
-	Adapters    []AdapterConfig
+	DataKey string
+	// LegacyDataKeys are older keys tried when DataKey cannot open the
+	// adapter file (e.g. the upstream app's journal_key); a file that opens
+	// with one of them is re-encrypted with DataKey.
+	LegacyDataKeys []string
+	AdapterFile    string
+	Adapters       []AdapterConfig
 	// MaxConcurrency is the number of tasks the device accepts in parallel
 	// (advertised in hello; default 4). Adapters may lower it per adapter.
 	MaxConcurrency int
@@ -77,6 +81,7 @@ type AdapterHealth struct {
 }
 
 type Connector struct {
+	recovery    map[string]any // set when the adapter file was unreadable and backed up
 	cfg         Config
 	client      *http.Client
 	modelClient *http.Client
@@ -123,18 +128,7 @@ func New(cfg Config) (*Connector, error) {
 		x.adapters[a.ID] = a
 	}
 	if cfg.AdapterFile != "" {
-		if b, err := os.ReadFile(cfg.AdapterFile); err == nil {
-			var saved []AdapterConfig
-			if err := c.Open(b, &saved); err != nil {
-				return nil, fmt.Errorf("open adapters: %w", err)
-			}
-			for _, a := range saved {
-				if err := validateAdapter(&a); err != nil {
-					return nil, err
-				}
-				x.adapters[a.ID] = a
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+		if err := x.loadAdapterFile(); err != nil {
 			return nil, err
 		}
 	}
@@ -737,4 +731,60 @@ func (x *Connector) probeAll(ctx context.Context) []AdapterHealth {
 	}
 	x.mu.Unlock()
 	return out
+}
+
+// loadAdapterFile reads the sealed adapter list. It tries DataKey, then
+// each legacy key (re-encrypting with DataKey on success). A file that no
+// key opens, or that is corrupt, must not brick startup: it is moved to
+// adapters.enc.bak-<timestamp>, the list starts empty, and Status reports
+// adapter_recovery so the UI can ask the user to re-add the adapters.
+func (x *Connector) loadAdapterFile() error {
+	f := x.cfg.AdapterFile
+	b, err := os.ReadFile(f)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	saved, migrated, openErr := openAdapters(b, x.cipher, x.cfg.LegacyDataKeys)
+	if openErr != nil {
+		bak := fmt.Sprintf("%s.bak-%s", f, time.Now().UTC().Format("20060102T150405Z"))
+		if err := os.Rename(f, bak); err != nil {
+			return fmt.Errorf("open adapters: %v; backing up the file failed: %w", openErr, err)
+		}
+		x.recovery = map[string]any{"backup": bak, "reason": openErr.Error()}
+		return nil
+	}
+	// A decrypted adapter that fails validation (e.g. the Codex CLI is not
+	// on PATH right now) is an error, as before: the file is intact, so it
+	// is never moved aside for that.
+	for _, a := range saved {
+		if err := validateAdapter(&a); err != nil {
+			return err
+		}
+		x.adapters[a.ID] = a
+	}
+	if migrated {
+		return x.saveAdaptersLocked() // single-threaded: called from New
+	}
+	return nil
+}
+
+func openAdapters(b []byte, c *durable.Cipher, legacy []string) (saved []AdapterConfig, migrated bool, err error) {
+	if err = c.Open(b, &saved); err == nil {
+		return saved, false, nil
+	}
+	first := err
+	for _, k := range legacy {
+		lc, kerr := durable.NewCipher(k)
+		if kerr != nil {
+			continue
+		}
+		saved = nil
+		if lc.Open(b, &saved) == nil {
+			return saved, true, nil
+		}
+	}
+	return nil, false, fmt.Errorf("adapter file cannot be decrypted with the current key: %w", first)
 }

@@ -49,10 +49,14 @@ func (x *Connector) Status() map[string]any {
 			transport = "ws"
 		}
 	}
-	return map[string]any{"protocol": "lmbp", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
+	st := map[string]any{"protocol": "lmbp", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
 		"issuer": issuer, "saas_name": saasName, "tenant": tenant, "audit": x.cfg.Audit != nil,
 		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
 		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
+	if x.recovery != nil {
+		st["adapter_recovery"] = x.recovery
+	}
+	return st
 }
 
 func (x *Connector) ListAdapters() []AdapterView {
