@@ -119,7 +119,7 @@ var runtime struct {
 	pairErr    string
 }
 
-func result(data any, err error) *C.char {
+func result(data any, err error) string {
 	payload := map[string]any{"ok": err == nil}
 	if err != nil {
 		payload["error"] = err.Error()
@@ -127,7 +127,7 @@ func result(data any, err error) *C.char {
 		payload["data"] = data
 	}
 	encoded, _ := json.Marshal(payload)
-	return C.CString(string(encoded))
+	return string(encoded)
 }
 
 func newCore(dir string, id localIdentity) (*connector.Connector, error) {
@@ -158,11 +158,21 @@ func startRunLocked(core *connector.Connector) {
 
 //export LSP_Start
 func LSP_Start(raw *C.char) *C.char {
+	in := ""
+	if raw != nil {
+		in = C.GoString(raw)
+	}
+	return C.CString(startJSON(in))
+}
+
+// startJSON / callJSON are the C API minus cgo, so tests can drive the
+// kernel with the exact JSON the Dart UI sends.
+func startJSON(raw string) string {
 	var input struct {
 		DataDir string `json:"data_dir"`
 	}
-	if raw != nil && C.GoString(raw) != "" {
-		if err := json.Unmarshal([]byte(C.GoString(raw)), &input); err != nil {
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &input); err != nil {
 			return result(nil, err)
 		}
 	}
@@ -257,6 +267,13 @@ func cancelPairingLocked() {
 //export LSP_Call
 func LSP_Call(raw *C.char) *C.char {
 	if raw == nil {
+		return C.CString(result(nil, errors.New("request required")))
+	}
+	return C.CString(callJSON(C.GoString(raw)))
+}
+
+func callJSON(raw string) string {
+	if raw == "" {
 		return result(nil, errors.New("request required"))
 	}
 	var request struct {
@@ -271,7 +288,7 @@ func LSP_Call(raw *C.char) *C.char {
 		LocalTime bool                    `json:"local_time"`
 		Days      int                     `json:"days"`
 	}
-	if err := json.Unmarshal([]byte(C.GoString(raw)), &request); err != nil {
+	if err := json.Unmarshal([]byte(raw), &request); err != nil {
 		return result(nil, err)
 	}
 	remoteURL := request.RemoteURL

@@ -33,7 +33,8 @@ scripts/mock-stop.sh                             # 停止
 脚本会编译并在后台启动假模型（`127.0.0.1:11500`，同时提供 Ollama 原生 `/api/chat`、`/api/tags` 和 OpenAI `/v1`）和所选网关（开启聊天页），然后打印：
 
 - 聊天页地址 `http://127.0.0.1:<端口>/chat`，以及登录用的租户（`acme`）、用户（`alice`）和租户 Key；
-- `lmbp://pair?...` 配对链接，以及可直接复制运行的 `localsubproxy connector` 配对命令（运行后在终端确认，再把打印出的配对码填到聊天页上点“批准”）。
+- `lmbp://pair?...` 配对链接。**推荐用桌面应用配对**：在应用的“远端服务连接”里粘贴这个链接，确认授权后，在聊天页登录并批准应用显示的配对码。之后应用的状态显示“已连接”，任务和用量由应用记录。应用里添加模型方案时选“OpenAI 兼容”，地址填 `http://127.0.0.1:11500/v1`，密钥随意，模型填 `qwen3-8b`；
+- 另一种方式是可直接复制运行的命令行 `localsubproxy connector` 配对命令（运行后在终端确认，再把打印出的配对码填到聊天页上点“批准”）。注意：命令行 connector 是**另一台设备**。聊天页显示它在线，但桌面应用仍会显示“未连接”，它的用量也记在 `.mock/connector/audit.db`，不会出现在应用的“近 7 天用量”里。
 
 开发用的密钥（`LSP_TENANT_KEY_ACME`、`LSP_SIGNING_SEED`、`LOCALSUBPROXY_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`。
 

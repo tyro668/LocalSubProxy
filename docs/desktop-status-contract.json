@@ -1,0 +1,22 @@
+{
+  "_comment": "Contract between the native kernel (cmd/localsubproxy_native, action \"status\") and the Flutter UI (desktop/lib). Pinned by cmd/localsubproxy_native/status_contract_test.go and desktop/test/status_contract_test.dart. 'connected' is this device's own lmbp gateway session (equal to gateway_connected).",
+  "status": {
+    "paired": "bool",
+    "connected": "bool",
+    "gateway_connected": "bool",
+    "device_id": "string",
+    "device_name": "string",
+    "saas_name": "string",
+    "issuer": "string",
+    "remote_url": "string",
+    "server_url": "string",
+    "transport": ["offline", "ws", "wss"],
+    "running_tasks": "int",
+    "pairing_state": ["idle", "consent", "pending", "paired", "failed", "denied"],
+    "pairing_error": "string"
+  },
+  "optional": {
+    "adapter_recovery": "object"
+  },
+  "pair_status_state": ["idle", "consent", "pending", "paired", "failed", "denied"]
+}
