@@ -67,6 +67,7 @@ class _HomePageState extends State<HomePage> {
   final remoteUrl = TextEditingController();
   Timer? timer;
   bool kernelReady = false;
+  bool recoveryDismissed = false;
   String? kernelError;
   Map<String, dynamic>? status;
   List<Map<String, dynamic>> adapters = [];
@@ -373,6 +374,16 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> dismissRecovery() async {
+    setState(() => recoveryDismissed = true);
+    try {
+      await ackAdapterRecoveryAsync();
+      await refresh();
+    } catch (e) {
+      if (mounted) show('$e', error: true);
+    }
+  }
+
   Widget connectionCard() {
     if (!kernelReady) {
       return Card(
@@ -407,16 +418,20 @@ class _HomePageState extends State<HomePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (recovery != null) ...[
+          if (recovery != null && !recoveryDismissed) ...[
+            // Informational, dismissible and shown once: the app works
+            // normally with an empty adapter list; the old file is kept.
             Alert(
-              destructive: true,
-              leading: const Icon(LucideIcons.triangleAlert),
-              title: const Text('模型方案配置无法解密'),
+              leading: const Icon(LucideIcons.info),
+              title: const Text('旧的模型方案配置已备份'),
               content: Text(
                 '本机保存的模型方案配置无法用当前密钥解密（可能来自旧版本应用），'
                 '已备份到：${recovery['backup']}\n'
-                '请重新添加模型方案。若你有旧版的 identity.json 备份，'
-                '可将其中的 journal_key 填回 identity.json，并将备份文件改回 adapters.enc 后重启应用以恢复。',
+                '应用可以正常使用，请重新添加模型方案即可。',
+              ),
+              trailing: GhostButton(
+                onPressed: dismissRecovery,
+                child: const Text('知道了'),
               ),
             ),
             const Gap(16),

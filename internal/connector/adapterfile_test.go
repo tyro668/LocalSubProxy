@@ -94,8 +94,13 @@ func TestAdapterFileUnreadableIsBackedUp(t *testing.T) {
 			if b, _ := os.ReadFile(bk[0]); string(b) != string(orig) {
 				t.Fatal("backup differs from the original file")
 			}
-			if _, err := os.Stat(f); !os.IsNotExist(err) {
+			// the unreadable file is replaced by an empty list sealed with the
+			// current key, so the next start does not back up again
+			if b, _ := os.ReadFile(f); string(b) == string(orig) {
 				t.Fatal("unreadable file must be moved aside")
+			}
+			if saved, migrated, err := openAdapters(mustRead(t, f), x.cipher, nil); err != nil || migrated || len(saved) != 0 {
+				t.Fatalf("adapters.enc must be an empty list under the current key: %v %v", saved, err)
 			}
 			rec, ok := x.Status()["adapter_recovery"].(map[string]any)
 			if !ok || rec["backup"] != bk[0] || rec["reason"] == "" {
@@ -110,5 +115,68 @@ func TestAdapterFileUnreadableIsBackedUp(t *testing.T) {
 				t.Fatalf("re-added adapter did not persist: %v", err)
 			}
 		})
+	}
+}
+
+func mustRead(t *testing.T, f string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// The recovery notice is persisted (it survives restarts) until the user
+// acknowledges it, is never shown again afterwards, and restarts never
+// produce another backup. New adapters are sealed with the current key.
+func TestAdapterRecoveryNoticeAcknowledged(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "adapters.enc")
+	sealAdapters(t, f, keyA, oneAdapter)
+	x, err := New(Config{DataKey: keyB, AdapterFile: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := x.Status()["adapter_recovery"].(map[string]any)
+	if !ok || rec["backup"] == "" {
+		t.Fatalf("expected a recovery notice, got %v", x.Status()["adapter_recovery"])
+	}
+	// restart before acknowledging: same notice, still exactly one backup
+	y, err := New(Config{DataKey: keyB, AdapterFile: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := y.Status()["adapter_recovery"].(map[string]any); !ok || r["backup"] != rec["backup"] {
+		t.Fatalf("notice must persist until acknowledged: %v", y.Status()["adapter_recovery"])
+	}
+	if n := len(backups(t, dir)); n != 1 {
+		t.Fatalf("restarts must not create more backups, got %d", n)
+	}
+	if err := y.AcknowledgeAdapterRecovery(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := y.Status()["adapter_recovery"]; ok {
+		t.Fatal("acknowledged notice must disappear immediately")
+	}
+	if err := y.AcknowledgeAdapterRecovery(); err != nil {
+		t.Fatalf("acknowledging twice must be harmless: %v", err)
+	}
+	// the app is usable: add an adapter, it is sealed with the current key
+	if _, err := y.CreateAdapter(oneAdapter[0]); err != nil {
+		t.Fatal(err)
+	}
+	if saved, _, err := openAdapters(mustRead(t, f), y.cipher, nil); err != nil || len(saved) != 1 {
+		t.Fatalf("new adapter must be sealed with the current key: %v", err)
+	}
+	z, err := New(Config{DataKey: keyB, AdapterFile: f})
+	if err != nil || len(z.ListAdapters()) != 1 {
+		t.Fatalf("restart after ack: %v", err)
+	}
+	if _, ok := z.Status()["adapter_recovery"]; ok {
+		t.Fatal("acknowledged notice must not come back after a restart")
+	}
+	if n := len(backups(t, dir)); n != 1 {
+		t.Fatalf("backups %d", n)
 	}
 }

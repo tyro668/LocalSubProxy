@@ -139,6 +139,10 @@ class NativeApi {
       (_invoke(_call, {'action': 'update_adapter', 'adapter': adapter}) as Map)
           .cast<String, dynamic>();
 
+  /// Dismisses the "adapter configuration could not be decrypted" notice
+  /// for good (persisted by the core, so it is not shown again).
+  void ackAdapterRecovery() =>
+      _invoke(_call, {'action': 'adapter_recovery_ack'});
   void deleteAdapter(String id) =>
       _invoke(_call, {'action': 'delete_adapter', 'id': id});
 
@@ -200,6 +204,8 @@ Future<Map<String, dynamic>> createAdapterAsync(Map<String, dynamic> adapter) =>
 Future<Map<String, dynamic>> updateAdapterAsync(Map<String, dynamic> adapter) =>
     Isolate.run(() => NativeApi.instance.updateAdapter(adapter));
 
+Future<void> ackAdapterRecoveryAsync() =>
+    Isolate.run(() => NativeApi.instance.ackAdapterRecovery());
 Future<void> deleteAdapterAsync(String id) =>
     Isolate.run(() => NativeApi.instance.deleteAdapter(id));
 

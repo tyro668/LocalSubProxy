@@ -39,7 +39,7 @@ func viewAdapter(a AdapterConfig) AdapterView {
 
 func (x *Connector) Status() map[string]any {
 	x.mu.Lock()
-	running, remoteOK, gatewayOK, lastErr := len(x.running), x.remoteOK, x.gatewayOK, x.lastErr
+	running, remoteOK, gatewayOK, lastErr, recovery := len(x.running), x.remoteOK, x.gatewayOK, x.lastErr, x.recovery
 	x.mu.Unlock()
 	deviceID, gatewayURL, transport, e2ee, issuer, saasName, tenant := "", "", "offline", false, "", "", ""
 	if id := x.cfg.Identity; id != nil {
@@ -53,8 +53,8 @@ func (x *Connector) Status() map[string]any {
 		"issuer": issuer, "saas_name": saasName, "tenant": tenant, "audit": x.cfg.Audit != nil,
 		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
 		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
-	if x.recovery != nil {
-		st["adapter_recovery"] = x.recovery
+	if recovery != nil {
+		st["adapter_recovery"] = recovery
 	}
 	return st
 }

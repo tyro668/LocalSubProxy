@@ -322,6 +322,8 @@ func LSP_Call(raw *C.char) *C.char {
 	case "update_adapter":
 		a, err := runtime.core.UpdateAdapter(request.Adapter)
 		return result(a, err)
+	case "adapter_recovery_ack":
+		return result(nil, runtime.core.AcknowledgeAdapterRecovery())
 	case "delete_adapter":
 		return result(nil, runtime.core.DeleteAdapter(request.ID))
 	case "test_adapter":

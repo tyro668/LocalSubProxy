@@ -740,6 +740,7 @@ func (x *Connector) probeAll(ctx context.Context) []AdapterHealth {
 // adapter_recovery so the UI can ask the user to re-add the adapters.
 func (x *Connector) loadAdapterFile() error {
 	f := x.cfg.AdapterFile
+	x.recovery = loadRecoveryNotice(f)
 	b, err := os.ReadFile(f)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -753,7 +754,16 @@ func (x *Connector) loadAdapterFile() error {
 		if err := os.Rename(f, bak); err != nil {
 			return fmt.Errorf("open adapters: %v; backing up the file failed: %w", openErr, err)
 		}
-		x.recovery = map[string]any{"backup": bak, "reason": openErr.Error()}
+		n := recoveryNotice{Backup: bak, Reason: openErr.Error(), At: time.Now().UTC().Format(time.RFC3339)}
+		// Best effort: persist the notice so it is shown until the user
+		// dismisses it, and replace the file with an empty list sealed with
+		// the current key so later starts open it cleanly and never back up
+		// again. Neither failure may brick startup.
+		if b, err := json.Marshal(n); err == nil {
+			_ = durable.Write(recoveryFile(f), b)
+		}
+		_ = x.saveAdaptersLocked() // single-threaded: called from New
+		x.recovery = n.view()
 		return nil
 	}
 	// A decrypted adapter that fails validation (e.g. the Codex CLI is not
@@ -787,4 +797,56 @@ func openAdapters(b []byte, c *durable.Cipher, legacy []string) (saved []Adapter
 		}
 	}
 	return nil, false, fmt.Errorf("adapter file cannot be decrypted with the current key: %w", first)
+}
+
+// recoveryNotice is persisted next to the adapter file after an unreadable
+// file was backed up. The UI shows it once, as a dismissible notice, until
+// AcknowledgeAdapterRecovery marks it acknowledged.
+type recoveryNotice struct {
+	Backup       string `json:"backup"`
+	Reason       string `json:"reason"`
+	At           string `json:"at"`
+	Acknowledged bool   `json:"acknowledged"`
+}
+
+func (n recoveryNotice) view() map[string]any {
+	return map[string]any{"backup": n.Backup, "reason": n.Reason, "at": n.At}
+}
+
+func recoveryFile(adapterFile string) string { return adapterFile + ".recovery.json" }
+
+func loadRecoveryNotice(adapterFile string) map[string]any {
+	var n recoveryNotice
+	b, err := os.ReadFile(recoveryFile(adapterFile))
+	if err != nil || json.Unmarshal(b, &n) != nil || n.Acknowledged || n.Backup == "" {
+		return nil
+	}
+	return n.view()
+}
+
+// AcknowledgeAdapterRecovery dismisses the adapter-recovery notice for good
+// (it is not reported again, also after restarts). Calling it when there is
+// no notice is a no-op.
+func (x *Connector) AcknowledgeAdapterRecovery() error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.recovery = nil
+	if x.cfg.AdapterFile == "" {
+		return nil
+	}
+	f := recoveryFile(x.cfg.AdapterFile)
+	b, err := os.ReadFile(f)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var n recoveryNotice
+	_ = json.Unmarshal(b, &n)
+	n.Acknowledged = true
+	if b, err = json.Marshal(n); err != nil {
+		return err
+	}
+	return durable.Write(f, b)
 }
