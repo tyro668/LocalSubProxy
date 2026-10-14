@@ -10,6 +10,7 @@
   let attachment = null;      // {dataURL, name, size, type}
   let busy = null;            // AbortController of the running request
   let pairLink = '', issuer = '';
+  const initialEmpty = $('empty') ? $('empty').cloneNode(true) : null;
 
   const ERR = {
     UNAUTHENTICATED: '认证失败：租户 API Key 无效或已失效',
@@ -143,7 +144,8 @@
     if (!devs.length) box.append(el('div', 'meta', '暂无设备'));
     for (const d of devs) {
       const row = el('div', 'dev');
-      const h = el('div'); h.append(el('span', 'nm', d.name || '(未命名设备)'), document.createTextNode(' '),
+      const h = el('div', 'dev-head');
+      h.append(el('span', 'nm', d.name || '(未命名设备)'),
         el('span', 'badge ' + (d.status !== 'active' ? 'rv' : d.online ? 'on' : 'off'), d.status !== 'active' ? '已吊销' : d.online ? '在线' : '离线'));
       row.append(h, el('div', 'mono meta', d.device_id));
       const ms = el('div', 'models');
@@ -153,7 +155,7 @@
       }
       row.append(ms);
       if (d.status === 'active') {
-        const b = el('button', 'danger', '吊销'); b.style.marginTop = '6px';
+        const b = el('button', 'danger', '吊销'); b.style.marginTop = '8px';
         b.onclick = async () => {
           if (!confirm(`吊销设备 ${d.name}？吊销后设备需要重新配对。`)) return;
           try { await api('POST', '/lmbp/v1/tenant/devices/' + encodeURIComponent(d.device_id) + '/revoke'); toast('已吊销'); refresh(); }
@@ -198,19 +200,37 @@
     const a = $('attInfo'); a.textContent = '';
     if (!attachment) return;
     const img = new Image(); img.src = attachment.dataURL; img.alt = attachment.name;
-    const x = el('button', '', '移除'); x.onclick = () => { attachment = null; renderAtt(); };
+    const x = el('button', 'ghost', '移除'); x.onclick = () => { attachment = null; renderAtt(); };
     a.append(img, document.createTextNode(` ${attachment.name}（${(attachment.size / 1024).toFixed(1)} KiB）`), x);
   }
+
+  // ---- starter prompts ----
+  function bindStarters(root) {
+    if (!root) return;
+    for (const card of root.querySelectorAll('.starter-card')) {
+      card.onclick = () => {
+        const p = card.getAttribute('data-prompt') || '';
+        if (!p) return;
+        $('input').value = p;
+        $('input').focus();
+        if ($('model').value) send();
+      };
+    }
+  }
+  bindStarters($('empty'));
 
   // ---- chat ----
   function turn(role, text, imgURL) {
     $('empty')?.remove();
     const t = el('div', 'turn ' + role);
-    t.append(el('div', 'who', role === 'user' ? auth.user : '本机模型'));
+    const head = el('div', 'turn-header');
+    const avatar = el('span', 'turn-avatar', role === 'user' ? (auth?.user || 'U').slice(0, 1).toUpperCase() : 'AI');
+    const who = el('div', 'who', role === 'user' ? auth.user : ($('model').value || '本机模型'));
+    head.append(avatar, who);
     const b = el('div', 'bubble', text);
     if (imgURL) { const i = new Image(); i.src = imgURL; i.alt = '附件'; b.append(i); }
     const meta = el('div', 'meta');
-    t.append(b, meta); $('chat').append(t); scroll();
+    t.append(head, b, meta); $('chat').append(t); scroll();
     return { t, b, meta };
   }
   const scroll = () => { const c = $('chat'); c.scrollTop = c.scrollHeight; };
@@ -221,7 +241,18 @@
   function setBusy(ctrl) {
     busy = ctrl; $('send').classList.toggle('hidden', !!ctrl); $('stop').classList.toggle('hidden', !ctrl); $('input').disabled = !!ctrl;
   }
-  $('newChat').onclick = () => { if (busy) busy.abort(); history = []; $('chat').textContent = ''; $('chat').append(el('div', 'empty', '新对话已开始。')); $('chat').firstChild.id = 'empty'; };
+  $('newChat').onclick = () => {
+    if (busy) busy.abort();
+    history = [];
+    $('chat').textContent = '';
+    if (initialEmpty) {
+      const node = initialEmpty.cloneNode(true);
+      bindStarters(node);
+      $('chat').append(node);
+    } else {
+      const e = el('div', 'empty', '新对话已开始。'); e.id = 'empty'; $('chat').append(e);
+    }
+  };
   $('stop').onclick = () => busy && busy.abort();
   $('input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   $('send').onclick = send;

@@ -6,72 +6,918 @@
 <title>LMBP 模拟 SaaS · 本机模型聊天</title>
 <link rel="icon" href="data:,">
 <style>
-:root{--bd:#d8dee4;--mut:#656d76;--acc:#0969da;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--bg:#f6f8fa}
-*{box-sizing:border-box}
-body{margin:0;font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Segoe UI,sans-serif;color:#1f2328;background:#fff}
-header{display:flex;align-items:center;gap:12px;padding:10px 18px;border-bottom:1px solid var(--bd);background:var(--bg)}
-header h1{font-size:16px;margin:0}header .sp{flex:1}header .who{color:var(--mut)}
-button{font:inherit;padding:5px 12px;border:1px solid var(--bd);border-radius:6px;background:#fff;cursor:pointer}
-button:hover{background:#f3f4f6}button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.pri:hover{background:#0860c7}
-button.danger{color:var(--bad)}button:disabled{opacity:.5;cursor:not-allowed}
-input,select,textarea{font:inherit;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;width:100%;background:#fff}
-label{display:block;font-size:12.5px;color:var(--mut);margin:8px 0 3px}
-.hidden{display:none!important}
-#login{max-width:420px;margin:60px auto;padding:24px;border:1px solid var(--bd);border-radius:10px}
-#login h2{margin-top:0}#login .note{font-size:12.5px;color:var(--mut)}
-#app{display:grid;grid-template-columns:340px 1fr;height:calc(100vh - 49px)}
-aside{border-right:1px solid var(--bd);overflow-y:auto;padding:14px;background:#fcfcfd}
-.card{border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:12px;background:#fff}
-.card h3{margin:0 0 8px;font-size:14px;display:flex;align-items:center;gap:8px}.card h3 .sp{flex:1}
-.badge{display:inline-block;font-size:11.5px;padding:0 7px;border-radius:10px;border:1px solid var(--bd);color:var(--mut)}
-.badge.on{color:var(--ok);border-color:#aceebb;background:#dafbe1}.badge.off{color:var(--mut)}.badge.rv{color:var(--bad);border-color:#ffcecb;background:#ffebe9}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;word-break:break-all}
-.link{background:var(--bg);border:1px dashed var(--bd);border-radius:6px;padding:6px 8px}
-#qr{display:flex;justify-content:center;margin:8px 0}#qr img{image-rendering:pixelated}
-.row{display:flex;gap:6px;margin-top:8px}.row>*{flex:1}
-.dev{border-top:1px solid #eef1f4;padding:8px 0}.dev:first-child{border-top:0}
-.dev .nm{font-weight:600}.dev .models{margin-top:4px;display:flex;flex-wrap:wrap;gap:4px}
-.msg-ok{color:var(--ok);font-size:12.5px;margin-top:6px}.msg-err{color:var(--bad);font-size:12.5px;margin-top:6px}
-main{display:flex;flex-direction:column;min-width:0}
-.bar{display:flex;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd)}.bar select{max-width:420px}
-#chat{flex:1;overflow-y:auto;padding:18px 16px}
-.empty{color:var(--mut);text-align:center;margin-top:12vh}
-.turn{max-width:860px;margin:0 auto 14px}
-.turn .who{font-size:12px;color:var(--mut);margin-bottom:2px}
-.bubble{white-space:pre-wrap;word-break:break-word;padding:9px 12px;border-radius:10px;border:1px solid var(--bd)}
-.user .bubble{background:#ddf4ff;border-color:#b6e3ff}
-.assistant .bubble{background:#fff}
-.bubble img{max-width:240px;max-height:180px;display:block;margin-top:6px;border-radius:6px}
-.meta{font-size:12px;color:var(--mut);margin-top:3px}
-.err{margin-top:6px;padding:8px 10px;border-radius:8px;background:#ffebe9;border:1px solid #ffcecb;color:#82071e;font-size:13px}
-.err b{font-family:ui-monospace,Menlo,monospace}
-.cursor::after{content:"▍";animation:b 1s steps(1) infinite;color:var(--acc)}@keyframes b{50%{opacity:0}}
-footer{border-top:1px solid var(--bd);padding:10px 16px}
-footer .in{max-width:860px;margin:0 auto}
-footer textarea{resize:vertical;min-height:64px}
-#att{font-size:12.5px;color:var(--mut);display:flex;align-items:center;gap:8px}
-#att img{max-height:48px;border-radius:4px;border:1px solid var(--bd)}
-#toast{position:fixed;right:16px;bottom:16px;max-width:420px;z-index:9}
-#toast div{margin-top:8px;padding:9px 12px;border-radius:8px;background:#24292f;color:#fff;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.2)}
-#toast div.bad{background:#a40e26}
-@media(max-width:860px){#app{grid-template-columns:1fr}aside{max-height:45vh;border-right:0;border-bottom:1px solid var(--bd)}}
+:root {
+  --brand: #4d25d8;
+  --brand-hover: #3f1db8;
+  --brand-soft: #f2effe;
+  --brand-border: #d8ceff;
+  --bg-app: #f8f9fb;
+  --bg-panel: #ffffff;
+  --bg-subtle: #f3f4f6;
+  --bd: #e5e7eb;
+  --bd-strong: #d1d5db;
+  --txt: #111827;
+  --txt-sec: #4b5563;
+  --mut: #6b7280;
+  --ok: #059669;
+  --ok-bg: #ecfdf5;
+  --ok-bd: #a7f3d0;
+  --bad: #dc2626;
+  --bad-bg: #fef2f2;
+  --bad-bd: #fecaca;
+  --warn: #d97706;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.04);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", Segoe UI, sans-serif;
+  color: var(--txt);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+}
+
+.hidden { display: none !important; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; word-break: break-all; }
+
+/* ---- Top Header ---- */
+header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--bd);
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #4d25d8 0%, #7c3aed 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(77, 37, 216, 0.28);
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+header h1 .sub-tag {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--brand);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-border);
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+header .sp { flex: 1; }
+
+header .who {
+  font-size: 12.5px;
+  color: var(--txt-sec);
+  background: var(--bg-subtle);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+}
+
+header .who:empty { display: none; }
+
+/* ---- Buttons & Inputs ---- */
+button {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--txt);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  box-shadow: var(--shadow-sm);
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  border-color: var(--bd-strong);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+button.pri {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(77, 37, 216, 0.25);
+}
+
+button.pri:hover:not(:disabled) {
+  background: var(--brand-hover);
+  border-color: var(--brand-hover);
+}
+
+button.danger {
+  color: var(--bad);
+  border-color: var(--bad-bd);
+  background: #fff;
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--bad-bg);
+  border-color: #fca5a5;
+}
+
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--txt-sec);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--bg-subtle);
+  color: var(--txt);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+input, select, textarea {
+  font: inherit;
+  font-size: 13.5px;
+  padding: 8px 11px;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-sm);
+  width: 100%;
+  background: #fff;
+  color: var(--txt);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  outline: none;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(77, 37, 216, 0.12);
+}
+
+label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--txt-sec);
+  margin: 10px 0 4px;
+}
+
+/* ---- Login View ---- */
+#login {
+  max-width: 430px;
+  margin: 72px auto;
+  padding: 32px;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-lg);
+}
+
+#login .login-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+#login h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+#login .note {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--mut);
+  background: var(--bg-app);
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 0 0 16px;
+}
+
+#login .row {
+  margin-top: 18px;
+}
+
+#login .row button {
+  padding: 9px 16px;
+  font-size: 14px;
+}
+
+/* ---- Main Workspace Layout ---- */
+#app {
+  display: grid;
+  grid-template-columns: 350px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: calc(100vh - 56px);
+  overflow: hidden;
+}
+
+/* ---- Left Sidebar ---- */
+aside {
+  border-right: 1px solid var(--bd);
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  background: #f4f5f8;
+}
+
+.card {
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  margin-bottom: 12px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.card:last-child {
+  margin-bottom: 0;
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--txt);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card h3 .sp { flex: 1; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--bd);
+  color: var(--txt-sec);
+  background: var(--bg-subtle);
+  line-height: 1.4;
+}
+
+.badge.on {
+  color: var(--ok);
+  border-color: var(--ok-bd);
+  background: var(--ok-bg);
+}
+
+.badge.on::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.badge.off {
+  color: var(--mut);
+  background: var(--bg-subtle);
+}
+
+.badge.off::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.badge.rv {
+  color: var(--bad);
+  border-color: var(--bad-bd);
+  background: var(--bad-bg);
+}
+
+#pairState {
+  font-size: 13px;
+  color: var(--txt-sec);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.step-hint {
+  font-size: 12px;
+  color: var(--mut);
+  line-height: 1.55;
+  background: var(--bg-app);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--bd);
+}
+
+.link {
+  background: var(--bg-app);
+  border: 1px dashed var(--bd-strong);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  color: var(--txt-sec);
+  font-size: 11.5px;
+  user-select: all;
+}
+
+#qr {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+#qr img {
+  image-rendering: pixelated;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  background: #fff;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.row > * { flex: 1; }
+
+.pair-divider {
+  height: 1px;
+  background: var(--bd);
+  margin: 12px 0 8px;
+}
+
+.dev {
+  border-top: 1px solid var(--bd);
+  padding: 10px 0;
+}
+
+.dev:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.dev:last-child {
+  padding-bottom: 2px;
+}
+
+.dev-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dev .nm {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--txt);
+}
+
+.dev .models {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.msg-ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-bd);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  margin-top: 8px;
+}
+
+.msg-err {
+  color: var(--bad);
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-bd);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  margin-top: 8px;
+}
+
+.msg-ok:empty, .msg-err:empty { display: none; }
+
+/* ---- Right AI Chat Pane ---- */
+main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-panel);
+  position: relative;
+}
+
+/* Chat Topbar (Model Picker Pill + Actions) */
+.bar {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--bd);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+  z-index: 10;
+}
+
+.model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-app);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 3px 6px 3px 10px;
+  transition: border-color 0.15s ease;
+}
+
+.model-pill:focus-within {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(77, 37, 216, 0.1);
+}
+
+.model-pill label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mut);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.model-pill select {
+  width: auto;
+  min-width: 200px;
+  max-width: 360px;
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--txt);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.model-pill select:focus {
+  box-shadow: none;
+}
+
+#modelCaps:empty { display: none; }
+
+/* Chat Stream Area */
+#chat {
+  flex: 1 1 0%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 28px 24px 16px;
+}
+
+#chat::-webkit-scrollbar,
+aside::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+#chat::-webkit-scrollbar-track,
+aside::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#chat::-webkit-scrollbar-thumb,
+aside::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+#chat::-webkit-scrollbar-thumb:hover,
+aside::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/* Empty / Welcome Hero State */
+.empty {
+  max-width: 640px;
+  margin: 8vh auto 0;
+  text-align: center;
+  padding: 24px;
+}
+
+.empty-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--brand-soft) 0%, #ede9fe 100%);
+  border: 1px solid var(--brand-border);
+  color: var(--brand);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  box-shadow: 0 6px 20px rgba(77, 37, 216, 0.12);
+}
+
+.empty-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--txt);
+  margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+
+.empty-sub {
+  font-size: 13.5px;
+  color: var(--mut);
+  margin: 0 0 24px;
+}
+
+.starter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  text-align: left;
+}
+
+.starter-card {
+  padding: 12px 14px;
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-md);
+  background: var(--bg-app);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.starter-card:hover {
+  border-color: var(--brand-border);
+  background: var(--brand-soft);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.starter-card .st-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--txt);
+  margin-bottom: 2px;
+}
+
+.starter-card .st-desc {
+  font-size: 12px;
+  color: var(--mut);
+}
+
+/* Conversation Turns (Modern AI Chat Style) */
+.turn {
+  max-width: 780px;
+  margin: 0 auto 22px;
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn 0.18s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.turn-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.turn-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.turn.user {
+  align-items: flex-end;
+}
+
+.turn.user .turn-header {
+  flex-direction: row-reverse;
+}
+
+.turn.user .turn-avatar {
+  background: var(--txt);
+  color: #fff;
+}
+
+.turn.assistant {
+  align-items: flex-start;
+}
+
+.turn.assistant .turn-avatar {
+  background: linear-gradient(135deg, #4d25d8 0%, #7c3aed 100%);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(77, 37, 216, 0.22);
+}
+
+.turn .who {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--txt-sec);
+}
+
+.bubble {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14.5px;
+  line-height: 1.7;
+  position: relative;
+}
+
+.turn.user .bubble {
+  background: linear-gradient(135deg, #4d25d8 0%, #5b34eb 100%);
+  color: #ffffff;
+  padding: 10px 16px;
+  border-radius: 18px 18px 4px 18px;
+  max-width: min(82%, 600px);
+  box-shadow: 0 2px 10px rgba(77, 37, 216, 0.18);
+}
+
+.turn.assistant .bubble {
+  background: var(--bg-app);
+  color: var(--txt);
+  padding: 14px 18px;
+  border-radius: 4px 18px 18px 18px;
+  border: 1px solid var(--bd);
+  width: 100%;
+  box-shadow: var(--shadow-sm);
+}
+
+.bubble img {
+  max-width: 280px;
+  max-height: 200px;
+  display: block;
+  margin-top: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.turn.assistant .bubble img {
+  border-color: var(--bd);
+}
+
+.meta {
+  font-size: 11.5px;
+  color: var(--mut);
+  margin-top: 6px;
+  padding-left: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.meta:empty { display: none; }
+
+.err {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-bd);
+  color: #991b1b;
+  font-size: 13px;
+  width: 100%;
+}
+
+.err b {
+  font-family: ui-monospace, Menlo, monospace;
+  background: rgba(220, 38, 38, 0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 4px;
+}
+
+.cursor::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  animation: blink 0.9s steps(1) infinite;
+  color: var(--brand);
+}
+
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ---- Floating AI Composer Footer ---- */
+footer {
+  flex-shrink: 0;
+  padding: 8px 24px 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0) 0%, var(--bg-panel) 24%);
+}
+
+footer .in {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.composer {
+  border: 1px solid var(--bd-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-md);
+  padding: 10px 12px 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer:focus-within {
+  border-color: var(--brand);
+  box-shadow: 0 6px 24px rgba(77, 37, 216, 0.1), 0 0 0 3px rgba(77, 37, 216, 0.1);
+}
+
+#attInfo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--txt-sec);
+}
+
+#attInfo:not(:empty) {
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-app);
+  border: 1px solid var(--bd);
+  border-radius: var(--radius-sm);
+}
+
+#attInfo img {
+  max-height: 44px;
+  border-radius: 6px;
+  border: 1px solid var(--bd);
+}
+
+footer textarea#input {
+  border: 0;
+  padding: 4px 4px 8px;
+  resize: none;
+  min-height: 52px;
+  max-height: 180px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  background: transparent;
+  box-shadow: none;
+}
+
+footer textarea#input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid #f1f3f5;
+}
+
+#att {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-hint {
+  font-size: 11.5px;
+  color: var(--mut);
+}
+
+#send, #stop {
+  padding: 6px 16px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+/* ---- Toast ---- */
+#toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  max-width: 400px;
+  z-index: 50;
+}
+
+#toast div {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: #18181b;
+  color: #fff;
+  font-size: 13px;
+  box-shadow: var(--shadow-lg);
+}
+
+#toast div.bad {
+  background: var(--bad);
+}
+
+@media (max-width: 860px) {
+  #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 38vh) minmax(0, 1fr); height: calc(100vh - 56px); }
+  aside { border-right: 0; border-bottom: 1px solid var(--bd); }
+  .starter-grid { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
 <header>
-  <h1>LMBP 模拟 SaaS · 本机模型聊天</h1><span class="sp"></span>
+  <span class="brand-mark" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+  </span>
+  <h1>LMBP 模拟 SaaS <span class="sub-tag">本机模型对话</span></h1>
+  <span class="sp"></span>
   <span class="who" id="who"></span>
-  <button id="logout" class="hidden">退出</button>
+  <button id="logout" class="ghost hidden">退出登录</button>
 </header>
 
 <section id="login">
-  <h2>开发登录</h2>
+  <div class="login-head">
+    <span class="brand-mark" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+    </span>
+    <h2>连接模拟 SaaS 控制台</h2>
+  </div>
   <p class="note">这是一个模拟 SaaS 的开发页面。用租户 API Key 登录后，页面直接以“租户后端”的身份调用本网关的 <span class="mono">/lmbp/v1/tenant/*</span> 与 <span class="mono">/v1/*</span>。Key 只保存在本标签页的 sessionStorage 中，关闭标签页即清除；页面本身不包含任何密钥。</p>
   <form id="loginForm" autocomplete="off">
-    <label for="tenant">租户 ID</label><input id="tenant" required value="acme">
-    <label for="user">最终用户（X-End-User）</label><input id="user" required value="alice" maxlength="128">
-    <label for="key">租户 API Key</label><input id="key" type="password" required minlength="32" placeholder="与网关 --tenant id:ENV 中 ENV 的值相同">
-    <div class="row"><button class="pri" type="submit">登录</button></div>
+    <label for="tenant">租户 ID</label>
+    <input id="tenant" required value="acme">
+    <label for="user">最终用户（X-End-User）</label>
+    <input id="user" required value="alice" maxlength="128">
+    <label for="key">租户 API Key</label>
+    <input id="key" type="password" required minlength="32" placeholder="与网关 --tenant id:ENV 中 ENV 的值相同">
+    <div class="row"><button class="pri" type="submit">进入工作台</button></div>
     <div class="msg-err" id="loginErr"></div>
   </form>
 </section>
@@ -79,46 +925,113 @@ footer textarea{resize:vertical;min-height:64px}
 <div id="app" class="hidden">
   <aside>
     <div class="card">
-      <h3>配对状态<span class="sp"></span><button id="refresh" title="刷新">刷新</button></h3>
+      <h3>配对状态<span class="sp"></span><button id="refresh" class="ghost" title="刷新">刷新</button></h3>
       <div id="pairState">加载中…</div>
     </div>
+
     <div class="card">
       <h3>配对新设备</h3>
-      <div style="font-size:12.5px;color:var(--mut)">① 在电脑上用 Connector 打开下方链接（或扫码），在本机同意授权；② Connector 显示配对码后，在这里输入并批准。</div>
+      <div class="step-hint">① 在桌面端复制下方配对链接（或扫码）发起连接；② 将桌面端显示的 8 位配对码填入下方并批准。</div>
       <label>配对链接</label>
       <div class="link mono" id="pairLink">…</div>
       <div id="qr"></div>
-      <div class="row"><button id="copyLink">复制链接</button><button id="copyCmd">复制 Connector 命令</button></div>
-      <label for="code">设备配对码（user_code）</label><input id="code" placeholder="如 BCDF-GHJK" class="mono">
-      <label for="jkt">设备公钥指纹 jkt（可选，强校验）</label><input id="jkt" class="mono" placeholder="由 pairing_uri 的 ?jkt= 带入">
-      <div class="row"><button class="pri" id="approve">批准</button><button class="danger" id="deny">拒绝</button></div>
+      <div class="row">
+        <button id="copyLink" type="button">复制链接</button>
+        <button id="copyCmd" type="button">复制 CLI 命令</button>
+      </div>
+      <div class="pair-divider"></div>
+      <label for="code">设备配对码（user_code）</label>
+      <input id="code" placeholder="如 BCDF-GHJK" class="mono">
+      <label for="jkt">设备公钥指纹 jkt（可选，强校验）</label>
+      <input id="jkt" class="mono" placeholder="由 pairing_uri 的 ?jkt= 带入">
+      <div class="row">
+        <button class="pri" id="approve" type="button">批准配对</button>
+        <button class="danger" id="deny" type="button">拒绝</button>
+      </div>
       <div id="pairMsg"></div>
     </div>
+
     <div class="card">
       <h3>我的设备<span class="sp"></span><span class="badge" id="devCount">0</span></h3>
       <div id="devices"></div>
     </div>
   </aside>
+
   <main>
     <div class="bar">
-      <label for="model" style="margin:0;white-space:nowrap">模型</label>
-      <select id="model"></select>
+      <div class="model-pill">
+        <label for="model">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><rect x="4" y="12" width="16" height="8" rx="3"/></svg>
+          模型
+        </label>
+        <select id="model"></select>
+      </div>
       <span id="modelCaps" class="badge"></span>
       <span class="sp" style="flex:1"></span>
-      <button id="newChat">新对话</button>
+      <button id="newChat" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        新对话
+      </button>
     </div>
-    <div id="chat"><div class="empty" id="empty">选择一个在线设备上的模型，开始对话。<br>回答经网关的 <span class="mono">/v1/chat/completions</span>（SSE）流式返回。</div></div>
-    <footer><div class="in">
-      <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
-      <div class="row" style="align-items:center">
-        <div id="att"><input type="file" id="file" accept="image/*" class="hidden"><button id="pick" type="button">添加图片</button><span id="attInfo"></span></div>
-        <span style="flex:1"></span>
-        <button id="stop" class="danger hidden" style="flex:0 0 auto">停止</button>
-        <button id="send" class="pri" style="flex:0 0 auto">发送</button>
+
+    <div id="chat">
+      <div class="empty" id="empty">
+        <div class="empty-icon">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h2 class="empty-title">与你的本机模型开始对话</h2>
+        <p class="empty-sub">选择一个在线设备上的模型，消息将通过网关 <span class="mono">/v1/chat/completions</span>（SSE）流式路由至本机执行。</p>
+        <div class="starter-grid">
+          <div class="starter-card" data-prompt="你好，请用简短的几句话介绍一下你自己。">
+            <div class="st-title">👋 打个招呼</div>
+            <div class="st-desc">测试本机模型连通性与流式响应速度</div>
+          </div>
+          <div class="starter-card" data-prompt="请帮我用 Go 语言写一个并发安全的环形缓冲区，并附上简要说明。">
+            <div class="st-title">💻 编写代码</div>
+            <div class="st-desc">生成一段带注释的 Go 数据结构实现</div>
+          </div>
+          <div class="starter-card" data-prompt="请用通俗易懂的比喻解释什么是端到端加密（E2EE）。">
+            <div class="st-title">🔐 概念解释</div>
+            <div class="st-desc">用简洁直观的语言解释技术原理</div>
+          </div>
+          <div class="starter-card" data-prompt="帮我梳理一份本地大模型接入 SaaS 网关的自检清单。">
+            <div class="st-title">📋 方案梳理</div>
+            <div class="st-desc">生成结构化的联调与排查清单</div>
+          </div>
+        </div>
       </div>
-    </div></footer>
+    </div>
+
+    <footer>
+      <div class="in">
+        <div class="composer">
+          <div id="attInfo"></div>
+          <textarea id="input" rows="2" placeholder="给本机模型发送消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <div class="composer-bar">
+            <div id="att">
+              <input type="file" id="file" accept="image/*" class="hidden">
+              <button id="pick" type="button" class="ghost">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+                添加图片
+              </button>
+            </div>
+            <span class="composer-hint">SSE 流式传输</span>
+            <span style="flex:1"></span>
+            <button id="stop" class="danger hidden" type="button" style="flex:0 0 auto">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+              停止生成
+            </button>
+            <button id="send" class="pri" type="button" style="flex:0 0 auto">
+              发送
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </footer>
   </main>
 </div>
+
 <div id="toast"></div>
 <script src="/chat/qrcode.js"></script>
 <script src="/chat/chat.js"></script>
