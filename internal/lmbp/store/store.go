@@ -111,11 +111,13 @@ type Store interface {
 	SetDeviceStatus(ctx context.Context, id, status string) error
 	SetDeviceE2EEKey(ctx context.Context, id, stmt string) error
 
-	// PutIdempotency records a key; ErrExists if (tenant, owner, key) is taken.
-	PutIdempotency(ctx context.Context, i Idempotency) error
 	GetIdempotency(ctx context.Context, tenantID, ownerID, key string) (Idempotency, error)
 
-	CreateTask(ctx context.Context, t Task) error
+	// CreateTask stores a new task and, when idem is non-nil, its
+	// Idempotency-Key record, atomically: both are committed or neither is,
+	// so a key never exists without its task. ErrExists if the key
+	// (tenant, owner, key) is already taken; then nothing is stored.
+	CreateTask(ctx context.Context, t Task, idem *Idempotency) error
 	// SetTaskState sets a non-terminal state (QUEUED, RUNNING). It never
 	// overwrites a terminal state; terminal states are only written by
 	// FinishTask.

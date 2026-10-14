@@ -47,7 +47,11 @@ class Store(Protocol):
 
     # Records are keyed by the (tenant, owner, key) triple; never join the parts ambiguously.
     def get_idempotency(self, tenant: str, owner: str, key: str) -> Optional[dict]: ...
-    def put_idempotency(self, tenant: str, owner: str, key: str, rec: dict) -> None: ...  # first writer wins
+    def create_task(self, t: TaskRecord, idem: Optional[dict] = None) -> None:
+        """Store a new task and, when ``idem`` ({tenant, owner, key, rec}) is
+        given, its Idempotency-Key record, atomically: both or neither, so a key
+        never exists without its task. Raises StoreConflict if the key is taken
+        (then nothing is written)."""
 
     def put_task(self, t: TaskRecord) -> None: ...
     def get_task(self, id: str) -> Optional[TaskRecord]: ...
@@ -102,8 +106,15 @@ class MemoryStore:
     def get_idempotency(self, tenant, owner, key):
         return self.idem.get((tenant, owner, key))
 
-    def put_idempotency(self, tenant, owner, key, rec):
-        self.idem.setdefault((tenant, owner, key), rec)
+    def create_task(self, t, idem=None):
+        if t["id"] in self.tasks:
+            raise StoreConflict(f"task {t['id']} exists")
+        if idem is not None:
+            k = (idem["tenant"], idem["owner"], idem["key"])
+            if k in self.idem:
+                raise StoreConflict("idempotency key taken")
+            self.idem[k] = idem["rec"]
+        self.tasks[t["id"]] = t
 
     def put_task(self, t):
         cur = self.tasks.get(t["id"])
@@ -219,8 +230,21 @@ class SQLiteStore:
     def get_idempotency(self, tenant, owner, key):
         return self._one("SELECT doc FROM lmbp_idempotency WHERE tenant = ? AND owner = ? AND idem_key = ?", tenant, owner, key)
 
-    def put_idempotency(self, tenant, owner, key, rec):
-        self._x("INSERT OR IGNORE INTO lmbp_idempotency (tenant, owner, idem_key, doc) VALUES (?, ?, ?, ?)", tenant, owner, key, _enc(rec))
+    def create_task(self, t, idem=None):
+        """One transaction: the idempotency record and the task row."""
+        with self._lock:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                if idem is not None:
+                    cur = self.db.execute("INSERT OR IGNORE INTO lmbp_idempotency (tenant, owner, idem_key, doc) VALUES (?, ?, ?, ?)",
+                                          (idem["tenant"], idem["owner"], idem["key"], _enc(idem["rec"])))
+                    if cur.rowcount == 0:
+                        raise StoreConflict("idempotency key taken")
+                self.db.execute("INSERT INTO lmbp_tasks (id, doc) VALUES (?, ?)", (t["id"], _enc({**t, "events": []})))
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
 
     def put_task(self, t):
         self._x("INSERT OR REPLACE INTO lmbp_tasks (id, doc) VALUES (?, ?)", t["id"], _enc({**t, "events": []}))

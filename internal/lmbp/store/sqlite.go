@@ -184,18 +184,6 @@ func (s *SQLite) SetDeviceE2EEKey(ctx context.Context, id, stmt string) error {
 	return err
 }
 
-func (s *SQLite) PutIdempotency(ctx context.Context, i Idempotency) error {
-	r, err := s.db.ExecContext(ctx, `INSERT INTO idempotency(tenant_id,owner_id,idem_key,task_id,body_hash,created_at) VALUES(?,?,?,?,?,?)
-		ON CONFLICT DO NOTHING`, i.TenantID, i.OwnerID, i.Key, i.TaskID, i.BodyHash, i.CreatedAt.UnixNano())
-	if err != nil {
-		return err
-	}
-	if n, _ := r.RowsAffected(); n == 0 {
-		return ErrExists
-	}
-	return nil
-}
-
 func (s *SQLite) GetIdempotency(ctx context.Context, tenantID, ownerID, key string) (Idempotency, error) {
 	var i Idempotency
 	var c int64
@@ -205,10 +193,29 @@ func (s *SQLite) GetIdempotency(ctx context.Context, tenantID, ownerID, key stri
 	return i, nf(err)
 }
 
-func (s *SQLite) CreateTask(ctx context.Context, t Task) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO tasks(id,tenant_id,owner_id,device_id,model,state,request,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.TenantID, t.OwnerID, t.DeviceID, t.Model, t.State, s.c.Seal(t.Request), t.CreatedAt.UnixNano(), t.UpdatedAt.UnixNano())
-	return err
+// CreateTask writes the task row and the idempotency record in one
+// transaction (see Store).
+func (s *SQLite) CreateTask(ctx context.Context, t Task, i *Idempotency) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if i != nil {
+		r, err := tx.ExecContext(ctx, `INSERT INTO idempotency(tenant_id,owner_id,idem_key,task_id,body_hash,created_at) VALUES(?,?,?,?,?,?)
+			ON CONFLICT DO NOTHING`, i.TenantID, i.OwnerID, i.Key, i.TaskID, i.BodyHash, i.CreatedAt.UnixNano())
+		if err != nil {
+			return err
+		}
+		if n, _ := r.RowsAffected(); n == 0 {
+			return ErrExists
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO tasks(id,tenant_id,owner_id,device_id,model,state,request,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.TenantID, t.OwnerID, t.DeviceID, t.Model, t.State, s.c.Seal(t.Request), t.CreatedAt.UnixNano(), t.UpdatedAt.UnixNano()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) SetTaskState(ctx context.Context, id, state string) error {

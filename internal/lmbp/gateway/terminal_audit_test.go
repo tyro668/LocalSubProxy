@@ -170,7 +170,7 @@ func TestTerminalAtomicMemoryReplay(t *testing.T) {
 func TestRecoveryInconsistentLegacyRow(t *testing.T) {
 	m := store.NewMemory()
 	ctx := context.Background()
-	_ = m.CreateTask(ctx, store.Task{ID: "task_x", TenantID: "acme", OwnerID: "alice", State: "FAILED"})
+	_ = m.CreateTask(ctx, store.Task{ID: "task_x", TenantID: "acme", OwnerID: "alice", State: "FAILED"}, nil)
 	_ = m.AppendEvent(ctx, store.Event{TaskID: "task_x", Seq: 1, Kind: lmbp.TypeTaskDelta, Data: []byte(`{"content":"hi"}`)})
 	_ = m.AppendEvent(ctx, store.Event{TaskID: "task_x", Seq: 2, Kind: lmbp.TypeTaskDone, Data: []byte(`{"finish_reason":"stop"}`)})
 	g, _ := New(Config{Store: m})

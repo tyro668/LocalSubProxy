@@ -19,9 +19,9 @@ func TestEncryptionAndPurge(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-48 * time.Hour)
-	_ = s.CreateTask(ctx, Task{ID: "t_old", State: "SUCCEEDED", Request: []byte("SECRET-PROMPT"), CreatedAt: old, UpdatedAt: old})
+	_ = s.CreateTask(ctx, Task{ID: "t_old", State: "SUCCEEDED", Request: []byte("SECRET-PROMPT"), CreatedAt: old, UpdatedAt: old}, nil)
 	_ = s.AppendEvent(ctx, Event{TaskID: "t_old", Seq: 1, Kind: "task.delta", Data: []byte("SECRET-OUTPUT"), At: old})
-	_ = s.CreateTask(ctx, Task{ID: "t_run", State: "RUNNING", Request: []byte("x"), CreatedAt: old, UpdatedAt: old})
+	_ = s.CreateTask(ctx, Task{ID: "t_run", State: "RUNNING", Request: []byte("x"), CreatedAt: old, UpdatedAt: old}, nil)
 	got, err := s.GetTask(ctx, "t_old")
 	if err != nil || string(got.Request) != "SECRET-PROMPT" {
 		t.Fatalf("roundtrip %q %v", got.Request, err)
@@ -63,13 +63,13 @@ func TestIdempotencyKeysUnambiguous(t *testing.T) {
 	defer sq.Close()
 	for name, st := range map[string]Store{"memory": NewMemory(), "sqlite": sq} {
 		ctx := context.Background()
-		if err := st.PutIdempotency(ctx, Idempotency{TenantID: "acme", OwnerID: "a", Key: "b|c", TaskID: "task_a", BodyHash: "h", CreatedAt: time.Now()}); err != nil {
+		if err := st.CreateTask(ctx, Task{ID: "task_a", State: "QUEUED", Request: []byte("{}")}, &Idempotency{TenantID: "acme", OwnerID: "a", Key: "b|c", TaskID: "task_a", BodyHash: "h", CreatedAt: time.Now()}); err != nil {
 			t.Fatal(name, err)
 		}
 		if _, err := st.GetIdempotency(ctx, "acme", "a|b", "c"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("%s: (a|b, c) collided with (a, b|c): %v", name, err)
 		}
-		if err := st.PutIdempotency(ctx, Idempotency{TenantID: "acme", OwnerID: "a|b", Key: "c", TaskID: "task_ab", BodyHash: "h", CreatedAt: time.Now()}); err != nil {
+		if err := st.CreateTask(ctx, Task{ID: "task_ab", State: "QUEUED", Request: []byte("{}")}, &Idempotency{TenantID: "acme", OwnerID: "a|b", Key: "c", TaskID: "task_ab", BodyHash: "h", CreatedAt: time.Now()}); err != nil {
 			t.Fatalf("%s: distinct record refused: %v", name, err)
 		}
 		if i, _ := st.GetIdempotency(ctx, "acme", "a", "b|c"); i.TaskID != "task_a" {
@@ -90,7 +90,7 @@ func TestFinishTaskAtomic(t *testing.T) {
 	defer sq.Close()
 	for name, s := range map[string]Store{"memory": NewMemory(), "sqlite": sq} {
 		t.Run(name, func(t *testing.T) {
-			if err := s.CreateTask(ctx, Task{ID: "t1", TenantID: "a", OwnerID: "u", State: "RUNNING", Request: []byte("{}")}); err != nil {
+			if err := s.CreateTask(ctx, Task{ID: "t1", TenantID: "a", OwnerID: "u", State: "RUNNING", Request: []byte("{}")}, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.AppendEvent(ctx, Event{TaskID: "t1", Seq: 1, Kind: "task.delta"}); err != nil {
@@ -123,7 +123,7 @@ func TestFinishTaskAtomic(t *testing.T) {
 		})
 	}
 	// SQLite: a status update failing inside the transaction rolls back the event.
-	_ = sq.CreateTask(ctx, Task{ID: "t2", TenantID: "a", OwnerID: "u", State: "RUNNING", Request: []byte("{}")})
+	_ = sq.CreateTask(ctx, Task{ID: "t2", TenantID: "a", OwnerID: "u", State: "RUNNING", Request: []byte("{}")}, nil)
 	if _, err := sq.db.Exec(`CREATE TRIGGER f BEFORE UPDATE OF state ON tasks WHEN NEW.state='SUCCEEDED' BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -132,5 +132,39 @@ func TestFinishTaskAtomic(t *testing.T) {
 	}
 	if evs, _ := sq.ListEvents(ctx, "t2"); len(evs) != 0 {
 		t.Fatalf("event committed without its state: %+v", evs)
+	}
+}
+
+// Fourth audit A1: the task row and its idempotency record are one write.
+func TestCreateTaskIdempotencyAtomic(t *testing.T) {
+	sq, err := OpenSQLite(":memory:", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sq.Close()
+	for name, st := range map[string]Store{"memory": NewMemory(), "sqlite": sq} {
+		ctx := context.Background()
+		key := func(task string) *Idempotency {
+			return &Idempotency{TenantID: "acme", OwnerID: "u", Key: "k", TaskID: task, BodyHash: "h", CreatedAt: time.Now()}
+		}
+		if err := st.CreateTask(ctx, Task{ID: "t_first", State: "QUEUED", Request: []byte("{}")}, key("t_first")); err != nil {
+			t.Fatal(name, err)
+		}
+		// key taken: ErrExists and no second task row
+		if err := st.CreateTask(ctx, Task{ID: "t_second", State: "QUEUED", Request: []byte("{}")}, key("t_second")); !errors.Is(err, ErrExists) {
+			t.Fatalf("%s: taken key: %v", name, err)
+		}
+		if _, err := st.GetTask(ctx, "t_second"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: task row written although its key was taken: %v", name, err)
+		}
+		// task insert fails (duplicate id): the new key must not be stored
+		dup := key("t_first")
+		dup.Key = "k2"
+		if err := st.CreateTask(ctx, Task{ID: "t_first", State: "QUEUED", Request: []byte("{}")}, dup); err == nil {
+			t.Fatalf("%s: duplicate task id accepted", name)
+		}
+		if _, err := st.GetIdempotency(ctx, "acme", "u", "k2"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: key stored without its task: %v", name, err)
+		}
 	}
 }

@@ -33,7 +33,7 @@ type (
 
 var (
 	ErrNotFound = store.ErrNotFound // Get*/lookup of a missing record
-	ErrExists   = store.ErrExists   // PutIdempotency: (tenant, owner, key) already taken
+	ErrExists   = store.ErrExists   // CreateTask: the Idempotency-Key (tenant, owner, key) is already taken
 )
 
 // Text builds plain-text message content.

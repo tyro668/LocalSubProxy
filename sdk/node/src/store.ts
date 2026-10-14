@@ -62,8 +62,13 @@ export interface Store {
 
   /** Records are keyed by the (tenant, owner, key) triple; implementations MUST NOT join the parts ambiguously. */
   getIdempotency(tenant: string, owner: string, key: string): Idempotency | undefined;
-  /** First writer wins: an existing (tenant, owner, key) record is kept. */
-  putIdempotency(tenant: string, owner: string, key: string, rec: Idempotency): void;
+  /**
+   * createTask stores a new task and, when idem is given, its Idempotency-Key
+   * record, atomically: both are written or neither is, so a key never exists
+   * without its task. Throws StoreConflict if the key is already taken (then
+   * nothing is written).
+   */
+  createTask(t: TaskRecord, idem?: NewIdempotency): void;
 
   /** putTask writes the task's metadata; events are written with appendEvent / finishTask.
    *  It is used for non-terminal states (QUEUED, RUNNING) only. */
@@ -85,6 +90,9 @@ export interface Store {
 }
 
 /** Thrown by appendEvent / finishTask when a seq or a terminal state already exists. */
+/** The Idempotency-Key record written together with its task by createTask. */
+export interface NewIdempotency { tenant: string; owner: string; key: string; rec: Idempotency }
+
 export class StoreConflict extends Error { constructor(m: string) { super(m); this.name = 'StoreConflict'; } }
 /** Thrown by finishTask when the task does not exist. */
 export class StoreNotFound extends Error { constructor(m: string) { super(m); this.name = 'StoreNotFound'; } }
@@ -111,9 +119,14 @@ export class MemoryStore implements Store {
     return [...this.devices.values()].filter((d) => d.tenant === tenant && (owner === undefined || d.owner === owner));
   }
   getIdempotency(t: string, o: string, k: string) { return this.idem.get(JSON.stringify([t, o, k])); }
-  putIdempotency(t: string, o: string, k: string, r: Idempotency) {
-    const id = JSON.stringify([t, o, k]);   // unambiguous encoding of the triple
-    if (!this.idem.has(id)) this.idem.set(id, r);
+  createTask(t: TaskRecord, i?: NewIdempotency) {
+    if (this.tasks.has(t.id)) throw new StoreConflict(`task ${t.id} exists`);
+    if (i) {
+      const id = JSON.stringify([i.tenant, i.owner, i.key]);   // unambiguous encoding of the triple
+      if (this.idem.has(id)) throw new StoreConflict('idempotency key taken');
+      this.idem.set(id, i.rec);
+    }
+    this.tasks.set(t.id, t);
   }
   putTask(t: TaskRecord) {
     const cur = this.tasks.get(t.id);
@@ -208,8 +221,20 @@ export class SqliteStore implements Store {
   getIdempotency(t: string, o: string, k: string) {
     return this.one<Idempotency>('SELECT doc FROM lmbp_idempotency WHERE tenant = ? AND owner = ? AND idem_key = ?', t, o, k);
   }
-  putIdempotency(t: string, o: string, k: string, r: Idempotency) {
-    this.db.prepare('INSERT OR IGNORE INTO lmbp_idempotency (tenant, owner, idem_key, doc) VALUES (?, ?, ?, ?)').run(t, o, k, enc(r));
+  /** One transaction: the idempotency record and the task row. */
+  createTask(t: TaskRecord, i?: NewIdempotency) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (i) {
+        const r: any = this.db.prepare('INSERT OR IGNORE INTO lmbp_idempotency (tenant, owner, idem_key, doc) VALUES (?, ?, ?, ?)').run(i.tenant, i.owner, i.key, enc(i.rec));
+        if (r && r.changes === 0) throw new StoreConflict('idempotency key taken');
+      }
+      this.db.prepare('INSERT INTO lmbp_tasks (id, doc) VALUES (?, ?)').run(t.id, enc({ ...t, events: [] }));
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw e;
+    }
   }
   putTask(t: TaskRecord) { this.db.prepare('INSERT OR REPLACE INTO lmbp_tasks (id, doc) VALUES (?, ?)').run(t.id, enc({ ...t, events: [] })); }
   getTask(id: string) {

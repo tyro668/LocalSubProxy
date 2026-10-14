@@ -26,11 +26,13 @@ const chat = (base, user, body, hdr = {}) => fetch(base + '/v1/chat/completions'
 test('idempotency store keys are unambiguous (a, "b|c") vs ("a|b", "c")', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'idem-'));
   for (const st of [new MemoryStore(), new SqliteStore(path.join(dir, 'i.db'))]) {
-    st.putIdempotency(T, 'a', 'b|c', { tenant: T, owner: 'a', taskID: 'task_a', bodyHash: 'h' });
+    const task = (id) => ({ id, tenant: T, owner: 'a', device: 'd', model: 'm', state: 'QUEUED', events: [] });
+    st.createTask(task('task_a'), { tenant: T, owner: 'a', key: 'b|c', rec: { tenant: T, owner: 'a', taskID: 'task_a', bodyHash: 'h' } });
     assert.equal(st.getIdempotency(T, 'a|b', 'c'), undefined, st.constructor.name);
     assert.equal(st.getIdempotency(T, 'a', 'b|c').taskID, 'task_a');
-    st.putIdempotency(T, 'a', 'b|c', { tenant: T, owner: 'a', taskID: 'task_other', bodyHash: 'h' });
+    assert.throws(() => st.createTask(task('task_other'), { tenant: T, owner: 'a', key: 'b|c', rec: { tenant: T, owner: 'a', taskID: 'task_other', bodyHash: 'h' } }), /taken/);
     assert.equal(st.getIdempotency(T, 'a', 'b|c').taskID, 'task_a', 'first writer wins');
+    assert.equal(st.getTask('task_other'), undefined, 'no task row for the losing key');
     st.close?.();
   }
 });

@@ -1,7 +1,9 @@
 """Regression tests for the 2026-10 audit findings (see reports/LMBP审查问题修复报告.md)."""
 import httpx
+import pytest
 
 from lmbp_server import LMBPServer, MemoryStore, SQLiteStore, TenantConfig
+from lmbp_server.store import StoreConflict
 from simdevice import pair_and_connect
 
 KEY = "k" * 40
@@ -15,11 +17,18 @@ def new(**kw):
 def test_idempotency_store_keys_unambiguous(tmp_path):
     # Finding 1: (user a, key b|c) must not collide with (user a|b, key c).
     for st in (MemoryStore(), SQLiteStore(str(tmp_path / "i.db"))):
-        st.put_idempotency(T, "a", "b|c", {"tenant": T, "owner": "a", "task_id": "task_a", "body_hash": "h"})
+        def task(i):
+            return {"id": i, "tenant": T, "owner": "a", "device": "d", "model": "m", "state": "QUEUED", "events": []}
+
+        def idem(i):
+            return {"tenant": T, "owner": "a", "key": "b|c", "rec": {"tenant": T, "owner": "a", "task_id": i, "body_hash": "h"}}
+        st.create_task(task("task_a"), idem("task_a"))
         assert st.get_idempotency(T, "a|b", "c") is None, type(st).__name__
         assert st.get_idempotency(T, "a", "b|c")["task_id"] == "task_a"
-        st.put_idempotency(T, "a", "b|c", {"tenant": T, "owner": "a", "task_id": "task_other", "body_hash": "h"})
+        with pytest.raises(StoreConflict):
+            st.create_task(task("task_other"), idem("task_other"))
         assert st.get_idempotency(T, "a", "b|c")["task_id"] == "task_a"
+        assert st.get_task("task_other") is None, "no task row for the losing key"
 
 
 async def test_idempotent_replay_never_crosses_users(serve_app):

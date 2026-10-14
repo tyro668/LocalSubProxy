@@ -148,16 +148,6 @@ func (m *Memory) SetDeviceE2EEKey(_ context.Context, id, stmt string) error {
 	return nil
 }
 
-func (m *Memory) PutIdempotency(_ context.Context, i Idempotency) error {
-	defer m.lock()()
-	k := [3]string{i.TenantID, i.OwnerID, i.Key}
-	if _, ok := m.idem[k]; ok {
-		return ErrExists
-	}
-	m.idem[k] = i
-	return nil
-}
-
 func (m *Memory) GetIdempotency(_ context.Context, tenantID, ownerID, key string) (Idempotency, error) {
 	defer m.lock()()
 	i, ok := m.idem[[3]string{tenantID, ownerID, key}]
@@ -167,10 +157,17 @@ func (m *Memory) GetIdempotency(_ context.Context, tenantID, ownerID, key string
 	return i, nil
 }
 
-func (m *Memory) CreateTask(_ context.Context, t Task) error {
+func (m *Memory) CreateTask(_ context.Context, t Task, i *Idempotency) error {
 	defer m.lock()()
 	if _, ok := m.tasks[t.ID]; ok {
 		return ErrExists
+	}
+	if i != nil {
+		k := [3]string{i.TenantID, i.OwnerID, i.Key}
+		if _, ok := m.idem[k]; ok {
+			return ErrExists
+		}
+		m.idem[k] = *i
 	}
 	m.tasks[t.ID] = t
 	return nil

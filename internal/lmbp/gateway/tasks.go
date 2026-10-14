@@ -19,6 +19,16 @@ type event struct {
 	Data json.RawMessage
 }
 
+// raceHook, when set by a test, is called at named points of the terminal
+// paths so races can be reproduced deterministically. Nil in production.
+var raceHook func(t *gtask, point string)
+
+func hook(t *gtask, point string) {
+	if raceHook != nil {
+		raceHook(t, point)
+	}
+}
+
 // gtask is the gateway-side hub of one task: it buffers the device's frames,
 // fans them out to (re-)attached HTTP subscribers and paces task.ack so a
 // slow subscriber exerts backpressure on the device (docs/lmbp-spec.md §8).
@@ -36,6 +46,8 @@ type gtask struct {
 	events            []event
 	notify            chan struct{}
 	done              bool
+	decided           bool          // a terminal outcome was chosen (decide); only its holder commits and publishes
+	seen              int64         // highest device seq onDeviceFrame started to handle
 	subs              map[int]int64 // subscriber → delivered seq
 	nextSub           int
 	acked             int64
@@ -90,6 +102,21 @@ func (t *gtask) terminal() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.events) > 0 && isTerminal(t.events[len(t.events)-1].Type)
+}
+
+// decide claims the task's single terminal decision. Exactly one terminal
+// path (device task.done/task.error, timeout, cancel, slow consumer, local
+// error) wins; it alone commits the terminal event+state (FinishTask) and
+// then publishes that same outcome. Losers do nothing: nothing is published
+// before the decision, so callers and storage can never disagree.
+func (t *gtask) decide() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done || t.decided {
+		return false
+	}
+	t.decided = true
+	return true
 }
 
 func (t *gtask) isDone() bool {
@@ -157,11 +184,15 @@ func (t *gtask) broadcastLocked() {
 
 // onDeviceFrame records an accepted, in-order device data frame.
 func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
+	hook(t, "device-frame")
 	t.mu.Lock()
-	if t.done {
+	if t.done || t.decided {
 		t.mu.Unlock()
 		t.maybeAck()
 		return
+	}
+	if in.Seq > t.seen {
+		t.seen = in.Seq
 	}
 	data := in.Data
 	if in.Type == lmbp.TypeTaskDelta && !t.e2ee {
@@ -188,19 +219,28 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 				state = "CANCELLED"
 			}
 		}
-		// Terminal event + terminal state in one transaction: if it fails,
-		// neither is stored, so the local INTERNAL error below can take this
-		// seq without conflicting with a half-written done.
-		if err := t.g.cfg.Store.FinishTask(ctx, ev, state); err != nil {
-			t.persistFailed(in.Seq, "terminal event and state", err)
+		// The device's terminal frame competes for the single decision.
+		if !t.decide() {
+			t.maybeAck()
 			return
 		}
+		hook(t, "device-terminal-decided")
+		// Terminal event + terminal state in one transaction: if it fails,
+		// neither is stored, and the decision holder (us) turns the outcome
+		// into a local INTERNAL error at the same seq instead.
+		if err := t.g.cfg.Store.FinishTask(ctx, ev, state); err != nil {
+			t.g.cfg.Logger.Printf("lmbp: task %s: persisting terminal event and state for seq %d failed: %v (not acknowledged)", t.id, in.Seq, err)
+			t.sendCancel("internal_error")
+			t.commitLocal(lmbp.ErrInternal, "gateway could not persist task output", false)
+			return
+		}
+		hook(t, "device-terminal-committed")
 	} else if err := t.g.cfg.Store.AppendEvent(ctx, ev); err != nil {
 		t.persistFailed(in.Seq, "event", err)
 		return
 	}
 	t.mu.Lock()
-	if t.done { // failed locally while we were writing
+	if t.done || (t.decided && state == "") { // another path decided while we were writing
 		t.mu.Unlock()
 		return
 	}
@@ -276,47 +316,63 @@ func (t *gtask) watchdog() {
 	}
 }
 
-// cancel tells the device to stop; false if the task already finished.
+// cancel tells the device to stop; false if the task already finished or
+// its terminal outcome is already decided (then there is nothing to stop).
 func (t *gtask) cancel(reason string) bool {
 	t.mu.Lock()
-	done := t.done
+	over := t.done || t.decided
 	t.mu.Unlock()
-	if done {
+	if over {
 		return false
 	}
+	t.sendCancel(reason)
+	return true
+}
+
+func (t *gtask) sendCancel(reason string) {
 	if t.ds != nil && t.sentRun.Load() {
 		b, _ := json.Marshal(lmbp.TaskCancel{Reason: reason})
 		_ = t.ds.control(lmbp.Envelope{Type: lmbp.TypeTaskCancel, TaskID: t.id, Data: b})
 	}
-	return true
 }
 
-// failLocal appends a synthetic gateway terminal error event.
+// failLocal ends the task with a gateway-local terminal error, if it wins
+// the terminal decision (see decide); otherwise it does nothing.
 func (t *gtask) failLocal(code, msg string, retryable bool) {
-	t.mu.Lock()
-	if t.done {
-		t.mu.Unlock()
+	if !t.decide() {
 		return
 	}
-	seq := int64(1)
-	if n := len(t.events); n > 0 {
-		seq = t.events[n-1].Seq + 1
+	t.commitLocal(code, msg, retryable)
+}
+
+// commitLocal stores and then publishes a local terminal error. The caller
+// holds the decision. The seq follows every device seq seen so far, so it
+// never collides with a device frame still being written.
+func (t *gtask) commitLocal(code, msg string, retryable bool) {
+	t.mu.Lock()
+	seq := t.seen
+	if n := len(t.events); n > 0 && t.events[n-1].Seq > seq {
+		seq = t.events[n-1].Seq
 	}
-	b, _ := json.Marshal(lmbp.ErrorBody{Code: code, Message: msg, Retryable: retryable})
-	t.events = append(t.events, event{Seq: seq, Type: lmbp.TypeTaskError, Data: b})
-	t.broadcastLocked()
+	seq++
 	t.mu.Unlock()
+	hook(t, "local-terminal-decided")
+	b, _ := json.Marshal(lmbp.ErrorBody{Code: code, Message: msg, Retryable: retryable})
 	state := "FAILED"
 	if code == lmbp.ErrCancelled {
 		state = "CANCELLED"
 	}
 	// A gateway-local terminal event is not a device frame (nothing to ACK).
 	// It is stored atomically with the terminal state; if that fails nothing
-	// is stored and a later re-attach reports OUTCOME_UNKNOWN (an error, never
-	// a success).
+	// is stored and a later re-attach reports OUTCOME_UNKNOWN (an error, as
+	// this one is: never a success).
 	if err := t.g.cfg.Store.FinishTask(context.Background(), store.Event{TaskID: t.id, Seq: seq, Kind: lmbp.TypeTaskError, Data: b, At: time.Now()}, state); err != nil && err != store.ErrNotFound {
 		t.g.cfg.Logger.Printf("lmbp: task %s: persisting local %s failed: %v", t.id, code, err)
 	}
+	t.mu.Lock()
+	t.events = append(t.events, event{Seq: seq, Type: lmbp.TypeTaskError, Data: b})
+	t.broadcastLocked()
+	t.mu.Unlock()
 	t.finishWith(state, false, false)
 }
 

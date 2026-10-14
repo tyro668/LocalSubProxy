@@ -352,22 +352,6 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	// answering 404 / OUTCOME_UNKNOWN. Every way out of the queue below ends
 	// the task with a recorded terminal event, so replays see the same outcome.
 	task := g.newTask(ds, taskID, t.ID, user, req.Model, run.E2EE != nil, idemKey != "")
-	if idemKey != "" {
-		err := g.cfg.Store.PutIdempotency(r.Context(), store.Idempotency{TenantID: t.ID, OwnerID: user, Key: idemKey, TaskID: taskID, BodyHash: bodyHash, CreatedAt: time.Now()})
-		if err == store.ErrExists { // lost a race with a concurrent identical request
-			task.abandon()
-			if rec, err := g.cfg.Store.GetIdempotency(r.Context(), t.ID, user, idemKey); err == nil && rec.BodyHash == bodyHash {
-				g.reattach(w, r, t.ID, user, rec.TaskID, req.Model, req.Stream)
-				return
-			}
-			apiError(w, 422, lmbp.ErrIdempotency, "Idempotency-Key was used with a different request body")
-			return
-		} else if err != nil {
-			task.abandon()
-			apiError(w, 500, lmbp.ErrInternal, "storage error")
-			return
-		}
-	}
 	// What is stored: the routed request without large binaries; for E2EE only
 	// cleartext metadata (the sealed request is never persisted).
 	stored, _ := json.Marshal(run)
@@ -375,8 +359,22 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		stored, _ = json.Marshal(map[string]any{"model": model, "e2ee": true, "max_tokens": req.MaxTokens})
 	}
 	now := time.Now()
-	if err := g.cfg.Store.CreateTask(r.Context(), store.Task{ID: taskID, TenantID: t.ID, OwnerID: user, DeviceID: ds.deviceID, Model: model, State: "QUEUED", Request: stored, CreatedAt: now, UpdatedAt: now}); err != nil {
-		task.failLocal(lmbp.ErrInternal, "storage error", false) // releases any attached duplicate
+	var idem *store.Idempotency
+	if idemKey != "" {
+		idem = &store.Idempotency{TenantID: t.ID, OwnerID: user, Key: idemKey, TaskID: taskID, BodyHash: bodyHash, CreatedAt: now}
+	}
+	// Task row and idempotency record in one transaction: a crash can never
+	// leave a key that points at no task.
+	if err := g.cfg.Store.CreateTask(r.Context(), store.Task{ID: taskID, TenantID: t.ID, OwnerID: user, DeviceID: ds.deviceID, Model: model, State: "QUEUED", Request: stored, CreatedAt: now, UpdatedAt: now}, idem); err != nil {
+		task.abandon()
+		if err == store.ErrExists && idem != nil { // lost a race with a concurrent request using the same key
+			if rec, err := g.cfg.Store.GetIdempotency(r.Context(), t.ID, user, idemKey); err == nil && rec.BodyHash == bodyHash {
+				g.reattach(w, r, t.ID, user, rec.TaskID, req.Model, req.Stream)
+				return
+			}
+			apiError(w, 422, lmbp.ErrIdempotency, "Idempotency-Key was used with a different request body")
+			return
+		}
 		apiError(w, 500, lmbp.ErrInternal, "storage error")
 		return
 	}

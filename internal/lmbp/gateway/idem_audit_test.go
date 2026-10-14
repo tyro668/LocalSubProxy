@@ -20,9 +20,9 @@ type gateStore struct {
 	once             sync.Once
 }
 
-func (g *gateStore) CreateTask(ctx context.Context, t store.Task) error {
+func (g *gateStore) CreateTask(ctx context.Context, t store.Task, i *store.Idempotency) error {
 	g.once.Do(func() { close(g.entered); <-g.release })
-	return g.Store.CreateTask(ctx, t)
+	return g.Store.CreateTask(ctx, t, i)
 }
 
 type result struct {

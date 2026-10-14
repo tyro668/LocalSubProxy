@@ -22,6 +22,9 @@ const STATUS_OF = {
   CONSENT_DENIED: 403,
 };
 const errStatus = (code) => STATUS_OF[code] ?? 502;
+/** Test-only: raceHooks.hook(task, point) is called at named points of the terminal paths (null in production). */
+export const raceHooks = { hook: null };
+const hook = (t, point) => raceHooks.hook?.(t, point);
 const isTerminal = (t) => t === 'task.done' || t === 'task.error';
 const TERMINAL_STATES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
 const stateOf = (ev) => ev.type === 'task.done' ? 'SUCCEEDED' : (ev.data?.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED');
@@ -639,9 +642,15 @@ export class Gateway {
     // replay sees the same outcome instead of OUTCOME_UNKNOWN.
     let task;
     try {
-      if (idemKey) this.store.putIdempotency(a.t.id, a.user, idemKey, { tenant: a.t.id, owner: a.user, taskID, bodyHash });
-      this.store.putTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] });
+      // One atomic write: a key never exists without its task.
+      this.store.createTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] },
+        idemKey ? { tenant: a.t.id, owner: a.user, key: idemKey, rec: { tenant: a.t.id, owner: a.user, taskID, bodyHash } } : undefined);
     } catch (e) {
+      if (e?.name === 'StoreConflict' && idemKey) { // a concurrent request took the key first
+        const won = this.store.getIdempotency(a.t.id, a.user, idemKey);
+        if (won?.bodyHash === bodyHash) return this.reattach(req, res, err, a.t.id, a.user, won.taskID, r.model, !!r.stream, anthropic);
+        return err(422, 'IDEMPOTENCY_KEY_REUSED', 'Idempotency-Key was used with a different request body');
+      }
       this.cfg.log(`lmbp: task ${taskID}: storage error: ${e?.message ?? e}`);
       return err(500, 'INTERNAL', 'storage error');
     }
@@ -865,21 +874,32 @@ class Task {
   // A local terminal event is stored atomically with the terminal state; if
   // that fails nothing is stored and a later re-attach reports
   // OUTCOME_UNKNOWN (an error, never a success).
+  // Commit first, then publish: nothing is visible before it is decided and stored.
   record(ev) {
-    this.events.push(ev);
     if (!this.replayed) {
       try { this.g.store.finishTask(this.id, ev, stateOf(ev)); } catch (e) {
         if (e?.name !== 'StoreNotFound') this.g.cfg.log(`lmbp: task ${this.id}: persisting local event failed: ${e?.message ?? e}`);
       }
     }
+    this.events.push(ev);
     this.broadcast();
+  }
+  // decide claims the single terminal decision (see Go gtask.decide): exactly
+  // one terminal path (device done/error, timeout, cancel, slow consumer,
+  // local error) wins and alone commits and publishes its outcome.
+  decide() {
+    if (this.done || this.decided) return false;
+    this.decided = true;
+    return true;
   }
   // Device frames are persisted (and, for the terminal frame, the task state)
   // before they are published or ACKed: an ACK lets the device drop the frame
   // from its resume buffer, so it may only cover frames the gateway can serve
   // after a restart.
   onDeviceFrame(inp) {
-    if (this.done) return this.maybeAck();
+    hook(this, 'device-frame');
+    if (this.done || this.decided) return this.maybeAck();
+    if (inp.seq > (this.seen ?? 0)) this.seen = inp.seq;
     let data = inp.data && typeof inp.data === 'object' ? inp.data : {};
     if (inp.type === 'task.delta' && !this.e2ee && data.e2ee) { data = { ...data }; delete data.e2ee; }
     const ev = { seq: inp.seq, type: inp.type, data };
@@ -888,10 +908,17 @@ class Task {
       // Terminal event + terminal state in one transaction: on failure
       // neither is stored, so the local INTERNAL error can take this seq.
       state = stateOf(ev);
-      try { this.g.store.finishTask(this.id, ev, state); } catch (e) { return this.persistFailed(inp.seq, 'terminal event and state', e); }
+      if (!this.decide()) return this.maybeAck(); // another terminal path already decided
+      try { this.g.store.finishTask(this.id, ev, state); } catch (e) {
+        this.g.cfg.log(`lmbp: task ${this.id}: persisting terminal event and state for seq ${inp.seq} failed: ${e?.message ?? e} (not acknowledged)`);
+        this.sendCancel('internal_error');
+        return this.commitLocal('INTERNAL', 'gateway could not persist task output');
+      }
+      hook(this, 'device-terminal-committed');
     } else {
       try { this.g.store.appendEvent(this.id, ev); } catch (e) { return this.persistFailed(inp.seq, 'event', e); }
     }
+    if (this.done || (this.decided && !state)) return; // decided elsewhere meanwhile
     this.events.push(ev);
     this.persisted = inp.seq;
     this.broadcast();
@@ -913,13 +940,22 @@ class Task {
     this.ds.control(envelope('task.ack', { task_id: this.id, data: { seq: target } }));
   }
   cancel(reason) {
-    if (this.done) return false;
-    if (this.ds && this.sentRun) this.ds.control(envelope('task.cancel', { task_id: this.id, data: { reason } }));
+    if (this.done || this.decided) return false;
+    this.sendCancel(reason);
     return true;
   }
+  sendCancel(reason) {
+    if (this.ds && this.sentRun) this.ds.control(envelope('task.cancel', { task_id: this.id, data: { reason } }));
+  }
   failLocal(code, msg, retryable = false) {
-    if (this.done) return;
-    this.record({ seq: (this.events.at(-1)?.seq ?? 0) + 1, type: 'task.error', data: errorBody(code, msg, retryable) });
+    if (!this.decide()) return;
+    this.commitLocal(code, msg, retryable);
+  }
+  // The caller holds the decision. The seq follows every device seq seen.
+  commitLocal(code, msg, retryable = false) {
+    hook(this, 'local-terminal-decided');
+    const seq = Math.max(this.events.at(-1)?.seq ?? 0, this.seen ?? 0) + 1;
+    this.record({ seq, type: 'task.error', data: errorBody(code, msg, retryable) });
     this.finish(code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', false, false);
   }
   failOffline(code, msg) {

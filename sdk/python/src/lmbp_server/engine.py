@@ -25,7 +25,7 @@ from urllib.parse import parse_qsl
 from . import anthropic as A
 from . import protocol as L
 from ._http import Request, WSMsgType, web
-from .store import MemoryStore, Store, StoreNotFound
+from .store import MemoryStore, Store, StoreConflict, StoreNotFound
 from .params import ParamError, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
 
 PROBLEM_BASE = "https://localsubproxy.dev/problems/"
@@ -297,6 +297,16 @@ class DState:
             asyncio.ensure_future(self.ws.close())
 
 
+#: Test-only: race_hook(task, point) is called at named points of the terminal
+#: paths so races can be reproduced deterministically (None in production).
+race_hook = None
+
+
+def _hook(t, point):
+    if race_hook is not None:
+        race_hook(t, point)
+
+
 class Task:
     """Gateway-side hub of one task: buffers device frames, fans them out to
     (re-)attached HTTP subscribers and paces task.ack (§8)."""
@@ -368,8 +378,7 @@ class Task:
         """Publish a gateway-local terminal event. It is stored atomically with
         the terminal state; if that fails nothing is stored and a later
         re-attach reports OUTCOME_UNKNOWN (an error, never a success). There is
-        nothing to ACK."""
-        self.events.append(ev)
+        nothing to ACK. Commit first, then publish."""
         if not getattr(self, "replayed", False):
             try:
                 self.g.store.finish_task(self.id, ev, state_of(ev))
@@ -377,15 +386,27 @@ class Task:
                 pass  # the task row was never created (storage error at creation)
             except Exception as e:  # noqa: BLE001 - any store failure
                 self.g.log(f"lmbp: task {self.id}: persisting local event failed: {e}")
+        self.events.append(ev)
         self.broadcast()
+
+    def decide(self):
+        """Claim the single terminal decision (see Go gtask.decide): exactly one
+        terminal path (device done/error, timeout, cancel, slow consumer, local
+        error) wins and alone commits and then publishes its outcome."""
+        if self.done or getattr(self, "decided", False):
+            return False
+        self.decided = True
+        return True
 
     def on_device_frame(self, inp):
         """Device frames are persisted (and, for the terminal frame, the task
         state) before they are published or ACKed: an ACK lets the device drop
         the frame from its resume buffer, so it may only cover frames the
         gateway can still serve after a restart."""
-        if self.done:
+        _hook(self, "device-frame")
+        if self.done or getattr(self, "decided", False):
             return self.maybe_ack()
+        self.seen = max(getattr(self, "seen", 0), inp["seq"])
         data = inp.get("data") if isinstance(inp.get("data"), dict) else {}
         if inp["type"] == "task.delta" and not self.e2ee and data.get("e2ee"):
             data = {k: v for k, v in data.items() if k != "e2ee"}
@@ -395,15 +416,22 @@ class Task:
             # Terminal event + terminal state in one transaction: on failure
             # neither is stored, so the local INTERNAL error can take this seq.
             state = state_of(ev)
+            if not self.decide():  # another terminal path already decided
+                return self.maybe_ack()
             try:
                 self.g.store.finish_task(self.id, ev, state)
             except Exception as e:  # noqa: BLE001
-                return self.persist_failed(inp["seq"], "terminal event and state", e)
+                self.g.log(f"lmbp: task {self.id}: persisting terminal event and state for seq {inp['seq']} failed: {e} (not acknowledged)")
+                self.send_cancel("internal_error")
+                return self.commit_local("INTERNAL", "gateway could not persist task output")
+            _hook(self, "device-terminal-committed")
         else:
             try:
                 self.g.store.append_event(self.id, ev)
             except Exception as e:  # noqa: BLE001
                 return self.persist_failed(inp["seq"], "event", e)
+        if self.done or (getattr(self, "decided", False) and not state):
+            return  # decided elsewhere meanwhile
         self.events.append(ev)
         self.persisted = inp["seq"]
         self.broadcast()
@@ -431,16 +459,24 @@ class Task:
         self.ds.control(envelope("task.ack", task_id=self.id, data={"seq": target}))
 
     def cancel(self, reason):
-        if self.done:
+        if self.done or getattr(self, "decided", False):
             return False
-        if self.ds is not None and self.sent_run:
-            self.ds.control(envelope("task.cancel", task_id=self.id, data={"reason": reason}))
+        self.send_cancel(reason)
         return True
 
+    def send_cancel(self, reason):
+        if self.ds is not None and self.sent_run:
+            self.ds.control(envelope("task.cancel", task_id=self.id, data={"reason": reason}))
+
     def fail_local(self, code, msg, retryable=False):
-        if self.done:
+        if not self.decide():
             return
-        seq = (self.events[-1]["seq"] if self.events else 0) + 1
+        self.commit_local(code, msg, retryable)
+
+    def commit_local(self, code, msg, retryable=False):
+        """The caller holds the decision. The seq follows every device seq seen."""
+        _hook(self, "local-terminal-decided")
+        seq = max(self.events[-1]["seq"] if self.events else 0, getattr(self, "seen", 0)) + 1
         self.record({"seq": seq, "type": "task.error", "data": error_body(code, msg, retryable)})
         self.finish("CANCELLED" if code == "CANCELLED" else "FAILED", False, write_state=False)
 
@@ -1334,9 +1370,16 @@ class Gateway:
         # queue below ends the task with a recorded terminal event, so a replay
         # sees the same outcome instead of OUTCOME_UNKNOWN.
         try:
+            # One atomic write: a key never exists without its task.
+            idem = {"tenant": t["id"], "owner": user, "key": idem_key, "rec": {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash}} if idem_key else None
+            self.store.create_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []}, idem)
+        except StoreConflict:
+            won = self.store.get_idempotency(t["id"], user, idem_key) if idem_key else None
+            if won is not None and won.get("body_hash") == body_hash:  # a concurrent request took the key first
+                return await self.reattach(req, t["id"], user, won["task_id"], r["model"], bool(r.get("stream")))
             if idem_key:
-                self.store.put_idempotency(t["id"], user, idem_key, {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash})
-            self.store.put_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []})
+                return err(422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was used with a different request body")
+            return err(500, "INTERNAL", "storage error")
         except Exception as e:  # noqa: BLE001
             self.log(f"lmbp: task {task_id}: storage error: {e}")
             return err(500, "INTERNAL", "storage error")

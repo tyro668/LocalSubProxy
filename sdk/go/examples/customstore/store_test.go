@@ -64,16 +64,12 @@ func (s *countingStore) SetDeviceE2EEKey(ctx context.Context, id, stmt string) e
 	s.writes++
 	return s.in.SetDeviceE2EEKey(ctx, id, stmt)
 }
-func (s *countingStore) PutIdempotency(ctx context.Context, i lmbpserver.Idempotency) error {
-	s.writes++
-	return s.in.PutIdempotency(ctx, i)
-}
 func (s *countingStore) GetIdempotency(ctx context.Context, t, o, k string) (lmbpserver.Idempotency, error) {
 	return s.in.GetIdempotency(ctx, t, o, k)
 }
-func (s *countingStore) CreateTask(ctx context.Context, t lmbpserver.Task) error {
+func (s *countingStore) CreateTask(ctx context.Context, t lmbpserver.Task, i *lmbpserver.Idempotency) error {
 	s.writes++
-	return s.in.CreateTask(ctx, t)
+	return s.in.CreateTask(ctx, t, i)
 }
 func (s *countingStore) SetTaskState(ctx context.Context, id, st string) error {
 	s.writes++
