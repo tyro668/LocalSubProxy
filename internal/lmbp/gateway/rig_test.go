@@ -35,9 +35,12 @@ type fakeExec struct {
 	delay   time.Duration
 }
 
-func (f *fakeExec) Models() []string { return []string{"echo", "tool", "slow"} }
+func (f *fakeExec) Models() []string { return []string{"echo", "tool", "slow", "textonly", "temp"} }
 func (f *fakeExec) ModelCapabilities() map[string][]string {
-	return map[string][]string{"echo": {"vision", "audio", "tools"}, "tool": {"tools"}, "slow": {}}
+	// "textonly" declares that it honours no request parameter (like the
+	// Codex adapter); "temp" honours only temperature (fourth audit A2).
+	return map[string][]string{"echo": {"vision", "audio", "tools"}, "tool": {"tools"}, "slow": {},
+		"textonly": {"params"}, "temp": {"params", "temperature"}}
 }
 
 func slowChunk(i int) string { return fmt.Sprintf("[%04d]%s", i, strings.Repeat("x", 200)) }
@@ -62,7 +65,7 @@ func (f *fakeExec) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp
 	}
 	last := run.Messages[len(run.Messages)-1]
 	switch run.Model {
-	case "echo":
+	case "echo", "textonly", "temp":
 		for _, p := range last.Content.Parts {
 			if p.ImageURL != nil {
 				u := p.ImageURL.URL

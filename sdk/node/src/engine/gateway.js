@@ -620,6 +620,19 @@ export class Gateway {
     if (params.temperature !== undefined) run.temperature = params.temperature;
     if (params.top_p !== undefined) run.top_p = params.top_p;
     if (params.stop !== undefined) run.stop = params.stop;
+    // Per-model parameter support (spec §16.4; see Go gateway.chat): a model
+    // that declares it ("params") gets every other parameter rejected; on
+    // /v1/messages the mandatory max_tokens is dropped instead.
+    const mc = ds.modelCaps[model] || [];
+    if (mc.includes('params')) {
+      if (run.max_tokens && anthropic && !mc.includes('max_tokens')) delete run.max_tokens;
+      for (const flag of ['temperature', 'top_p', 'stop', 'max_tokens']) {
+        if (run[flag] !== undefined && !mc.includes(flag)) {
+          const name = anthropic && flag === 'stop' ? 'stop_sequences' : flag;
+          return err(400, 'CAPABILITY_UNSUPPORTED', `model ${model} does not support the ${name} parameter`);
+        }
+      }
+    }
     if (blobs.length) run.blobs = blobs.map((b) => b.ref);
 
     const taskID = L.randomID('task_');

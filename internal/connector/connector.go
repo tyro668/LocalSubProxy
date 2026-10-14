@@ -248,18 +248,43 @@ func adapterEndpoint(a AdapterConfig, endpoint string) string {
 	return providerEndpoint(a.BaseURL, endpoint)
 }
 
-// capsOf returns the per-model capability flags of an adapter.
+// paramCaps is the per-adapter request-parameter table (§16.4): the
+// parameters each adapter type maps to its upstream API. Everything else is
+// rejected with CAPABILITY_UNSUPPORTED (checkCaps), never silently ignored.
+//
+//	adapter               temperature  top_p  stop                 max_tokens
+//	openai_compatible     yes          yes    stop                 max_tokens
+//	anthropic_compatible  yes          yes    stop_sequences       max_tokens
+//	ollama_http           options.temperature / top_p / stop / num_predict
+//	codex_app_server      no           no     no                   no
+//
+// The Codex app-server has no sampling, stop or output-length controls; it
+// also has no message roles, so codexInput merges the conversation into one
+// role-tagged text ("[system]\n...\n\n[user]\n..."). Its finish_reason is
+// "stop" because a completed turn is the only success it can report (it
+// cannot be cut by length).
+func paramCaps(typ string) []string {
+	switch typ {
+	case "openai_compatible", "anthropic_compatible", "ollama_http":
+		return append([]string{lmbp.ModelCapParams}, lmbp.ParamCaps...)
+	}
+	return []string{lmbp.ModelCapParams}
+}
+
+// capsOf returns the per-model capability flags of an adapter: the
+// configured (or type default) tools/vision/audio flags plus the adapter
+// type's parameter table.
 func capsOf(a AdapterConfig) []string {
-	if len(a.Capabilities) > 0 {
-		return append([]string(nil), a.Capabilities...)
+	var caps []string
+	switch {
+	case len(a.Capabilities) > 0:
+		caps = append(caps, a.Capabilities...)
+	case a.Type == "openai_compatible", a.Type == "anthropic_compatible":
+		caps = []string{lmbp.ModelCapTools, lmbp.ModelCapVision}
+	case a.Type == "ollama_http":
+		caps = []string{lmbp.ModelCapTools}
 	}
-	switch a.Type {
-	case "openai_compatible", "anthropic_compatible":
-		return []string{lmbp.ModelCapTools, lmbp.ModelCapVision}
-	case "ollama_http":
-		return []string{lmbp.ModelCapTools}
-	}
-	return []string{}
+	return append(caps, paramCaps(a.Type)...)
 }
 
 func adapterSlots(a AdapterConfig) int {
@@ -436,6 +461,12 @@ func checkCaps(a AdapterConfig, run lmbp.TaskRun) *lmbp.ErrorBody {
 	caps := capsOf(a)
 	unsupported := func(msg string) *lmbp.ErrorBody {
 		return &lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: msg}
+	}
+	for flag, set := range map[string]bool{lmbp.ModelCapTemperature: run.Temperature != nil, lmbp.ModelCapTopP: run.TopP != nil,
+		lmbp.ModelCapStop: len(run.Stop) > 0, lmbp.ModelCapMaxTokens: run.MaxTokens > 0} {
+		if set && !has(caps, flag) {
+			return unsupported("model does not support the " + flag + " parameter")
+		}
 	}
 	if (len(run.Tools) > 0 || len(run.ToolChoice) > 0) && !has(caps, lmbp.ModelCapTools) {
 		return unsupported("model does not support tools")

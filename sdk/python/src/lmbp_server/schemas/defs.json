@@ -156,8 +156,14 @@
       "enum": [
         "tools",
         "vision",
-        "audio"
-      ]
+        "audio",
+        "params",
+        "temperature",
+        "top_p",
+        "stop",
+        "max_tokens"
+      ],
+      "description": "tools/vision/audio: input kinds. params: the model's request-parameter support is declared, and each of temperature, top_p, stop, max_tokens is honoured only if listed (§16.4)."
     },
     "modelCapabilities": {
       "type": "object",

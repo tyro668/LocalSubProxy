@@ -263,8 +263,8 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 	stmt := lmbp.SignE2EEKey(key, r.devID, xpub, time.Now())
 	mTools, mPlain := "conf-vision-tools", "conf-plain"
 	flow := &lmbp.Flow{TaskWindow: 256 << 10, ConnWindow: 1 << 20}
-	hello := lmbp.Hello{DeviceID: r.devID, Client: "lmbp-conformance", Models: []string{mTools, mPlain}, MaxConcurrency: 4,
-		ModelCapabilities: map[string][]string{mTools: {lmbp.ModelCapTools, lmbp.ModelCapVision}},
+	hello := lmbp.Hello{DeviceID: r.devID, Client: "lmbp-conformance", Models: []string{mTools, mPlain, mParamCaps}, MaxConcurrency: 4,
+		ModelCapabilities: map[string][]string{mTools: {lmbp.ModelCapTools, lmbp.ModelCapVision}, mParamCaps: {lmbp.ModelCapParams, lmbp.ModelCapTemperature}},
 		Capabilities:      lmbp.Capabilities, Flow: flow, E2EEKey: stmt,
 		Proof: lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())}
 	dev, wel, err := r.dialExt(at, hello)

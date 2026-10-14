@@ -96,6 +96,12 @@ func anthropicRequest(model string, run lmbp.TaskRun, a AdapterConfig) (map[stri
 	if run.Temperature != nil {
 		payload["temperature"] = *run.Temperature
 	}
+	if run.TopP != nil {
+		payload["top_p"] = *run.TopP
+	}
+	if len(run.Stop) > 0 {
+		payload["stop_sequences"] = run.Stop
+	}
 	if len(run.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range run.Tools {

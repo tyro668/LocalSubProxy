@@ -603,6 +603,22 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 - `task.run`（seq 1）之后，网关按偏移顺序发送 `blob.chunk {blob_id, offset, data(base64url, ≤ 96 KiB 原始字节), last}` 数据帧，它们同样受 §15 窗口约束。
 - 设备 MUST 在全部 blob 到齐且 `size`、`sha256` 与签名载荷一致后才执行；不一致时 `task.error`（`BAD_REQUEST`）。单 blob ≤ 20 MiB，单任务 ≤ 32 MiB，超出时网关返回 413 `PAYLOAD_TOO_LARGE`。
 
+### 16.4 请求参数能力
+- `model_capabilities` 还可以声明请求参数支持：`params` 是声明标记，表示该模型的参数支持已列出；`temperature`、`top_p`、`stop`、`max_tokens` 各自出现才表示设备会把对应参数交给上游模型。
+- 模型带 `params` 时，网关 MUST 以 400 `CAPABILITY_UNSUPPORTED` 拒绝该模型未声明的参数（消息中给出参数名；Messages 接口的 `stop_sequences` 对应 `stop`），且不发送 `task.run`，与 tools、图片、音频的处理一致。例外：`/v1/messages` 要求必须携带 `max_tokens`，模型未声明 `max_tokens` 时网关 MUST 不把它放进 `task.run`，而不是拒绝请求。
+- 模型不带 `params` 时，参数支持未声明（旧版设备）：网关照常转发，由设备自行检查。设备收到不支持的参数时 MUST 返回 `task.error`（`CAPABILITY_UNSUPPORTED`），MUST NOT 静默忽略。
+- E2EE 请求的参数在密文中，网关无法检查，由设备负责。
+- 参考实现（Go 连接器）各适配器的参数表：
+
+| 适配器 | temperature | top_p | stop | max_tokens | 声明的能力 |
+|---|---|---|---|---|---|
+| OpenAI 兼容 | `temperature` | `top_p` | `stop` | `max_tokens` | `params temperature top_p stop max_tokens` |
+| Anthropic 兼容 | `temperature` | `top_p` | `stop_sequences` | `max_tokens` | 同上 |
+| Ollama | `options.temperature` | `options.top_p` | `options.stop` | `options.num_predict` | 同上 |
+| Codex（app-server） | 不支持 | 不支持 | 不支持 | 不支持 | `params` |
+
+- Codex app-server 没有采样、停止序列和输出长度控制，也没有消息角色：连接器把对话合并成一段带角色标签的文本（`[system]`、`[user]`、`[assistant]` 各自成段），Codex 收到的是这一段文本，而不是分角色的消息。一轮正常完成即 `finish_reason: "stop"`（Codex 不会因长度截断）；中断、失败分别映射为 `CANCELLED`、上游错误。
+
 ---
 
 ## 17. 端到端加密（能力 `e2ee`）

@@ -16,7 +16,7 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 | 提供商 | 需要填写或操作 |
 | --- | --- |
-| OpenAI Codex（订阅） | 使用本机官方 Codex CLI 的 ChatGPT 登录态；如未登录，点击「连接订阅」并在浏览器完成登录，然后选择模型。 |
+| OpenAI Codex（订阅） | 使用本机官方 Codex CLI 的 ChatGPT 登录态；如未登录，点击「连接订阅」并在浏览器完成登录，然后选择模型。Codex 只接受纯文本：多轮对话会合并成一段带角色标签的文本，`temperature`、`top_p`、`stop`、`max_tokens` 不受支持，请求中带这些参数会被明确拒绝（`/v1/messages` 必填的 `max_tokens` 除外，会被忽略），见规范 §16.4。 |
 | OpenAI 兼容协议 | 填写 API 地址、API 密钥和供应商提供的模型 ID。 |
 | Anthropic 兼容协议 | 填写 API 地址、API 密钥和供应商提供的模型 ID。 |
 

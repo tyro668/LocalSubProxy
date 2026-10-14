@@ -268,8 +268,8 @@ func TestCodexTaskThroughExecutor(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if caps := x.ModelCapabilities()["codex-local/fake-model"]; len(caps) != 0 {
-		t.Fatalf("codex must be text-only: %v", caps)
+	if caps := x.ModelCapabilities()["codex-local/fake-model"]; len(caps) != 1 || caps[0] != lmbp.ModelCapParams {
+		t.Fatalf("codex must be text-only and declare no request parameters: %v", caps)
 	}
 	var out strings.Builder
 	run := lmbp.TaskRun{TaskID: "task_1", Model: "codex-local/fake-model", Messages: fakeMessages()}

@@ -73,7 +73,21 @@ const (
 	ModelCapTools  = "tools"
 	ModelCapVision = "vision"
 	ModelCapAudio  = "audio"
+
+	// Request-parameter support (§16.4). "params" declares that the model's
+	// parameter support is listed: then each of temperature, top_p, stop and
+	// max_tokens is honoured only if its flag is present, and a gateway MUST
+	// reject the others with CAPABILITY_UNSUPPORTED. Without "params" the
+	// support is undeclared (legacy devices) and the device enforces it.
+	ModelCapParams      = "params"
+	ModelCapTemperature = "temperature"
+	ModelCapTopP        = "top_p"
+	ModelCapStop        = "stop"
+	ModelCapMaxTokens   = "max_tokens"
 )
+
+// ParamCaps maps each request parameter to its model capability flag.
+var ParamCaps = []string{ModelCapTemperature, ModelCapTopP, ModelCapStop, ModelCapMaxTokens}
 
 // Protocol defaults (docs/lmbp-spec.md §10).
 const (

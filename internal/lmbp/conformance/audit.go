@@ -27,6 +27,7 @@ func (r *runner) runAudit(ctx context.Context, dev *extDev, full func(string) st
 	r.auditAnthropicInterleave(ctx, dev, full(mTools))
 	r.auditLimits(ctx, dev, full(mTools))
 	r.auditParams(ctx, dev, full(mTools))
+	r.auditParamCaps(ctx, dev, full(mParamCaps))
 }
 
 // Z6: normative limits (spec §10), boundary cases on both sides, identical

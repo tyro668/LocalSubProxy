@@ -1348,6 +1348,18 @@ class Gateway:
         for k in ("temperature", "top_p", "stop"):
             if params[k] is not None:
                 run[k] = params[k]
+        # Per-model parameter support (spec §16.4; see Go gateway.chat): a model
+        # that declares it ("params") gets every other parameter rejected; on
+        # /v1/messages the mandatory max_tokens is dropped instead.
+        anthropic = bool(getattr(req, "anthropic", False))
+        mc = ds.model_caps.get(model, [])
+        if "params" in mc:
+            if run.get("max_tokens") and anthropic and "max_tokens" not in mc:
+                del run["max_tokens"]
+            for flag in ("temperature", "top_p", "stop", "max_tokens"):
+                if flag in run and flag not in mc:
+                    name = "stop_sequences" if anthropic and flag == "stop" else flag
+                    return err(400, "CAPABILITY_UNSUPPORTED", f"model {model} does not support the {name} parameter")
         if blobs:
             run["blobs"] = [b["ref"] for b in blobs]
 

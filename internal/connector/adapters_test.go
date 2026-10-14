@@ -186,7 +186,7 @@ func TestOpenAIPassthroughAndCapabilities(t *testing.T) {
 	if _, fail := y.Execute(ctx, run("oa/gpt", imageMsgs("https://example.com/cat.png"), nil), c.emit); fail == nil || fail.Code != lmbp.ErrUnsupported {
 		t.Fatalf("vision without flag: %v", fail)
 	}
-	if caps := y.ModelCapabilities()["oa/gpt"]; len(caps) != 1 || caps[0] != "tools" {
-		t.Fatalf("caps: %v", caps)
+	if caps := y.ModelCapabilities()["oa/gpt"]; !has(caps, "tools") || has(caps, "vision") || has(caps, "audio") || !has(caps, lmbp.ModelCapParams) {
+		t.Fatalf("caps: %v (want tools + the param table, no vision/audio)", caps)
 	}
 }

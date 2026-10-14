@@ -275,6 +275,28 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run := lmbp.TaskRun{DeviceID: ds.deviceID, Model: model, MaxTokens: params.MaxTokens, Temperature: params.Temperature, TopP: params.TopP, Stop: params.Stop}
+	// Per-model parameter support (§16.4): a model that declares it ("params")
+	// gets every other parameter rejected, like tools/images/audio. The
+	// Messages API makes max_tokens mandatory, so there it is dropped instead
+	// (the model cannot honour it). Undeclared models: the device enforces.
+	if ds.modelHas(model, lmbp.ModelCapParams) {
+		if run.MaxTokens > 0 && isAnthropic(w) && !ds.modelHas(model, lmbp.ModelCapMaxTokens) {
+			run.MaxTokens = 0
+		}
+		for _, p := range []struct {
+			flag string
+			set  bool
+		}{{lmbp.ModelCapTemperature, run.Temperature != nil}, {lmbp.ModelCapTopP, run.TopP != nil}, {lmbp.ModelCapStop, len(run.Stop) > 0}, {lmbp.ModelCapMaxTokens, run.MaxTokens > 0}} {
+			if p.set && !ds.modelHas(model, p.flag) {
+				name := p.flag
+				if isAnthropic(w) && name == lmbp.ModelCapStop {
+					name = "stop_sequences"
+				}
+				apiError(w, 400, lmbp.ErrUnsupported, "model "+model+" does not support the "+name+" parameter")
+				return
+			}
+		}
+	}
 	var blobs []blobData
 	if req.E2EE != "" {
 		if !ds.has(lmbp.CapE2EE) {
