@@ -135,7 +135,14 @@ func newCore(dir string, id localIdentity) (*connector.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return connector.New(connector.Config{Identity: v, RemoteURL: id.RemoteURL, DataKey: id.DataKey, LegacyDataKeys: id.legacyKeys(), AdapterFile: filepath.Join(dir, "adapters.enc"), Audit: runtime.audit})
+	// Probe the paired SaaS origin from the device identity. local.RemoteURL
+	// may hold a display-only homepage (SaaSInfo.HomepageURI) that never serves
+	// /.well-known/localsubproxy and must not gate the connected flag.
+	remote := ""
+	if v != nil {
+		remote = v.RemoteURL
+	}
+	return connector.New(connector.Config{Identity: v, RemoteURL: remote, DataKey: id.DataKey, LegacyDataKeys: id.legacyKeys(), AdapterFile: filepath.Join(dir, "adapters.enc"), Audit: runtime.audit})
 }
 
 func pairedLocked() bool { return runtime.local.DeviceID != "" }
