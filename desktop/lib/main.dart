@@ -402,10 +402,25 @@ class _HomePageState extends State<HomePage> {
     final paired = status?['paired'] == true;
     final connected = status?['connected'] == true;
     final theme = Theme.of(context);
+    final recovery = status?['adapter_recovery'] as Map?;
     return Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (recovery != null) ...[
+            Alert(
+              destructive: true,
+              leading: const Icon(LucideIcons.triangleAlert),
+              title: const Text('模型方案配置无法解密'),
+              content: Text(
+                '本机保存的模型方案配置无法用当前密钥解密（可能来自旧版本应用），'
+                '已备份到：${recovery['backup']}\n'
+                '请重新添加模型方案。若你有旧版的 identity.json 备份，'
+                '可将其中的 journal_key 填回 identity.json，并将备份文件改回 adapters.enc 后重启应用以恢复。',
+              ),
+            ),
+            const Gap(16),
+          ],
           Row(
             children: [
               Icon(

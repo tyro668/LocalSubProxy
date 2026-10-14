@@ -29,6 +29,41 @@ type localIdentity struct {
 	DataKey   string `json:"data_key"`
 	RemoteURL string `json:"remote_url,omitempty"`
 	DeviceID  string `json:"device_id,omitempty"`
+	// JournalKey is the upstream app's name for the same key (dda2be5 sealed
+	// adapters.enc with it). It is kept on disk so a downgrade still works,
+	// and tried as a legacy key when it differs from DataKey.
+	JournalKey string `json:"journal_key,omitempty"`
+}
+
+// loadIdentity reads identity.json. An upstream file (journal_key only)
+// adopts that key as the data key; a new key is generated only when the
+// file has no key at all, and existing fields are never discarded.
+func loadIdentity(dir string) (localIdentity, error) {
+	var id localIdentity
+	f := filepath.Join(dir, "identity.json")
+	if err := durable.ReadJSON(f, &id); err != nil {
+		return id, err
+	}
+	switch {
+	case id.DataKey != "":
+		return id, nil
+	case id.JournalKey != "":
+		id.DataKey = id.JournalKey
+	default:
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return id, err
+		}
+		id.DataKey = hex.EncodeToString(key)
+	}
+	return id, durable.WriteJSON(f, id)
+}
+
+func (id localIdentity) legacyKeys() []string {
+	if id.JournalKey != "" && id.JournalKey != id.DataKey {
+		return []string{id.JournalKey}
+	}
+	return nil
 }
 
 const deviceKeyFile = "device_key.enc"
@@ -100,7 +135,7 @@ func newCore(dir string, id localIdentity) (*connector.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return connector.New(connector.Config{Identity: v, RemoteURL: id.RemoteURL, DataKey: id.DataKey, AdapterFile: filepath.Join(dir, "adapters.enc"), Audit: runtime.audit})
+	return connector.New(connector.Config{Identity: v, RemoteURL: id.RemoteURL, DataKey: id.DataKey, LegacyDataKeys: id.legacyKeys(), AdapterFile: filepath.Join(dir, "adapters.enc"), Audit: runtime.audit})
 }
 
 func pairedLocked() bool { return runtime.local.DeviceID != "" }
@@ -145,20 +180,9 @@ func LSP_Start(raw *C.char) *C.char {
 		return result(statusLocked(), nil)
 	}
 	runtime.pairState = "idle"
-	var id localIdentity
-	identityFile := filepath.Join(dir, "identity.json")
-	if err := durable.ReadJSON(identityFile, &id); err != nil {
+	id, err := loadIdentity(dir)
+	if err != nil {
 		return result(nil, err)
-	}
-	if id.DataKey == "" {
-		key := make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return result(nil, err)
-		}
-		id = localIdentity{DataKey: hex.EncodeToString(key)}
-		if err := durable.WriteJSON(identityFile, id); err != nil {
-			return result(nil, err)
-		}
 	}
 	if runtime.audit == nil {
 		al, err := audit.Open(filepath.Join(dir, "audit.db"))
