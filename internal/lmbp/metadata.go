@@ -17,7 +17,7 @@ import (
 const (
 	// MetadataPath is the gateway metadata document (RFC 8615 well-known URI,
 	// modelled on RFC 8414 authorization server metadata).
-	MetadataPath = "/.well-known/lmbp-gateway"
+	MetadataPath = "/.well-known/lmbp"
 	// TypMetadata is the JWS typ of signed_metadata.
 	TypMetadata = "lmbp-metadata+jwt"
 	// ErrConsentDenied: the local user declined (or never confirmed) pairing
@@ -53,7 +53,7 @@ type SaaSInfo struct {
 	PairingURI  string `json:"pairing_uri,omitempty"` // page where the signed-in user confirms the user_code
 }
 
-// GatewayMetadata is the body of /.well-known/lmbp-gateway. Without
+// GatewayMetadata is the body of /.well-known/lmbp. Without
 // ?tenant= only the gateway fields are present; with it the tenant block and
 // signed_metadata are added. Consumers MUST use the values inside
 // signed_metadata (RFC 8414 §2.1) when it is present.

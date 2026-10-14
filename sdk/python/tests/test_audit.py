@@ -65,7 +65,7 @@ async def test_in_process_pairing_rate_limited_shared_with_http(serve_app):
     assert ei.value.code == "RATE_LIMITED"
     async with serve_app(lsp.asgi()) as base:
         async with httpx.AsyncClient(base_url=base, headers={"Authorization": "Bearer " + KEY, "X-End-User": "u1"}) as h:
-            r = await h.post("/lmbp/v1/tenant/device-approvals", json={"user_code": "WRONG-0000"})
+            r = await h.post("/lmbp/v1/tenant/devices/approvals", json={"user_code": "WRONG-0000"})
             assert r.status_code == 429, r.text
 
 

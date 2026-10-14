@@ -115,7 +115,7 @@ func main() {
 		}
 		reply(w, map[string]string{"answer": c.Choices[0].Message.Content}, nil)
 	})
-	app.HandleFunc("POST /app/ask-claude", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("POST /app/ask/claude", func(w http.ResponseWriter, r *http.Request) {
 		a := read(r)
 		m, err := claude.Messages.New(r.Context(), anthropic.MessageNewParams{Model: anthropic.Model(a.Model), MaxTokens: 512,
 			Messages: []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(a.Prompt))}}, aopt.WithHeader("X-End-User", user(r)))
@@ -130,7 +130,7 @@ func main() {
 		reply(w, map[string]string{"answer": sb.String()}, nil)
 	})
 	// ...or the SDK's own typed client:
-	app.HandleFunc("POST /app/ask-inprocess", func(w http.ResponseWriter, r *http.Request) {
+	app.HandleFunc("POST /app/ask/inprocess", func(w http.ResponseWriter, r *http.Request) {
 		a := read(r)
 		c, err := srv.Client(tenant, user(r))
 		if err != nil {

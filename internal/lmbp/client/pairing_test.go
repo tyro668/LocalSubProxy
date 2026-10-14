@@ -33,7 +33,7 @@ func pairRig(t *testing.T) (*gateway.Gateway, *httptest.Server) {
 
 func approve(t *testing.T, s *httptest.Server, code string, deny bool) {
 	b, _ := json.Marshal(map[string]any{"user_code": code, "deny": deny})
-	req, _ := http.NewRequest("POST", s.URL+"/lmbp/v1/tenant/device-approvals", strings.NewReader(string(b)))
+	req, _ := http.NewRequest("POST", s.URL+"/lmbp/v1/tenant/devices/approvals", strings.NewReader(string(b)))
 	req.Header.Set("Authorization", "Bearer "+pairKey)
 	req.Header.Set("X-End-User", "alice")
 	r, err := http.DefaultClient.Do(req)

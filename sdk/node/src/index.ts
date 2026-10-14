@@ -201,8 +201,8 @@ function normCode(s: string): string {
 }
 
 /** Paths the SDK serves (for frameworks that need explicit routes). */
-export const PATHS = ['/healthz', '/.well-known/jwks.json', '/.well-known/lmbp-gateway', '/lmbp/v1/device/authorize', '/lmbp/v1/token', '/lmbp/v1/connect',
-  '/lmbp/v1/tenant/device-approvals', '/lmbp/v1/tenant/devices', '/lmbp/v1/tenant/devices/:id/revoke', '/lmbp/v1/tenant/tasks/:id/events',
+export const PATHS = ['/healthz', '/.well-known/jwks.json', '/.well-known/lmbp', '/lmbp/v1/device/authorize', '/lmbp/v1/token', '/lmbp/v1/connect',
+  '/lmbp/v1/tenant/devices/approvals', '/lmbp/v1/tenant/devices', '/lmbp/v1/tenant/devices/:id/revoke', '/lmbp/v1/tenant/tasks/:id/events',
   '/v1/models', '/v1/chat/completions', '/v1/messages'];
 
 export function createLMBPServer(opts: LMBPServerOptions): LMBPServer { return new LMBPServer(opts); }

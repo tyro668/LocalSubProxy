@@ -61,9 +61,9 @@ def devices(x_demo_user: str | None = Header(None)):
     return lsp.pairing.list_devices(TENANT, user(x_demo_user))
 
 
-@app.post("/app/devices/{device_id}/revoke")
-def revoke(device_id: str, x_demo_user: str | None = Header(None)):
-    return {"revoked": lsp.pairing.revoke_device(TENANT, user(x_demo_user), device_id)}
+@app.post("/app/devices/{device}/revoke")
+def revoke(device: str, x_demo_user: str | None = Header(None)):
+    return {"revoked": lsp.pairing.revoke_device(TENANT, user(x_demo_user), device)}
 
 
 # ---- 2. LLM calls with the official clients, unchanged ----
@@ -83,14 +83,14 @@ async def ask(body: Ask, x_demo_user: str | None = Header(None)):
     return {"answer": r.choices[0].message.content}
 
 
-@app.post("/app/ask-claude")
+@app.post("/app/ask/claude")
 async def ask_claude(body: Ask, x_demo_user: str | None = Header(None)):
     m = await claude.messages.create(model=body.model, max_tokens=512, messages=[{"role": "user", "content": body.prompt}],
                                      extra_headers={"X-End-User": user(x_demo_user)})
     return {"answer": "".join(b.text for b in m.content if b.type == "text")}
 
 
-@app.post("/app/ask-inprocess")  # ...or without an HTTP hop
+@app.post("/app/ask/inprocess")  # ...or without an HTTP hop
 async def ask_inprocess(body: Ask, x_demo_user: str | None = Header(None)):
     m = await lsp.client(TENANT, user(x_demo_user)).messages.create(model=body.model, max_tokens=512,
                                                                      messages=[{"role": "user", "content": body.prompt}])
