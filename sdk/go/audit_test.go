@@ -97,6 +97,9 @@ func TestClientIdempotencyCursorResume(t *testing.T) {
 	for end.Next() {
 		t.Fatal("events after the terminal one")
 	}
+	if err := end.Err(); err != nil {
+		t.Fatalf("resume past the terminal event must end with its terminator, got %v", err)
+	}
 }
 
 // Finding 7: E2EE request/response from Go business code.

@@ -561,7 +561,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 - 持久化先于确认：网关 MUST 先把设备数据帧（终止帧还包括任务终止状态）写入存储，再向订阅者发布并发送覆盖该帧的 `task.ack`。写入失败时 MUST NOT 确认该帧（设备保留在续传缓冲区中），MUST 通知设备取消任务，并以 `INTERNAL` 结束任务，不得把未持久化的结果作为成功返回给调用方。
 - 终止原子性：终止事件（`task.done` / `task.error`）与任务终止状态（SUCCEEDED / FAILED / CANCELLED）MUST 在同一个事务中提交，要么都写入，要么都不写入。每个任务最多有一个终止事件；`seq` MUST NOT 复用，已有终止状态 MUST NOT 被覆盖。终止写入失败时，网关以 `INTERNAL` 结束任务，这个本地错误使用同一 `seq`（失败的事务没有占用它）。
 - 恢复判定：从存储重放已结束的任务时，网关 MUST 只在最后一个事件为终止事件、且存储的状态与之一致（done ↔ SUCCEEDED，error ↔ FAILED/CANCELLED）时按原结果重放；否则（没有终止事件，或旧数据中两者不一致）MUST 报告 `OUTCOME_UNKNOWN`。这个事件只用于响应、不写入存储，使用下一个未用的 `seq`。同一个幂等请求因此不会在故障前后得到相反的结果。
-- 重新接入时带 `Last-Event-ID: <n>`（POST 同一 key，或 `GET /lmbp/v1/tenant/tasks/{id}/events`），网关 MUST 只发送 `id > n` 的事件；已结束的任务从存储重放。
+- 重新接入时带 `Last-Event-ID: <n>`（POST 同一 key，或 `GET /lmbp/v1/tenant/tasks/{id}/events`），网关 MUST 只发送 `id > n` 的事件；已结束的任务从存储重放。`n` 等于或大于终止事件的 seq 时没有可发送的事件，但网关 MUST 仍以终止符结束流（Chat Completions 为 `data: [DONE]`，Messages 为 `event: message_stop`），不得返回空流。
+- **截断判定（客户端）**：流只有在读到终止符（`data: [DONE]`、`message_stop` 或错误事件）后才算完整。在终止符之前遇到 EOF 或连接中断 MUST 视为不完整（SDK：Go `ErrIncompleteStream` / `*IncompleteStreamError`，Node `IncompleteStreamError`，Python `IncompleteStreamError`，均带 `taskId` 与最后一个完整事件的 id），调用方据此续传；末尾缺少空行的半个事件 MUST 丢弃。
 - 带 key 的请求，调用方断开后网关 SHOULD 保留任务 30 秒再取消；不带 key 时按 §6.5 立即取消。
 
 ---

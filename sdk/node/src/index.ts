@@ -23,7 +23,7 @@ export { StoreConflict, StoreNotFound } from './store.js';
 export type { Store, Device, DeviceAuth, TaskRecord, TaskEvent, Idempotency, SqlDatabase } from './store.js';
 export * as anthropic from './anthropic.js';
 export * from './e2ee.js';
-export { LMBPStream } from './client.js';
+export { LMBPStream, IncompleteStreamError, LMBPAPIError } from './client.js';
 export type * from './types.js';
 import type { TenantConfig, PairingInfo, DeviceInfo, ApproveResult, PendingPairing } from './types.js';
 

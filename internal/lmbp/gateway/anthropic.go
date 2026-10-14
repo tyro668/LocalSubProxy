@@ -334,6 +334,17 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 	// id are written.
 	var cur int64
 	var group [][2]string
+	wrote := false
+	defer func() {
+		// Last-Event-ID at or beyond the terminal event: end with the
+		// terminator (see serve) instead of an empty body.
+		if !wrote && r.Context().Err() == nil && t.terminal() {
+			fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}()
 	send := func(typ string, v any) error {
 		b, _ := json.Marshal(v)
 		group = append(group, [2]string{typ, string(b)})
@@ -344,6 +355,7 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 		if after > 0 && cur <= after {
 			return nil
 		}
+		wrote = true
 		for i, e := range group {
 			id := ""
 			if i == len(group)-1 && cur > 0 {

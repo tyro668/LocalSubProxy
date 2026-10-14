@@ -530,11 +530,22 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after 
 			fmt.Fprintf(w, "id: 0\ndata: %s\n\n", chunk(map[string]any{"role": "assistant", "content": ""}, nil, nil, nil))
 			flush()
 		}
+		wrote := false
+		defer func() {
+			// Re-attach with Last-Event-ID at or beyond the terminal event:
+			// nothing left to send, but the stream still ends with its
+			// terminator so clients can tell completion from truncation.
+			if !wrote && r.Context().Err() == nil && t.terminal() {
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				flush()
+			}
+		}()
 		_ = t.stream(r.Context(), after, func() error {
 			_, err := fmt.Fprint(w, ": keep-alive\n\n")
 			flush()
 			return err
 		}, func(e event) error {
+			wrote = true
 			var b []byte
 			tail := ""
 			switch e.Type {

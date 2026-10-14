@@ -228,6 +228,7 @@ async def serve(req: Any, t: Any, after: int, stream: bool, headers: dict, json_
         cur = state["cur"]
         if after > 0 and cur <= after:
             return
+        state["wrote"] = True
         out = []
         for i, (typ, data) in enumerate(g):
             idl = f"id: {cur}\n" if i == len(g) - 1 and cur > 0 else ""
@@ -341,5 +342,8 @@ async def serve(req: Any, t: Any, after: int, stream: bool, headers: dict, json_
         await t.stream(0, keepalive, emit)
     except (ConnectionError, RuntimeError):
         return None
+    if not state.get("wrote"):
+        # Last-Event-ID at or beyond the terminal event: end with the terminator.
+        await resp.write(b'event: message_stop\ndata: {"type":"message_stop"}\n\n')
     await resp.write_eof()
     return None

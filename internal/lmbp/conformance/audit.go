@@ -4,6 +4,7 @@ package conformance
 // pins one finding as black-box behaviour every implementation must share.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -240,7 +241,9 @@ func (r *runner) auditAnthropicInterleave(ctx context.Context, dev *extDev, mode
 
 // Z3: re-attaching to a finished stream with Last-Event-ID below, equal to
 // or beyond the terminal event's seq always ends: below replays the rest,
-// equal and beyond end promptly with no further content (audit finding 3).
+// equal and beyond end promptly with no further content (audit finding 3)
+// but still with the stream terminator, so a client can tell a complete
+// stream from a truncated one (third audit item 3).
 // Covered on both /v1/chat/completions and /v1/messages.
 func (r *runner) auditResumeBounds(ctx context.Context, dev *extDev, model string) {
 	for _, api := range []string{"chat", "messages"} {
@@ -286,8 +289,12 @@ func (r *runner) auditResumeBounds(ctx context.Context, dev *extDev, model strin
 			st, b := do(cc, map[string]string{"Idempotency-Key": key, "Last-Event-ID": c.id})
 			hung := cc.Err() != nil
 			cancel()
-			r.check("Z3", fmt.Sprintf("/%s re-attach with Last-Event-ID %s the terminal seq (3) ends the stream (got %q)", api, c.name, c.want),
-				want(!hung && st == 200 && text(b) == c.want, "status %d hung %v after %v body %q", st, hung, time.Since(start).Round(time.Millisecond), b))
+			term := "data: [DONE]"
+			if api == "messages" {
+				term = "event: message_stop"
+			}
+			r.check("Z3", fmt.Sprintf("/%s re-attach with Last-Event-ID %s the terminal seq (3) ends the stream with its terminator %q (got %q)", api, c.name, term, c.want),
+				want(!hung && st == 200 && text(b) == c.want && bytes.Contains(b, []byte(term)), "status %d hung %v after %v body %q", st, hung, time.Since(start).Round(time.Millisecond), b))
 		}
 	}
 }

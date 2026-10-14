@@ -158,11 +158,13 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
   // Events derived from one task event are written as a group; only the last
   // carries that event's seq as id, so Last-Event-ID names a whole group.
   let cur = 0;
+  let wrote = false;
   let group: [string, unknown][] = [];
   const send = (type: string, data: unknown) => { group.push([type, data]); };
   const flush = () => {
     const g = group; group = [];
     if (after > 0 && cur <= after) return;
+    wrote = true;
     let s = '';
     g.forEach(([type, data], i) => { s += `event: ${type}\n${i === g.length - 1 && cur > 0 ? `id: ${cur}\n` : ''}data: ${JSON.stringify(data)}\n\n`; });
     if (s) res.write(s);
@@ -218,7 +220,7 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
     liveKind = 'tool'; liveTI = ti;
     if (args) argsDelta(args);
   };
-  await t.stream(0, signal, () => res.write('event: ping\ndata: {"type":"ping"}\n\n'), (e) => {
+  const ok = await t.stream(0, signal, () => res.write('event: ping\ndata: {"type":"ping"}\n\n'), (e) => {
     cur = e.seq;
     if (e.type === 'task.delta') {
       const d = e.data || {};
@@ -236,6 +238,8 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
     }
     flush();
   });
+  // Last-Event-ID at or beyond the terminal event: end with the terminator.
+  if (ok && !wrote) res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
   res.end();
 }
 

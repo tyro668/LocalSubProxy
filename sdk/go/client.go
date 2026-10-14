@@ -274,14 +274,14 @@ func (c *Client) ResumeChatCompletionStream(ctx context.Context, taskID, lastEve
 }
 
 func chatStream(resp *http.Response) *Stream[ChatCompletionChunk] {
-	return newStream[ChatCompletionChunk](resp, func(_, data string) (bool, error) {
+	return newStream[ChatCompletionChunk](resp, func(_, data string) (sseAction, error) {
 		if data == "[DONE]" {
-			return true, nil
+			return sseEnd, nil
 		}
 		if strings.HasPrefix(data, `{"error"`) {
-			return true, streamErr(data)
+			return sseEnd, streamErr(data)
 		}
-		return false, nil
+		return sseDeliver, nil
 	})
 }
 
@@ -372,34 +372,72 @@ func (c *Client) MessagesStream(ctx context.Context, req MessagesRequest, opts .
 	if err != nil {
 		return nil, err
 	}
-	return newStream[MessageStreamEvent](resp, func(event, data string) (bool, error) {
+	return newStream[MessageStreamEvent](resp, func(event, data string) (sseAction, error) {
 		switch event {
 		case "ping":
-			return false, errSkip
+			return sseSkip, nil
 		case "error":
-			return true, streamErr(data)
+			return sseEnd, streamErr(data)
+		case "message_stop":
+			return sseDeliverEnd, nil
 		}
-		return false, nil
+		return sseDeliver, nil
 	}), nil
 }
 
 // ---------------- streams ----------------
 
-var errSkip = errors.New("skip")
+// ErrIncompleteStream reports a stream that ended (EOF or a broken
+// connection) before its terminator: data: [DONE] for chat completions,
+// message_stop for Messages, or an error event. The response is NOT
+// complete. errors.As the error to an *IncompleteStreamError for the resume
+// cursor: re-attach with ResumeChatCompletionStream(TaskID, LastEventID), or
+// repeat the request with WithIdempotencyKey(sameKey) and
+// WithLastEventID(LastEventID).
+var ErrIncompleteStream = errors.New("lmbp: stream ended before its terminator")
 
-// Stream iterates server-sent events: for s.Next() { s.Current() }; then s.Err().
-type Stream[T any] struct {
-	body   io.ReadCloser
-	taskID string
-	lastID string
-	sc     *bufio.Scanner
-	check  func(event, data string) (stop bool, err error)
-	cur    T
-	err    error
-	done   bool
+// IncompleteStreamError is the concrete ErrIncompleteStream.
+type IncompleteStreamError struct {
+	TaskID      string // X-Task-Id of the stream ("" if the gateway sent none)
+	LastEventID string // id of the last fully received event: the resume cursor
+	Cause       error  // the read error, or nil for a clean EOF
 }
 
-func newStream[T any](resp *http.Response, check func(event, data string) (bool, error)) *Stream[T] {
+func (e *IncompleteStreamError) Error() string {
+	m := fmt.Sprintf("%v (task %q, last event id %q)", ErrIncompleteStream, e.TaskID, e.LastEventID)
+	if e.Cause != nil {
+		m += ": " + e.Cause.Error()
+	}
+	return m
+}
+func (e *IncompleteStreamError) Is(target error) bool { return target == ErrIncompleteStream }
+func (e *IncompleteStreamError) Unwrap() error        { return e.Cause }
+
+type sseAction int
+
+const (
+	sseDeliver    sseAction = iota // decode and return the event
+	sseSkip                        // ignore it (ping)
+	sseEnd                         // terminator: stop without delivering (with err for error events)
+	sseDeliverEnd                  // deliver it, and it is the terminator (message_stop)
+)
+
+// Stream iterates server-sent events: for s.Next() { s.Current() }; then
+// s.Err(). Err is nil only when the stream reached its terminator; a
+// truncated stream yields an *IncompleteStreamError (ErrIncompleteStream).
+type Stream[T any] struct {
+	body       io.ReadCloser
+	taskID     string
+	lastID     string
+	sc         *bufio.Scanner
+	check      func(event, data string) (sseAction, error)
+	cur        T
+	err        error
+	done       bool
+	terminated bool
+}
+
+func newStream[T any](resp *http.Response, check func(event, data string) (sseAction, error)) *Stream[T] {
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 8<<20)
 	return &Stream[T]{body: resp.Body, taskID: resp.Header.Get("X-Task-Id"), sc: sc, check: check}
@@ -416,13 +454,20 @@ func (s *Stream[T]) LastEventID() string { return s.lastID }
 // Next advances to the next event.
 func (s *Stream[T]) Next() bool {
 	for !s.done {
+		if s.terminated {
+			s.done = true
+			break
+		}
 		event, data, id := "", "", ""
+		dispatched := false
 		for s.sc.Scan() {
 			l := s.sc.Text()
 			if l == "" {
 				if data != "" {
+					dispatched = true
 					break
 				}
+				event, id = "", ""
 				continue
 			}
 			if v, ok := strings.CutPrefix(l, "event: "); ok {
@@ -433,15 +478,17 @@ func (s *Stream[T]) Next() bool {
 				data += v
 			}
 		}
-		if data == "" {
-			s.err, s.done = s.sc.Err(), true
+		if !dispatched {
+			// EOF or read error before the terminator. A trailing event
+			// without its blank line is incomplete and is not delivered.
+			s.err, s.done = &IncompleteStreamError{TaskID: s.taskID, LastEventID: s.lastID, Cause: s.sc.Err()}, true
 			break
 		}
-		stop, err := s.check(event, data)
-		if errors.Is(err, errSkip) {
+		act, err := s.check(event, data)
+		if act == sseSkip {
 			continue
 		}
-		if stop {
+		if act == sseEnd {
 			s.err, s.done = err, true
 			break
 		}
@@ -454,6 +501,9 @@ func (s *Stream[T]) Next() bool {
 		if id != "" {
 			s.lastID = id
 		}
+		if act == sseDeliverEnd {
+			s.terminated = true
+		}
 		return true
 	}
 	s.body.Close()
@@ -463,7 +513,8 @@ func (s *Stream[T]) Next() bool {
 // Current is the event read by the last Next.
 func (s *Stream[T]) Current() T { return s.cur }
 
-// Err is the error that stopped the stream, if any.
+// Err is the error that stopped the stream: nil after the terminator,
+// *IncompleteStreamError after a truncation, *APIError after an error event.
 func (s *Stream[T]) Err() error { return s.err }
 
 // Close abandons the stream (the gateway cancels the task).

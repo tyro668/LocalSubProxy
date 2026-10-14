@@ -1450,7 +1450,10 @@ class Gateway:
             async def keepalive():
                 await resp.write(b": keep-alive\n\n")
 
+            wrote = []
+
             async def emit(e):
+                wrote.append(True)
                 d, tail = e.get("data") or {}, ""
                 if e["type"] == "task.delta":
                     if t.e2ee:
@@ -1471,6 +1474,10 @@ class Gateway:
                 await t.stream(after, keepalive, emit)
             except (ConnectionError, RuntimeError):
                 return resp
+            if not wrote:
+                # Last-Event-ID at or beyond the terminal event: nothing left, but
+                # end with the terminator so clients can tell completion from truncation.
+                await resp.write(b"data: [DONE]\n\n")
             await resp.write_eof()
             return resp
 

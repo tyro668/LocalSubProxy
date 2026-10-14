@@ -85,6 +85,13 @@ func (t *gtask) abandon() {
 	t.stop()
 }
 
+// terminal reports whether the task's event log ends with its terminal event.
+func (t *gtask) terminal() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.events) > 0 && isTerminal(t.events[len(t.events)-1].Type)
+}
+
 func (t *gtask) isDone() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -22,6 +22,19 @@ def _error(status: int, v: Any) -> LMBPAPIError:
     return LMBPAPIError(status, e.get("code") or e.get("lmbp_code") or "ERROR", e.get("message") or (v or {}).get("detail", "request failed") if isinstance(v, dict) else "request failed", v)
 
 
+class IncompleteStreamError(Exception):
+    """Raised by a stream that ended (EOF) before its terminator: ``data: [DONE]``
+    for chat completions, ``message_stop`` for Messages, or an error event. The
+    response is NOT complete; resume from ``last_event_id`` with
+    ``chat.completions.resume(task_id, last_event_id)``, or repeat the request
+    with the same ``idempotency_key`` and ``last_event_id``."""
+    code = "INCOMPLETE_STREAM"
+
+    def __init__(self, task_id: str, last_event_id: str):
+        super().__init__(f"lmbp: stream ended before its terminator (task {task_id!r}, last event id {last_event_id!r})")
+        self.task_id, self.last_event_id = task_id, last_event_id
+
+
 class LMBPStream:
     """A streaming response: ``async for`` it. ``last_event_id`` is the SSE id of
     the last event yielded (the resume cursor) and ``task_id`` the gateway task.
@@ -57,6 +70,7 @@ def _chat_events(c, method, path, body, hdrs):
             if eid:
                 st.last_event_id = eid
             yield v
+        raise IncompleteStreamError(st.task_id, st.last_event_id)
     return LMBPStream(gen)
 
 
@@ -113,6 +127,9 @@ class _Messages:
                     st.last_event_id = eid
                 if v.get("type") != "ping":
                     yield v
+                if v.get("type") == "message_stop":
+                    return
+            raise IncompleteStreamError(st.task_id, st.last_event_id)
         return LMBPStream(gen)
 
 

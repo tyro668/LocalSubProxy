@@ -130,6 +130,7 @@ export class InProcessClient {
         if (e.id) st.lastEventId = e.id;
         yield v;
       }
+      throw new IncompleteStreamError(st.taskId, st.lastEventId);
     }.bind(this));
     return st;
   }
@@ -146,7 +147,9 @@ export class InProcessClient {
           if (v.type === 'error') throw new LMBPAPIError(502, v.error?.lmbp_code ?? 'ERROR', v.error?.message ?? 'error', v);
           if (e.id) st.lastEventId = e.id;
           if (v.type !== 'ping') yield v;
+          if (v.type === 'message_stop') return;
         }
+        throw new IncompleteStreamError(st.taskId, st.lastEventId);
       }.bind(this));
       return st;
     },
@@ -161,6 +164,21 @@ export interface StreamOpts { idempotencyKey?: string; lastEventId?: string; sig
  * Resume with the same request + idempotencyKey + lastEventId, or with
  * chat.completions.resume(taskId, lastEventId).
  */
+/**
+ * Thrown by a stream that ended (EOF) before its terminator: data: [DONE] for
+ * chat completions, message_stop for Messages, or an error event. The
+ * response is NOT complete; resume from lastEventId with
+ * chat.completions.resume(taskId, lastEventId), or repeat the request with
+ * the same idempotencyKey and lastEventId.
+ */
+export class IncompleteStreamError extends Error {
+  readonly code = 'INCOMPLETE_STREAM';
+  constructor(readonly taskId: string, readonly lastEventId: string) {
+    super(`lmbp: stream ended before its terminator (task ${JSON.stringify(taskId)}, last event id ${JSON.stringify(lastEventId)})`);
+    this.name = 'IncompleteStreamError';
+  }
+}
+
 export class LMBPStream<T> implements AsyncIterableIterator<T> {
   lastEventId = '';
   taskId = '';

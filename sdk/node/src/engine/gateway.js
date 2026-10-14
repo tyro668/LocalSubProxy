@@ -730,7 +730,9 @@ export class Gateway {
     if (stream) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
       if (after === 0) res.write(`id: 0\ndata: ${chunk({ role: 'assistant', content: '' }, null)}\n\n`);
-      await t.stream(after, signal, () => res.write(': keep-alive\n\n'), (e) => {
+      let wrote = false;
+      const ok = await t.stream(after, signal, () => res.write(': keep-alive\n\n'), (e) => {
+        wrote = true;
         let b, tail = '';
         if (e.type === 'task.delta') {
           if (t.e2ee) b = chunk({}, null, null, sealed(e));
@@ -749,6 +751,9 @@ export class Gateway {
         }
         res.write(`id: ${e.seq}\ndata: ${b}\n\n${tail}`);
       });
+      // Last-Event-ID at or beyond the terminal event: nothing left, but end
+      // with the terminator so clients can tell completion from truncation.
+      if (ok && !wrote) res.write('data: [DONE]\n\n');
       return res.end();
     }
     let text = '';
