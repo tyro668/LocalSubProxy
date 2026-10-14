@@ -115,10 +115,10 @@ def run_unittest(py, mods):
             "r=unittest.TextTestRunner(verbosity=2,stream=sys.stdout).run(s)\n"
             "bad=[('skipped',len(r.skipped)),('expectedFailures',len(r.expectedFailures)),('unexpectedSuccesses',len(r.unexpectedSuccesses)),"
             "('failures',len(r.failures)),('errors',len(r.errors))]\n"
-            "print('UNITTEST-RESULT', r.testsRun, ' '.join(f'{k}={v}' for k,v in bad))\n")
+            "print('UNITTEST-RESULT', 'ran=%d' % r.testsRun, ' '.join(f'{k}={v}' for k,v in bad))\n")
     p = subprocess.run([py, "-c", code, *mods], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     sys.stdout.write(p.stdout)
-    m = re.search(r"^UNITTEST-RESULT (\d+) (.*)$", p.stdout, re.M)
+    m = re.search(r"^UNITTEST-RESULT ran=(\d+) (.*)$", p.stdout, re.M)
     if not m:
         die(f"unittest: exit {p.returncode}, no result")
     counts = dict(kv.split("=") for kv in m.group(2).split())

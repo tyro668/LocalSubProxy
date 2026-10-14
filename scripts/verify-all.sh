@@ -47,7 +47,7 @@ need() {
 need go node npm python3 cargo openssl curl "${CHROME:-google-chrome}"
 
 skipped() { # log -> prints skip evidence, returns 0 if any
-  grep -nE -e '--- SKIP' -e '^# (skipped|todo) [1-9]' -e '[0-9]+ skipped' -e '^SKIP ' -e '(^|[^A-Za-z])SKIP(PED)?:' -e '# SKIP' "$1" | grep -v 'test name does not match pattern' | head -5
+  grep -nE -e '--- SKIP' -e '^# (skipped|todo) [1-9]' -e '(^|[^0-9])[1-9][0-9]* skipped' -e '^SKIP ' -e '(^|[^A-Za-z])SKIP(PED)?:' -e '# SKIP' "$1" | grep -v 'test name does not match pattern' | head -5
 }
 
 ST=scripts/strict-test.py
