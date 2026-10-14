@@ -91,7 +91,7 @@
  设备 ══ WSS：/lmbp/v1/connect（子协议 lmbp）══════════▶ 网关
 ```
 
-1. **配对（RFC 8628）**：设备生成 Ed25519 密钥对，把公钥发到 `/lmbp/v1/device/authorize`，拿到 `user_code`。用户在已登录的租户页面输入 `user_code`，租户后端调用 `/lmbp/v1/tenant/device-approvals` 确认。设备带上证明 JWT 轮询 `/lmbp/v1/token`，得到 `device_id` 和第一个访问令牌。
+1. **配对（RFC 8628）**：设备生成 Ed25519 密钥对，把公钥发到 `/lmbp/v1/device/authorize`，拿到 `user_code`。用户在已登录的租户页面输入 `user_code`，租户后端调用 `/lmbp/v1/tenant/devices/approvals` 确认。设备带上证明 JWT 轮询 `/lmbp/v1/token`，得到 `device_id` 和第一个访问令牌。
 2. **连接**：设备用访问令牌建立 WebSocket 连接，第一帧发送 `hello`，其中包含证明 JWT。网关回复 `welcome`。
 3. **执行**：租户后端调用 `/v1/chat/completions`，网关向设备下发 `task.run`（JWS 签名），设备流式回报结果，网关转换成 SSE 返回。
 4. **续期**：令牌到期前，设备用 jwt-bearer 断言换取新令牌，并通过 `session.token` 交给网关，连接不中断。
@@ -122,6 +122,22 @@
 - 每个标识符 MUST 至少有 122 比特随机性，或者是 UUIDv7/ULID。
 
 ---
+
+### 4.5 路由命名
+- 本协议定义的每个 HTTP 路由，路径中的每一段 MUST 是一个小写单词（`[a-z0-9]+`），MUST NOT 用 `-` 或 `_` 连成复合词。需要表达多个概念时，拆成多段，例如 `/lmbp/v1/tenant/devices/approvals`，而不是用连字符连成一段；租户应用的示例路由同样如此，例如 `/app/ask/claude`，而不是把 `ask` 和 `claude` 连成一个复合段。
+- 路径参数 MUST 是一个单词：`{task}`、`{device}`（不写作 `{task_id}`）。参数的取值不受此限制（如 `task_…`）。
+- 文件名形式的段 MAY 带扩展名，但主名 MUST 是一个单词（`jwks.json`）。
+- 以下由外部标准或兼容接口决定的路径不受本节约束，实现 MUST 保持原样：
+
+| 路径 | 原因 |
+|---|---|
+| `/.well-known/…` 前缀 | RFC 8615 规定的 well-known URI 前缀（段名 `.well-known` 本身含连字符） |
+| `/.well-known/jwks.json` | JWKS 的惯用位置（RFC 7517 / OIDC 生态）；本身已是单词加扩展名 |
+| `/v1/chat/completions`、`/v1/models` | OpenAI 兼容接口，官方客户端写死这些路径 |
+| `/v1/messages` | Anthropic Messages 兼容接口，官方客户端写死该路径 |
+| `/api/chat`、`/api/tags`（上游 Ollama） | 连接器调用的上游 Ollama API，不是本协议的路由 |
+
+- 仓库用 `scripts/route-lint.py` 检查 OpenAPI 路径、AsyncAPI 地址以及源码和文档中出现的路由，`scripts/verify-all.sh` 的第一步就是这项检查，出现复合段即失败。
 
 ## 5. 密钥、令牌与证明（JOSE 配置）
 
@@ -214,9 +230,9 @@
 完整定义见 [`spec/openapi.yaml`](../spec/openapi.yaml)。所有接口 MUST 通过 TLS 1.2 及以上版本提供；仅在开发环境的回环地址上可以例外。
 
 ### 6.1 发现
-- 租户后端 SHOULD 在 `GET /.well-known/lsp-connector` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`，供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+- 租户后端 SHOULD 在 `GET /.well-known/localsubproxy` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`，供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
 - 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
-- 网关 MUST 提供 `GET /.well-known/lmbp-gateway[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
+- 网关 MUST 提供 `GET /.well-known/lmbp[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
 
 ### 6.2 设备授权：`POST /lmbp/v1/device/authorize`
 - 请求 MUST 支持 `application/x-www-form-urlencoded`（RFC 8628 §3.1），MAY 同时接受 JSON。参数：`tenant`（必填）、`public_key`（必填，base64url 32 字节）、`device_name`（≤ 100 字符）。
@@ -243,10 +259,10 @@
 
 | 接口 | 作用 |
 |---|---|
-| `POST /lmbp/v1/tenant/device-approvals` `{user_code, jkt?, deny?}` | 确认或拒绝配对码；设备归属于 `X-End-User`。带 `jkt` 时与设备公钥指纹不符 MUST 返回 409（§17.2） |
+| `POST /lmbp/v1/tenant/devices/approvals` `{user_code, jkt?, deny?}` | 确认或拒绝配对码；设备归属于 `X-End-User`。带 `jkt` 时与设备公钥指纹不符 MUST 返回 409（§17.2） |
 | `GET /lmbp/v1/tenant/devices` | 列出该终端用户的设备：`created_at`（RFC 3339）、`public_key`、`jkt`、`e2ee_key`、在线时还有 `model_capabilities`、`capabilities`、`max_concurrency` |
-| `GET /lmbp/v1/tenant/tasks/{task_id}/events` | 按 `Last-Event-ID` 重新接入任务的 SSE 流（§14.4） |
-| `POST /lmbp/v1/tenant/devices/{device_id}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
+| `GET /lmbp/v1/tenant/tasks/{task}/events` | 按 `Last-Event-ID` 重新接入任务的 SSE 流（§14.4） |
+| `POST /lmbp/v1/tenant/devices/{device}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
 
 - 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://localsubproxy.dev/problems/<code 的小写连字符形式>`。
 - 访问不属于该租户或该终端用户的设备，MUST 返回 404（不透露设备是否存在）。
@@ -629,7 +645,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 设备生成 X25519 密钥对（RFC 7748），用身份私钥签发 JWS（`typ: lmbp-e2ee-key+jwt`，`kid` 为设备公钥指纹），载荷 `{iss, sub: device_id, iat, exp, jwk:{kty:"OKP", crv:"X25519", x, kid:<RFC 7638 指纹>, use:"enc", alg:"ECDH-ES"}}`，`exp - iat` ≤ 30 天。声明放在 `hello.e2ee_key`（或 `models.update.e2ee_key`），网关存储并通过 `GET /lmbp/v1/tenant/devices` 原样提供。
 
 ### 17.2 信任锚
-网关可能被攻破，因此租户 MUST NOT 只凭网关返回的公钥信任设备。设备在本机显示/在 `verification_uri_complete` 中携带其身份公钥指纹 `jkt`；用户确认时由租户后端记录（钉住）该 `jkt` 并随 `device-approvals` 提交（不符时网关返回 409）。之后租户 MUST 用钉住的 `jkt` 校验 `public_key` 与密钥声明签名，并检查 `sub`、`exp` 与 X25519 `kid`。
+网关可能被攻破，因此租户 MUST NOT 只凭网关返回的公钥信任设备。设备在本机显示/在 `verification_uri_complete` 中携带其身份公钥指纹 `jkt`；用户确认时由租户后端记录（钉住）该 `jkt` 并随 `devices/approvals` 提交（不符时网关返回 409）。之后租户 MUST 用钉住的 `jkt` 校验 `public_key` 与密钥声明签名，并检查 `sub`、`exp` 与 X25519 `kid`。
 
 ### 17.3 密封请求
 租户构造 `{rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key}`（`response_key` 为新随机 32 字节，`rid` 唯一），按 RFC 7516 JWE 紧凑序列化加密：`alg: "ECDH-ES"`（直接密钥协商，RFC 7518 §4.6，X25519 按 RFC 8037）、`enc: "A256GCM"`、`kid`、`cty: "lmbp-request+json"`；encrypted key 段为空；`zip`、`crit` MUST NOT 出现。通过 `lmbp_e2ee` 字段提交，此时 MUST NOT 带明文 `messages`/`tools`（否则 400）。
@@ -662,7 +678,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 - 每个网关 MUST 配置唯一的 **issuer**：它对外的 https origin（`scheme://host[:port]`，小写，无路径、查询、userinfo，默认端口省略）。仅开发环境的回环地址允许 `http`。
 - issuer 是访问令牌的 `iss`、所有受众的基准，也是元数据文档的 `issuer`。参考实现通过 `server -issuer https://…` 配置；未配置时仅在开发模式下按请求 Host 推导，生产环境 MUST NOT 依赖推导。
 
-### 18.2 元数据：`GET /.well-known/lmbp-gateway`
+### 18.2 元数据：`GET /.well-known/lmbp`
 参照 RFC 8414（授权服务器元数据）。响应 `application/json`，可缓存（SHOULD ≤ 300 秒）：
 
 | 字段 | 要求 |
@@ -690,7 +706,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 ## 19. 配对同意
 
 ### 19.1 签名元数据
-`GET /.well-known/lmbp-gateway?tenant=<id>` 返回 §18.2 的字段，外加：
+`GET /.well-known/lmbp?tenant=<id>` 返回 §18.2 的字段，外加：
 
 | 字段 | 说明 |
 |---|---|
@@ -722,7 +738,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 4. 拒绝：设备不向网关发送任何请求，本地 API 返回 `CONSENT_DENIED`。
 5. 同意：设备才生成设备密钥并调用 `device_authorize`（§6.2），在本机显示 `user_code`，并打开 `pairing_uri?user_code=…&jkt=…`。
 6. SaaS 侧用户拒绝时，令牌端点返回 `access_denied`，设备将其映射为 `CONSENT_DENIED`。
-7. 被拒绝（`deny: true`）的 `user_code` 在过期前不可再被批准：网关对再次提交的 `/lmbp/v1/tenant/device-approvals` 返回 403 Problem Details，`code` 为 `CONSENT_DENIED`。
+7. 被拒绝（`deny: true`）的 `user_code` 在过期前不可再被批准：网关对再次提交的 `/lmbp/v1/tenant/devices/approvals` 返回 403 Problem Details，`code` 为 `CONSENT_DENIED`。
 
 只用于自动化（测试、脚本、`connector -yes`）的实现 MAY 跳过第 2–3 步，但交互式应用 MUST NOT。
 

@@ -54,7 +54,7 @@ type PairRequest struct {
 	decided   bool
 }
 
-// Prepare discovers the gateway from a SaaS origin (/.well-known/lsp-connector)
+// Prepare discovers the gateway from a SaaS origin (/.well-known/localsubproxy)
 // and verifies the gateway's signed metadata.
 func Prepare(ctx context.Context, hc *http.Client, remoteURL string) (*PairRequest, error) {
 	if hc == nil {

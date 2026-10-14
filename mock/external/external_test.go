@@ -138,10 +138,10 @@ func TestExternalGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _, b := e.call("POST", "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": pd.UserCode, "deny": true}); st != 200 {
+	if st, _, b := e.call("POST", "/lmbp/v1/tenant/devices/approvals", map[string]any{"user_code": pd.UserCode, "deny": true}); st != 200 {
 		t.Fatalf("deny: %d %s", st, b)
 	}
-	st, h, b := e.call("POST", "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": pd.UserCode})
+	st, h, b := e.call("POST", "/lmbp/v1/tenant/devices/approvals", map[string]any{"user_code": pd.UserCode})
 	var prob map[string]any
 	_ = json.Unmarshal(b, &prob)
 	if st != 403 || prob["code"] != lmbp.ErrConsentDenied || !strings.HasPrefix(h.Get("Content-Type"), "application/problem+json") || prob["status"] != float64(403) {
@@ -157,7 +157,7 @@ func TestExternalGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st, _, b := e.call("POST", "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": p.UserCode, "jkt": p.JKT}); st != 200 {
+	if st, _, b := e.call("POST", "/lmbp/v1/tenant/devices/approvals", map[string]any{"user_code": p.UserCode, "jkt": p.JKT}); st != 200 {
 		t.Fatalf("approve: %d %s", st, b)
 	}
 	id, err := p.Wait(ctx)

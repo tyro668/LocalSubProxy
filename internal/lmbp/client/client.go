@@ -112,7 +112,7 @@ func postForm(ctx context.Context, hc *http.Client, u string, in map[string]stri
 	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Discovery is the public, secret-free document a SaaS serves at /.well-known/lsp-connector.
+// Discovery is the public, secret-free document a SaaS serves at /.well-known/localsubproxy.
 type Discovery struct {
 	GatewayURL string `json:"gateway_url"`
 	Tenant     string `json:"tenant"`
@@ -125,7 +125,7 @@ func Discover(ctx context.Context, hc *http.Client, remoteURL string) (Discovery
 	if hc == nil {
 		hc = defaultHTTP()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+"/.well-known/lsp-connector", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+"/.well-known/localsubproxy", nil)
 	if err != nil {
 		return d, err
 	}

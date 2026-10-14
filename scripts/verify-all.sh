@@ -15,6 +15,7 @@
 #   VERIFY_ONLY=regex scripts/verify-all.sh   # run only the matching steps (debugging; not a full verification)
 #
 # Matrix:
+#   0. scripts/route-lint.py: every route segment is one word (spec §4.5)
 #   1. Go: vet + all packages (reference gateway, Go SDK, conformance runner,
 #      stores, connector) and the examples/go-nethttp module
 #   2. Node SDK (sdk/node) and the Node mock (mock/node)
@@ -70,6 +71,7 @@ step() { # name cmd...
 }
 
 gopkgs() { go list ./... | grep -v '/mock/external$'; }  # external: run against live gateways in step 5
+step "route-lint (spec §4.5: one word per route segment)" bash -c 'python3 scripts/route-lint.py --selftest'
 step "go vet" bash -c 'go vet $(go list ./... ) && (cd examples/go-nethttp && go vet ./...)'
 step "go test -json (reference gateway, Go SDK, conformance, stores, connector)" $ST go -count=1 $(gopkgs)
 step "go test -json mock/external CI-mode guard" $ST go -count=1 ./mock/external -run TestExternalGatewayFailsInCIWithoutEnv

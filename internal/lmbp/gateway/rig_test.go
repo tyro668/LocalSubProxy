@@ -158,7 +158,7 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	mux := http.NewServeMux()
 	mux.Handle("/", r.g.Handler())
 	var base string
-	mux.HandleFunc("/.well-known/lsp-connector", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/.well-known/localsubproxy", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(client.Discovery{GatewayURL: base, Tenant: "acme", LinkURL: base + "/link", Protocol: "lmbp"})
 	})
 	r.srv = httptest.NewServer(mux)
@@ -174,10 +174,10 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	if !strings.Contains(p.LinkURL, "jkt="+p.JKT) {
 		t.Fatalf("link url lacks jkt: %s", p.LinkURL)
 	}
-	if code, _ := r.api(t, "POST", "/lmbp/v1/tenant/device-approvals", map[string]string{"user_code": p.UserCode, "jkt": "wrong"}, nil); code != 409 {
+	if code, _ := r.api(t, "POST", "/lmbp/v1/tenant/devices/approvals", map[string]string{"user_code": p.UserCode, "jkt": "wrong"}, nil); code != 409 {
 		t.Fatalf("approval with wrong jkt: %d", code)
 	}
-	if code, m := r.api(t, "POST", "/lmbp/v1/tenant/device-approvals", map[string]string{"user_code": p.UserCode, "jkt": p.JKT}, nil); code != 200 {
+	if code, m := r.api(t, "POST", "/lmbp/v1/tenant/devices/approvals", map[string]string{"user_code": p.UserCode, "jkt": p.JKT}, nil); code != 200 {
 		t.Fatalf("approve: %d %v", code, m)
 	}
 	id, err := p.Wait(ctx)

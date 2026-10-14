@@ -87,7 +87,7 @@
   // ---- pairing ----
   async function loadPairing() {
     try {
-      const res = await fetch('/.well-known/lmbp-gateway?tenant=' + encodeURIComponent(auth.tenant));
+      const res = await fetch('/.well-known/lmbp?tenant=' + encodeURIComponent(auth.tenant));
       if (!res.ok) throw await parseError(res);
       issuer = (await res.json()).issuer;
     } catch (e) { issuer = location.origin; toast('读取网关元数据失败：' + describe(e.code, e.message), true); }
@@ -110,7 +110,7 @@
     const body = { user_code }; const jkt = $('jkt').value.trim(); if (jkt) body.jkt = jkt; if (deny) body.deny = true;
     $('approve').disabled = $('deny').disabled = true;
     try {
-      const r = await api('POST', '/lmbp/v1/tenant/device-approvals', body);
+      const r = await api('POST', '/lmbp/v1/tenant/devices/approvals', body);
       pairMsg(r.status === 'approved' ? `已批准：${r.device_name || '设备'}（${r.device_id}），等待设备上线…` : '已拒绝该配对请求，设备将收到 CONSENT_DENIED');
       $('code').value = ''; $('jkt').value = ''; history_replaceParams();
       setTimeout(refresh, 1500);

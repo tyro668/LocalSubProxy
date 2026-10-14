@@ -167,7 +167,7 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("/lmbp/v1/device/authorize", g.authorize)
 	m.HandleFunc("/lmbp/v1/token", g.token)
 	m.HandleFunc("/lmbp/v1/connect", g.connect)
-	m.HandleFunc("/lmbp/v1/tenant/device-approvals", g.approve)
+	m.HandleFunc("/lmbp/v1/tenant/devices/approvals", g.approve)
 	m.HandleFunc("/lmbp/v1/tenant/devices", g.listDevices)
 	m.HandleFunc("/lmbp/v1/tenant/devices/", g.revoke)
 	m.HandleFunc("/lmbp/v1/tenant/tasks/", g.taskEvents)

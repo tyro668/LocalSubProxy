@@ -104,11 +104,11 @@ export class Gateway {
     if (p === '/healthz') return json(res, 200, { status: 'ok' });
     if (this.cfg.webDir && WEB_FILES[p] && (req.method === 'GET' || req.method === 'HEAD')) return this.serveWeb(res, p);
     if (p === '/.well-known/jwks.json') { res.setHeader('Cache-Control', 'public, max-age=300'); return json(res, 200, { keys: [L.publicJWK(this.pub)] }); }
-    if (p === '/.well-known/lmbp-gateway') return this.metadata(req, res, u);
+    if (p === '/.well-known/lmbp') return this.metadata(req, res, u);
     if (p === '/lmbp/v1/device/authorize') return this.authorize(req, res);
     if (p === '/lmbp/v1/token') return this.token(req, res);
     if (p === '/lmbp/v1/connect') return problem(res, 400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lmbp required');
-    if (p === '/lmbp/v1/tenant/device-approvals') return this.approve(req, res, err);
+    if (p === '/lmbp/v1/tenant/devices/approvals') return this.approve(req, res, err);
     if (p === '/lmbp/v1/tenant/devices') return this.listDevices(req, res, err);
     let m;
     if ((m = p.match(/^\/lmbp\/v1\/tenant\/devices\/([^/]+)\/revoke$/))) return this.revoke(req, res, err, decodeURIComponent(m[1]));

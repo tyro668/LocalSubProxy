@@ -69,13 +69,13 @@ func TestDeviceFlow(t *testing.T) {
 		t.Fatalf("expected slow_down, got %v", m)
 	}
 	// Another tenant cannot approve this code.
-	if st, _ := post(t, s.URL+"/lmbp/v1/tenant/device-approvals", strings.Repeat("b", 40), "mallory", map[string]string{"user_code": uc}); st != 404 {
+	if st, _ := post(t, s.URL+"/lmbp/v1/tenant/devices/approvals", strings.Repeat("b", 40), "mallory", map[string]string{"user_code": uc}); st != 404 {
 		t.Fatalf("cross-tenant approval status %d", st)
 	}
-	if st, _ := post(t, s.URL+"/lmbp/v1/tenant/device-approvals", "wrong-key", "alice", map[string]string{"user_code": uc}); st != 401 {
+	if st, _ := post(t, s.URL+"/lmbp/v1/tenant/devices/approvals", "wrong-key", "alice", map[string]string{"user_code": uc}); st != 401 {
 		t.Fatal("bad tenant key accepted")
 	}
-	if st, m := post(t, s.URL+"/lmbp/v1/tenant/device-approvals", strings.Repeat("a", 40), "alice", map[string]string{"user_code": strings.ToLower(strings.ReplaceAll(uc, "-", ""))}); st != 200 || m["status"] != "approved" {
+	if st, m := post(t, s.URL+"/lmbp/v1/tenant/devices/approvals", strings.Repeat("a", 40), "alice", map[string]string{"user_code": strings.ToLower(strings.ReplaceAll(uc, "-", ""))}); st != 200 || m["status"] != "approved" {
 		t.Fatalf("approve %d %v", st, m)
 	}
 	_, other, _ := ed25519.GenerateKey(rand.Reader)

@@ -47,7 +47,7 @@ func New(cfg Config) *Server {
 
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	m.HandleFunc("/.well-known/lsp-connector", s.discovery)
+	m.HandleFunc("/.well-known/localsubproxy", s.discovery)
 	m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"status":"ok"}`)) })
 	m.HandleFunc("/login", s.login)
 	m.HandleFunc("/logout", s.logout)
@@ -194,7 +194,7 @@ func (s *Server) link(w http.ResponseWriter, r *http.Request, user string) {
 	if r.Method == http.MethodPost {
 		jkt := r.FormValue("jkt")
 		b, _ := json.Marshal(map[string]any{"user_code": r.FormValue("user_code"), "deny": r.FormValue("deny") == "1", "jkt": jkt})
-		resp, err := s.gw(r, "POST", "/lmbp/v1/tenant/device-approvals", strings.NewReader(string(b)), user)
+		resp, err := s.gw(r, "POST", "/lmbp/v1/tenant/devices/approvals", strings.NewReader(string(b)), user)
 		if err != nil {
 			data["Error"] = "网关不可达"
 		} else {
