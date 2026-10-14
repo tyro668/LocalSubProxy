@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -83,14 +84,16 @@ class _HomePageState extends State<HomePage> {
   Map<String, dynamic>? consent;
   // Local token usage (last 7 days, by SaaS and model).
   List<Map<String, dynamic>> usage = [];
-  VoidCallback? _connectionRefresh;
+  final Set<VoidCallback> _overlayRelays = {};
 
   NativeApi get api => NativeApi.instance;
 
   @override
   void setState(VoidCallback fn) {
     super.setState(fn);
-    _connectionRefresh?.call();
+    for (final relay in List<VoidCallback>.of(_overlayRelays)) {
+      relay();
+    }
   }
 
   @override
@@ -274,9 +277,38 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> loadUsage() async {
     try {
-      final u = await usageStatsAsync(['saas', 'model'], 7);
+      final u = await usageStatsAsync(['adapter'], 7);
       if (mounted) setState(() => usage = u);
     } catch (_) {}
+  }
+
+  List<String> _localModels() {
+    final s = <String>{};
+    for (final a in adapters) {
+      s.addAll((a['models'] as List?)?.cast<String>() ?? const <String>[]);
+    }
+    return s.toList();
+  }
+
+  String _schemeName(String id) {
+    for (final a in adapters) {
+      if (a['id'] == id) {
+        final n = a['name'];
+        return n is String && n.isNotEmpty ? n : id;
+      }
+    }
+    return id;
+  }
+
+  static String _fmtTokens(num n) {
+    String trim(double v) {
+      final s = v.toStringAsFixed(1);
+      return s.endsWith('.0') ? s.substring(0, s.length - 2) : s;
+    }
+
+    if (n >= 1000000) return '${trim(n / 1000000)}M';
+    if (n >= 1000) return '${trim(n / 1000)}k';
+    return '$n';
   }
 
   Future<void> pollPairing() async {
@@ -341,8 +373,82 @@ class _HomePageState extends State<HomePage> {
   Future<void> openConnection() async {
     await showOverlay<void>(
       context,
-      DialogConfiguration<void>(builder: (_) => _ConnectionRelay(host: this)),
+      DialogConfiguration<void>(
+        builder: (_) => _DialogRelay(
+          host: this,
+          title: '远端服务连接',
+          content: connectionCard,
+        ),
+      ),
     ).future;
+  }
+
+  Future<void> openUsage() async {
+    await loadUsage();
+    if (!mounted) return;
+    await showOverlay<void>(
+      context,
+      DialogConfiguration<void>(
+        builder: (_) =>
+            _DialogRelay(host: this, title: '用量统计', content: usageCard),
+      ),
+    ).future;
+  }
+
+  Widget usageCard() {
+    final rows = [...usage]..sort(
+        (a, b) => (b['total_tokens'] ?? 0).compareTo(a['total_tokens'] ?? 0),
+      );
+    Widget cell(String v, {bool head = false, bool right = false}) {
+      final t = Text(v, textAlign: right ? TextAlign.right : null);
+      return right
+          ? SizedBox(width: 72, child: head ? t.xSmall().muted() : t.small())
+          : Expanded(child: head ? t.xSmall().muted() : t.small().medium().singleLine().ellipsis);
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: const Text('近 7 天用量').small().medium()),
+            GhostButton(
+              size: ButtonSize.small,
+              onPressed: loadUsage,
+              child: const Text('刷新用量'),
+            ),
+          ],
+        ),
+        const Gap(10),
+        if (rows.isEmpty)
+          const Text('暂无记录（不记录对话内容）').small().muted()
+        else ...[
+          Row(
+            children: [
+              cell('方案名', head: true),
+              cell('输入', head: true, right: true),
+              cell('输出', head: true, right: true),
+              cell('总计', head: true, right: true),
+            ],
+          ),
+          const Gap(4),
+          const Divider(),
+          for (final b in rows) ...[
+            const Gap(2),
+            Row(
+              children: [
+                cell(_schemeName('${b['adapter'] ?? ''}')),
+                cell(_fmtTokens(b['prompt_tokens'] ?? 0), right: true),
+                cell(_fmtTokens(b['completion_tokens'] ?? 0), right: true),
+                cell(_fmtTokens(b['total_tokens'] ?? 0), right: true),
+              ],
+            ),
+            const Gap(2),
+          ],
+        ],
+      ],
+    );
   }
 
   Future<void> edit([Map<String, dynamic>? existing]) async {
@@ -476,29 +582,9 @@ class _HomePageState extends State<HomePage> {
             _StatRow('地址', '${status?['remote_url'] ?? ''}'),
             _StatRow('传输', _transportLabel(status?['transport'])),
             _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
-            const Gap(14),
-            Row(
-              children: [
-                Expanded(child: const Text('近 7 天用量').small().medium()),
-                GhostButton(
-                  size: ButtonSize.small,
-                  onPressed: loadUsage,
-                  child: const Text('刷新用量'),
-                ),
-              ],
-            ),
-            if (usage.isEmpty)
-              const Text('暂无记录（不记录对话内容）').small().muted()
-            else
-              for (final b in usage)
-                _StatRow(
-                  '${b['saas_name'] ?? b['saas'] ?? ''} · ${b['model'] ?? ''}',
-                  '${b['requests']} 次 · ${b['total_tokens']} tokens'
-                      '${(b['errors'] ?? 0) > 0 ? ' · ${b['errors']} 失败' : ''}',
-                ),
           ] else if (consent != null) ...[
             const Gap(12),
-            _ConsentView(consent: consent!),
+            _ConsentView(consent: consent!, localModels: _localModels()),
             const Gap(16),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -515,70 +601,82 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
             ),
+          ] else if (awaitingCode) ...[
+            const Gap(16),
+            Center(
+              child: Column(
+                children: [
+                  const Text('配对码（请在远端服务页面输入）').small().muted(),
+                  const Gap(6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        pairUserCode ?? '',
+                        style: const TextStyle(
+                          fontSize: 28,
+                          letterSpacing: 4,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                      const Gap(4),
+                      Tooltip(
+                        tooltip: (context) =>
+                            const TooltipContainer(child: Text('复制配对码')),
+                        child: IconButton.ghost(
+                          density: ButtonDensity.icon,
+                          icon: const Icon(LucideIcons.copy),
+                          onPressed: () {
+                            Clipboard.setData(
+                              ClipboardData(text: pairUserCode ?? ''),
+                            );
+                            show('配对码已复制');
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Gap(6),
+                  const Text('10 分钟内有效').xSmall().muted(),
+                ],
+              ),
+            ),
+            const Gap(16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: GhostButton(
+                onPressed: busy ? null : cancelPairing,
+                child: const Text('返回'),
+              ),
+            ),
           ] else ...[
             const Gap(8),
             const Text(
               '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
             ).small().muted(),
-            if ((status?['pairing_error'] ?? '') != '' && !awaitingCode) ...[
+            if ((status?['pairing_error'] ?? '') != '') ...[
               const Gap(8),
               Text('${status?['pairing_error']}').small(),
             ],
             const Gap(16),
-            if (awaitingCode)
-              Text(
-                '远端服务地址：${pendingRemoteURL ?? remoteUrl.text.trim()}',
-              ).small().medium()
-            else
-              LabeledField(
-                label: '远端服务地址',
-                child: TextField(
-                  controller: remoteUrl,
-                  placeholder: const Text(
-                    'https://remote.example.com 或 lmbp://pair?… 链接',
-                  ),
-                  features: const [InputFeature.clear()],
+            LabeledField(
+              label: '远端服务地址',
+              child: TextField(
+                controller: remoteUrl,
+                placeholder: const Text(
+                  'https://remote.example.com 或 lmbp://pair?… 链接',
                 ),
+                features: const [InputFeature.clear()],
               ),
-            if (awaitingCode) ...[
-              const Gap(16),
-              LabeledField(
-                label: '配对码（请在远端服务页面输入）',
-                hint: '10 分钟内有效；确认后本机会自动完成连接',
-                child: Text(
-                  pairUserCode ?? '',
-                  style: const TextStyle(
-                    fontSize: 28,
-                    letterSpacing: 4,
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ),
-              if (pairLinkUrl != null && pairLinkUrl!.isNotEmpty) ...[
-                const Gap(8),
-                Text('打开：$pairLinkUrl').small().muted(),
-              ],
-              const Gap(8),
-              const Text('等待远端服务确认…').small().muted(),
-            ],
+            ),
             const Gap(16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (awaitingCode) ...[
-                  GhostButton(
-                    onPressed: busy ? null : cancelPairing,
-                    child: const Text('返回'),
-                  ),
-                  const Gap(8),
-                ],
-                if (!awaitingCode)
-                  PrimaryButton(
-                    onPressed: busy ? null : prepareConnection,
-                    leading: const Icon(LucideIcons.link),
-                    child: Text(busy ? '处理中…' : '连接'),
-                  ),
-              ],
+            Align(
+              alignment: Alignment.centerRight,
+              child: PrimaryButton(
+                onPressed: busy ? null : prepareConnection,
+                leading: const Icon(LucideIcons.link),
+                child: Text(busy ? '处理中…' : '连接'),
+              ),
             ),
           ],
         ],
@@ -652,6 +750,7 @@ class _HomePageState extends State<HomePage> {
               adapters: adapters,
               status: status,
               onConnectionTap: openConnection,
+              onUsageTap: openUsage,
               onChanged: () => refresh(force: true),
             )
           : Center(
@@ -664,16 +763,22 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-class _ConnectionRelay extends StatefulWidget {
-  const _ConnectionRelay({required this.host});
+class _DialogRelay extends StatefulWidget {
+  const _DialogRelay({
+    required this.host,
+    required this.title,
+    required this.content,
+  });
 
   final _HomePageState host;
+  final String title;
+  final Widget Function() content;
 
   @override
-  State<_ConnectionRelay> createState() => _ConnectionRelayState();
+  State<_DialogRelay> createState() => _DialogRelayState();
 }
 
-class _ConnectionRelayState extends State<_ConnectionRelay> {
+class _DialogRelayState extends State<_DialogRelay> {
   void refresh() {
     if (mounted) setState(() {});
   }
@@ -681,27 +786,31 @@ class _ConnectionRelayState extends State<_ConnectionRelay> {
   @override
   void initState() {
     super.initState();
-    widget.host._connectionRefresh = refresh;
+    widget.host._overlayRelays.add(refresh);
   }
 
   @override
   void dispose() {
-    if (widget.host._connectionRefresh == refresh) {
-      widget.host._connectionRefresh = null;
-    }
+    widget.host._overlayRelays.remove(refresh);
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('远端服务连接'),
-    content: SizedBox(width: 470, child: widget.host.connectionCard()),
-    actions: [
-      OutlineButton(
-        onPressed: () => Navigator.of(context).pop(),
-        child: const Text('关闭'),
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 420),
+    child: AlertDialog(
+      title: Row(
+        children: [
+          Expanded(child: Text(widget.title)),
+          IconButton.ghost(
+            density: ButtonDensity.icon,
+            icon: const Icon(LucideIcons.x),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
       ),
-    ],
+      content: SingleChildScrollView(child: widget.content()),
+    ),
   );
 }
 
@@ -743,7 +852,10 @@ class _StatRow extends StatelessWidget {
       padding: const EdgeInsets.only(top: 6),
       child: Row(
         children: [
-          SizedBox(width: 48, child: Text(label).small().muted()),
+          SizedBox(
+            width: 64,
+            child: Text(label).small().muted().singleLine().ellipsis,
+          ),
           Expanded(child: Text(value).small().medium().singleLine().ellipsis),
         ],
       ),
@@ -1068,13 +1180,14 @@ class _ToggleRow extends StatelessWidget {
 /// Consent screen: the SaaS identity verified from the gateway's signed
 /// metadata (docs/lmbp-spec.md §19). Nothing here comes from the link.
 class _ConsentView extends StatelessWidget {
-  const _ConsentView({required this.consent});
+  const _ConsentView({required this.consent, required this.localModels});
   final Map<String, dynamic> consent;
+  final List<String> localModels;
 
   @override
   Widget build(BuildContext context) {
     final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
-    final models = ((consent['requested_models'] as List?) ?? []).join(', ');
+    final models = localModels.join(', ');
     final scopes = ((consent['requested_scopes'] as List?) ?? []).join(', ');
     final logo = '${saas['logo_uri'] ?? ''}';
     return Column(
@@ -1106,7 +1219,7 @@ class _ConsentView extends StatelessWidget {
           _StatRow('主页', '${saas['homepage_uri']}'),
         if ('${saas['policy_uri'] ?? ''}' != '')
           _StatRow('隐私政策', '${saas['policy_uri']}'),
-        _StatRow('请求模型', models.isEmpty ? '由本机配置决定' : models),
+        _StatRow('本机模型', models.isEmpty ? '未添加方案' : models),
         _StatRow('请求权限', scopes),
         _StatRow('网关密钥', '${consent['gateway_key_id'] ?? ''}'),
       ],
