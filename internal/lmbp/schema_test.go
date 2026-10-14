@@ -18,6 +18,9 @@ func loadSchema(t *testing.T, name string) *jsonschema.Schema {
 	c.DefaultDraft(jsonschema.Draft2020)
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
+		if filepath.Ext(e.Name()) != ".json" {
+			continue // schemas.go embeds the directory
+		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatal(err)

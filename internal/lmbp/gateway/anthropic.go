@@ -69,8 +69,13 @@ func AnthropicToOpenAI(in map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("lmbp_e2ee is only supported on /v1/chat/completions")
 	}
 	out := map[string]any{"model": model, "max_tokens": int64(mt), "stream": in["stream"] == true}
-	if t, ok := in["temperature"].(float64); ok {
-		out["temperature"] = t
+	for _, k := range []string{"temperature", "top_p"} {
+		if v, ok := in[k]; ok && v != nil {
+			out[k] = v
+		}
+	}
+	if v, ok := in["stop_sequences"]; ok && v != nil {
+		out["stop"] = v
 	}
 	var msgs []any
 	switch s := in["system"].(type) {
@@ -255,6 +260,10 @@ func (g *Gateway) messages(w http.ResponseWriter, r *http.Request) {
 	var in map[string]any
 	if json.Unmarshal(body, &in) != nil || in == nil {
 		anthropicError(aw, 400, lmbp.ErrBadRequest, "invalid JSON body")
+		return
+	}
+	if e := ValidateAnthropicParams(in); e != nil {
+		writeParamError(aw, e)
 		return
 	}
 	out, err := AnthropicToOpenAI(in)

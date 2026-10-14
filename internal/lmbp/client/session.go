@@ -730,6 +730,7 @@ func (c *Client) openE2EE(run lmbp.TaskRun, blobs map[string][]byte) (lmbp.TaskR
 		return bad("sealed request replayed")
 	}
 	run.Messages, run.Tools, run.ToolChoice, run.MaxTokens, run.Temperature = req.Messages, req.Tools, req.ToolChoice, req.MaxTokens, req.Temperature
+	run.TopP, run.Stop = req.TopP, req.Stop
 	run.Blobs, run.E2EE = nil, nil
 	return run, &sealer{rid: req.RID, key: key}, nil
 }

@@ -29,6 +29,7 @@ import (
 //   - "slow": streams slowN numbered chunks with a small delay.
 type fakeExec struct {
 	execs   sync.Map // task_id → *atomic.Int32
+	runs    sync.Map // task_id → lmbp.TaskRun as received
 	emitted atomic.Int64
 	slowN   int
 	delay   time.Duration
@@ -49,6 +50,7 @@ func (f *fakeExec) count(taskID string) int32 {
 }
 
 func (f *fakeExec) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
+	f.runs.Store(run.TaskID, run)
 	n, _ := f.execs.LoadOrStore(run.TaskID, &atomic.Int32{})
 	n.(*atomic.Int32).Add(1)
 	send := func(d lmbp.TaskDelta) *lmbp.ErrorBody {

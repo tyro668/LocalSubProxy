@@ -97,6 +97,8 @@ type E2EERequest struct {
 	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
 	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	Stop        []string        `json:"stop,omitempty"`
 	ResponseKey string          `json:"response_key"` // base64url 32 bytes (A256GCM)
 }
 

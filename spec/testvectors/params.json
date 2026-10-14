@@ -1,0 +1,1328 @@
+{
+ "description": "Shared request-parameter vectors (third audit #2). Each case starts from base[endpoint] with \"$MODEL\" replaced by a tools-capable model, applies set (keys override, null values are sent as JSON null) and remove, and POSTs it to /v1/chat/completions (chat) or /v1/messages (messages). status 400 cases MUST be rejected before anything is signed or sent to the device, with code BAD_REQUEST and the given top-level param (OpenAI: error.param; Anthropic: error.lmbp_param). status 200 cases MUST reach the device; run lists task.run payload fields that MUST have exactly these values, run_absent fields that MUST be absent. Every task.run MUST validate against spec/schemas/task.run.payload.json.",
+ "base": {
+  "chat": {
+   "model": "$MODEL",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ]
+  },
+  "messages": {
+   "model": "$MODEL",
+   "max_tokens": 16,
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ]
+  }
+ },
+ "cases": [
+  {
+   "name": "temperature 0",
+   "endpoint": "chat",
+   "set": {
+    "temperature": 0
+   },
+   "status": 200,
+   "run": {
+    "temperature": 0
+   }
+  },
+  {
+   "name": "temperature 2 (maximum)",
+   "endpoint": "chat",
+   "set": {
+    "temperature": 2
+   },
+   "status": 200,
+   "run": {
+    "temperature": 2
+   }
+  },
+  {
+   "name": "temperature 0.7",
+   "endpoint": "chat",
+   "set": {
+    "temperature": 0.7
+   },
+   "status": 200,
+   "run": {
+    "temperature": 0.7
+   }
+  },
+  {
+   "name": "temperature null is absent",
+   "endpoint": "chat",
+   "set": {
+    "temperature": null
+   },
+   "status": 200,
+   "run_absent": [
+    "temperature"
+   ]
+  },
+  {
+   "name": "top_p 0",
+   "endpoint": "chat",
+   "set": {
+    "top_p": 0
+   },
+   "status": 200,
+   "run": {
+    "top_p": 0
+   }
+  },
+  {
+   "name": "top_p 1",
+   "endpoint": "chat",
+   "set": {
+    "top_p": 1
+   },
+   "status": 200,
+   "run": {
+    "top_p": 1
+   }
+  },
+  {
+   "name": "max_tokens 1 (minimum)",
+   "endpoint": "chat",
+   "set": {
+    "max_tokens": 1
+   },
+   "status": 200,
+   "run": {
+    "max_tokens": 1
+   }
+  },
+  {
+   "name": "max_completion_tokens is an alias of max_tokens",
+   "endpoint": "chat",
+   "set": {
+    "max_completion_tokens": 32
+   },
+   "status": 200,
+   "run": {
+    "max_tokens": 32
+   }
+  },
+  {
+   "name": "stop string becomes a one-element list",
+   "endpoint": "chat",
+   "set": {
+    "stop": "END"
+   },
+   "status": 200,
+   "run": {
+    "stop": [
+     "END"
+    ]
+   }
+  },
+  {
+   "name": "stop with 4 sequences (maximum)",
+   "endpoint": "chat",
+   "set": {
+    "stop": [
+     "a",
+     "b",
+     "c",
+     "d"
+    ]
+   },
+   "status": 200,
+   "run": {
+    "stop": [
+     "a",
+     "b",
+     "c",
+     "d"
+    ]
+   }
+  },
+  {
+   "name": "stop null is absent",
+   "endpoint": "chat",
+   "set": {
+    "stop": null
+   },
+   "status": 200,
+   "run_absent": [
+    "stop"
+   ]
+  },
+  {
+   "name": "n 1",
+   "endpoint": "chat",
+   "set": {
+    "n": 1
+   },
+   "status": 200
+  },
+  {
+   "name": "stream true",
+   "endpoint": "chat",
+   "set": {
+    "stream": true
+   },
+   "status": 200
+  },
+  {
+   "name": "tools with tool_choice auto",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": "auto"
+   },
+   "status": 200,
+   "run": {
+    "tool_choice": "auto"
+   }
+  },
+  {
+   "name": "tool_choice none",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": "none"
+   },
+   "status": 200,
+   "run": {
+    "tool_choice": "none"
+   }
+  },
+  {
+   "name": "tool_choice required",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": "required"
+   },
+   "status": 200,
+   "run": {
+    "tool_choice": "required"
+   }
+  },
+  {
+   "name": "tool_choice names a declared function",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "function",
+     "function": {
+      "name": "get_weather"
+     }
+    }
+   },
+   "status": 200,
+   "run": {
+    "tool_choice": {
+     "type": "function",
+     "function": {
+      "name": "get_weather"
+     }
+    }
+   }
+  },
+  {
+   "name": "tool call round trip in messages",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "messages": [
+     {
+      "role": "user",
+      "content": "weather?"
+     },
+     {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Paris\"}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny"
+     }
+    ]
+   },
+   "status": 200
+  },
+  {
+   "name": "temperature 3",
+   "endpoint": "chat",
+   "set": {
+    "temperature": 3
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "temperature -0.1",
+   "endpoint": "chat",
+   "set": {
+    "temperature": -0.1
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "temperature \"0.5\"",
+   "endpoint": "chat",
+   "set": {
+    "temperature": "0.5"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "temperature true",
+   "endpoint": "chat",
+   "set": {
+    "temperature": true
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "top_p 1.5",
+   "endpoint": "chat",
+   "set": {
+    "top_p": 1.5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "top_p"
+  },
+  {
+   "name": "top_p -1",
+   "endpoint": "chat",
+   "set": {
+    "top_p": -1
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "top_p"
+  },
+  {
+   "name": "top_p \"1\"",
+   "endpoint": "chat",
+   "set": {
+    "top_p": "1"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "top_p"
+  },
+  {
+   "name": "max_tokens 0",
+   "endpoint": "chat",
+   "set": {
+    "max_tokens": 0
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens -5",
+   "endpoint": "chat",
+   "set": {
+    "max_tokens": -5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens 1.5",
+   "endpoint": "chat",
+   "set": {
+    "max_tokens": 1.5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens \"10\"",
+   "endpoint": "chat",
+   "set": {
+    "max_tokens": "10"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_completion_tokens 0",
+   "endpoint": "chat",
+   "set": {
+    "max_completion_tokens": 0
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_completion_tokens"
+  },
+  {
+   "name": "stop \"\"",
+   "endpoint": "chat",
+   "set": {
+    "stop": ""
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop"
+  },
+  {
+   "name": "stop []",
+   "endpoint": "chat",
+   "set": {
+    "stop": []
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop"
+  },
+  {
+   "name": "stop [\"a\", \"b\", \"c\", \"d\", \"e\"]",
+   "endpoint": "chat",
+   "set": {
+    "stop": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e"
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop"
+  },
+  {
+   "name": "stop [1]",
+   "endpoint": "chat",
+   "set": {
+    "stop": [
+     1
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop"
+  },
+  {
+   "name": "stop [\"ok\", \"\"]",
+   "endpoint": "chat",
+   "set": {
+    "stop": [
+     "ok",
+     ""
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop"
+  },
+  {
+   "name": "stop 7",
+   "endpoint": "chat",
+   "set": {
+    "stop": 7
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop"
+  },
+  {
+   "name": "n 2",
+   "endpoint": "chat",
+   "set": {
+    "n": 2
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "n"
+  },
+  {
+   "name": "n 0",
+   "endpoint": "chat",
+   "set": {
+    "n": 0
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "n"
+  },
+  {
+   "name": "n \"1\"",
+   "endpoint": "chat",
+   "set": {
+    "n": "1"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "n"
+  },
+  {
+   "name": "n 1.5",
+   "endpoint": "chat",
+   "set": {
+    "n": 1.5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "n"
+  },
+  {
+   "name": "stream \"yes\"",
+   "endpoint": "chat",
+   "set": {
+    "stream": "yes"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stream"
+  },
+  {
+   "name": "tools not an array",
+   "endpoint": "chat",
+   "set": {
+    "tools": {}
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool without function",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function"
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool of type retrieval",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "retrieval",
+      "function": {
+       "name": "x"
+      }
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool name with a space",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get weather"
+      }
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool parameters not an object",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "x",
+       "parameters": "x"
+      }
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool_choice unknown string",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": "sometimes"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice function without name",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "function"
+    }
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice names an undeclared function",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "function",
+     "function": {
+      "name": "nope"
+     }
+    }
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice without tools",
+   "endpoint": "chat",
+   "set": {
+    "tool_choice": "auto"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice a number",
+   "endpoint": "chat",
+   "set": {
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "weather",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": 5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "messages empty",
+   "endpoint": "chat",
+   "set": {
+    "messages": []
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "messages missing",
+   "endpoint": "chat",
+   "set": {},
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages",
+   "remove": [
+    "messages"
+   ]
+  },
+  {
+   "name": "messages a string",
+   "endpoint": "chat",
+   "set": {
+    "messages": "hi"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "message role robot",
+   "endpoint": "chat",
+   "set": {
+    "messages": [
+     {
+      "role": "robot",
+      "content": "x"
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "tool message without tool_call_id",
+   "endpoint": "chat",
+   "set": {
+    "messages": [
+     {
+      "role": "tool",
+      "content": "x"
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "message content a number",
+   "endpoint": "chat",
+   "set": {
+    "messages": [
+     {
+      "role": "user",
+      "content": 5
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "temperature 0",
+   "endpoint": "messages",
+   "set": {
+    "temperature": 0
+   },
+   "status": 200,
+   "run": {
+    "temperature": 0
+   }
+  },
+  {
+   "name": "temperature 1 (Anthropic maximum)",
+   "endpoint": "messages",
+   "set": {
+    "temperature": 1
+   },
+   "status": 200,
+   "run": {
+    "temperature": 1
+   }
+  },
+  {
+   "name": "top_p 0.9",
+   "endpoint": "messages",
+   "set": {
+    "top_p": 0.9
+   },
+   "status": 200,
+   "run": {
+    "top_p": 0.9
+   }
+  },
+  {
+   "name": "max_tokens 1 (minimum)",
+   "endpoint": "messages",
+   "set": {
+    "max_tokens": 1
+   },
+   "status": 200,
+   "run": {
+    "max_tokens": 1
+   }
+  },
+  {
+   "name": "stop_sequences become stop",
+   "endpoint": "messages",
+   "set": {
+    "stop_sequences": [
+     "END"
+    ]
+   },
+   "status": 200,
+   "run": {
+    "stop": [
+     "END"
+    ]
+   }
+  },
+  {
+   "name": "tool_choice tool names a declared tool",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "weather",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "tool",
+     "name": "get_weather"
+    }
+   },
+   "status": 200,
+   "run": {
+    "tool_choice": {
+     "type": "function",
+     "function": {
+      "name": "get_weather"
+     }
+    }
+   }
+  },
+  {
+   "name": "tool_choice any becomes required",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "weather",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "any"
+    }
+   },
+   "status": 200,
+   "run": {
+    "tool_choice": "required"
+   }
+  },
+  {
+   "name": "temperature 1.5",
+   "endpoint": "messages",
+   "set": {
+    "temperature": 1.5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "temperature -1",
+   "endpoint": "messages",
+   "set": {
+    "temperature": -1
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "temperature \"0.5\"",
+   "endpoint": "messages",
+   "set": {
+    "temperature": "0.5"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "temperature"
+  },
+  {
+   "name": "top_p 2",
+   "endpoint": "messages",
+   "set": {
+    "top_p": 2
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "top_p"
+  },
+  {
+   "name": "max_tokens 0",
+   "endpoint": "messages",
+   "set": {
+    "max_tokens": 0
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens -1",
+   "endpoint": "messages",
+   "set": {
+    "max_tokens": -1
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens 1.5",
+   "endpoint": "messages",
+   "set": {
+    "max_tokens": 1.5
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens \"16\"",
+   "endpoint": "messages",
+   "set": {
+    "max_tokens": "16"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens"
+  },
+  {
+   "name": "max_tokens missing",
+   "endpoint": "messages",
+   "set": {},
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "max_tokens",
+   "remove": [
+    "max_tokens"
+   ]
+  },
+  {
+   "name": "stop_sequences \"END\"",
+   "endpoint": "messages",
+   "set": {
+    "stop_sequences": "END"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop_sequences"
+  },
+  {
+   "name": "stop_sequences [\"\"]",
+   "endpoint": "messages",
+   "set": {
+    "stop_sequences": [
+     ""
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop_sequences"
+  },
+  {
+   "name": "stop_sequences []",
+   "endpoint": "messages",
+   "set": {
+    "stop_sequences": []
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop_sequences"
+  },
+  {
+   "name": "stop_sequences [\"a\", \"b\", \"c\", \"d\", \"e\"]",
+   "endpoint": "messages",
+   "set": {
+    "stop_sequences": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e"
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stop_sequences"
+  },
+  {
+   "name": "stream \"yes\"",
+   "endpoint": "messages",
+   "set": {
+    "stream": "yes"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "stream"
+  },
+  {
+   "name": "tool name with a space",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get weather",
+      "input_schema": {
+       "type": "object"
+      }
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool without input_schema",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "x"
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "server tool",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "type": "web_search_20250305",
+      "name": "web_search"
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tools"
+  },
+  {
+   "name": "tool_choice tool without name",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "weather",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "tool"
+    }
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice names an undeclared tool",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "weather",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "tool",
+     "name": "nope"
+    }
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice unknown type",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "weather",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "maybe"
+    }
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice a string",
+   "endpoint": "messages",
+   "set": {
+    "tools": [
+     {
+      "name": "get_weather",
+      "description": "weather",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "city": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    ],
+    "tool_choice": "auto"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "tool_choice without tools",
+   "endpoint": "messages",
+   "set": {
+    "tool_choice": {
+     "type": "auto"
+    }
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "tool_choice"
+  },
+  {
+   "name": "messages empty",
+   "endpoint": "messages",
+   "set": {
+    "messages": []
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "message role system",
+   "endpoint": "messages",
+   "set": {
+    "messages": [
+     {
+      "role": "system",
+      "content": "x"
+     }
+    ]
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  },
+  {
+   "name": "messages a string",
+   "endpoint": "messages",
+   "set": {
+    "messages": "hi"
+   },
+   "status": 400,
+   "code": "BAD_REQUEST",
+   "param": "messages"
+  }
+ ]
+}

@@ -33,7 +33,8 @@ export function toOpenAI(input: Obj): Obj {
   if (!Number.isInteger(mt) || mt < 1) throw new Error('max_tokens: field required (positive integer)');
   if ('lmbp_e2ee' in input) throw new Error('lmbp_e2ee is only supported on /v1/chat/completions');
   const out: Obj = { model: input.model, max_tokens: mt, stream: input.stream === true };
-  if (typeof input.temperature === 'number') out.temperature = input.temperature;
+  for (const k of ['temperature', 'top_p']) if (input[k] !== undefined && input[k] !== null) out[k] = input[k];
+  if (input.stop_sequences !== undefined && input.stop_sequences !== null) out.stop = input.stop_sequences;
   const msgs: Obj[] = [];
   const sys = input.system;
   if (typeof sys === 'string') { if (sys) msgs.push({ role: 'system', content: sys }); }

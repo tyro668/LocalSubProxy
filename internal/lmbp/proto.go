@@ -295,6 +295,8 @@ type TaskRun struct {
 	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
 	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	Stop        []string        `json:"stop,omitempty"`
 	Blobs       []BlobRef       `json:"blobs,omitempty"`
 	E2EE        *E2EERef        `json:"e2ee,omitempty"`
 	Exp         int64           `json:"exp"`

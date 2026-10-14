@@ -45,13 +45,14 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     }
     if (e.type !== 'task.run') return;
     const run = JSON.parse(Buffer.from(e.jws.split('.')[1], 'base64url'));
+    opts.onRun?.(run); // tests inspect the signed task.run payload
     if (run.e2ee) return void pending.set(run.task_id, { run, chunks: [] });
     let seq = 0;
     const send0 = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
     // opts.delayMs: hold the task (and its concurrency slot) before answering
     const send = opts.delayMs ? (type, data) => setTimeout(() => send0(type, data), opts.delayMs) : send0;
     const last = run.messages.at(-1);
-    const text = typeof last.content === 'string' ? last.content : (last.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+    const text = typeof last.content === 'string' ? last.content : (Array.isArray(last.content) ? last.content : []).filter((c) => c.type === 'text').map((c) => c.text).join('');
     if (run.tools?.length && last.role === 'user') {
       send('task.delta', { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: run.tools[0].function.name, arguments: '{"city":' } }] });
       send('task.delta', { tool_calls: [{ index: 0, function: { arguments: '"Paris"}' } }] });

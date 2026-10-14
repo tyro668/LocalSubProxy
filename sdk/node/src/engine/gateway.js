@@ -12,6 +12,7 @@ import { WebSocketServer } from 'ws';
 import * as L from './lmbp.js';
 import { MemoryStore } from '../store.js';
 import * as A from '../anthropic.js';
+import { validateChatParams, validateAnthropicParams, validateTaskRun, paramErrorBody, ParamError } from './params.js';
 
 const PROBLEM_BASE = 'https://localsubproxy.dev/problems/';
 const USER_CODE_CHARS = 'BCDFGHJKLMNPQRSTVWXZ';
@@ -538,6 +539,10 @@ export class Gateway {
     let r;
     try { r = JSON.parse(body.toString()); } catch { r = null; }
     if (!r || typeof r !== 'object' || Array.isArray(r)) return err(400, 'BAD_REQUEST', 'invalid JSON body');
+    try { validateAnthropicParams(r); } catch (e) {
+      if (e instanceof ParamError) return json(res, 400, paramErrorBody(e, true));
+      throw e;
+    }
     let out;
     try { out = A.toOpenAI(r); } catch (e) { return err(400, 'BAD_REQUEST', e.message); }
     return this.chat(req, res, err, Buffer.from(A.canonicalJSON(out)), true);
@@ -551,7 +556,14 @@ export class Gateway {
     if (!body) return err(413, 'PAYLOAD_TOO_LARGE', 'request body too large');
     let r;
     try { r = JSON.parse(body.toString()); } catch { r = null; }
-    if (!r || typeof r !== 'object' || typeof r.model !== 'string' || !r.model) return err(400, 'BAD_REQUEST', 'invalid JSON body or missing model');
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return err(400, 'BAD_REQUEST', 'invalid JSON body');
+    // Every parameter is validated before anything is stored, queued or
+    // signed (third audit #2; spec/testvectors/params.json).
+    let params;
+    try { params = validateChatParams(r); } catch (e) {
+      if (e instanceof ParamError) return json(res, 400, paramErrorBody(e, anthropic));
+      throw e;
+    }
     const idemKey = req.headers['idempotency-key'] || '';
     if (idemKey.length > 255) return err(400, 'BAD_REQUEST', 'Idempotency-Key too long');
     const bodyHash = L.sha256(body).toString('hex');
@@ -601,16 +613,24 @@ export class Gateway {
       if (tools.length) run.tools = tools;
       if (hasToolChoice) run.tool_choice = r.tool_choice;
     }
-    if (Number.isInteger(r.max_tokens) && r.max_tokens > 0) run.max_tokens = r.max_tokens;
-    if (typeof r.temperature === 'number') run.temperature = r.temperature;
+    if (params.max_tokens) run.max_tokens = params.max_tokens;
+    if (params.temperature !== undefined) run.temperature = params.temperature;
+    if (params.top_p !== undefined) run.top_p = params.top_p;
+    if (params.stop !== undefined) run.stop = params.stop;
     if (blobs.length) run.blobs = blobs.map((b) => b.ref);
 
     const taskID = L.randomID('task_');
     { // limits stage 2/3 (spec §10): the signed task.run frame MUST fit max_frame_bytes
       const iat = L.now();
-      const trial = L.signJWS(this.priv, L.TYP.task, this.kid, { ...run, task_id: taskID, iat, exp: iat + 60, nonce: L.randomID('n_') });
+      const payload = { ...run, task_id: taskID, iat, exp: iat + 60, nonce: L.randomID('n_') };
+      const trial = L.signJWS(this.priv, L.TYP.task, this.kid, payload);
       const size = L.taskRunFrameSize(trial, taskID);
       if (size > L.MAX_FRAME_BYTES) return err(413, 'PAYLOAD_TOO_LARGE', `request too large: the signed task.run frame would be ${size} bytes, over max_frame_bytes ${L.MAX_FRAME_BYTES}; send large content as images/attachments`);
+      // The payload that will be signed MUST satisfy the published schema.
+      try { validateTaskRun(payload); } catch (e) {
+        if (e instanceof ParamError) return json(res, 400, paramErrorBody(e, anthropic));
+        throw e;
+      }
     }
     // Idempotency record, task row and the in-memory hub are created in one
     // synchronous step (no await in between), so from the moment the record

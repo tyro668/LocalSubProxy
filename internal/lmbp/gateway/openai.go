@@ -210,6 +210,18 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 413, lmbp.ErrPayloadTooLarge, "request body too large")
 		return
 	}
+	// Every parameter is validated before anything is stored, queued or
+	// signed (third audit #2; spec/testvectors/params.json).
+	var raw map[string]any
+	if json.Unmarshal(body, &raw) != nil || raw == nil {
+		apiError(w, 400, lmbp.ErrBadRequest, "invalid JSON body")
+		return
+	}
+	params, perr := ValidateChatParams(raw)
+	if perr != nil {
+		writeParamError(w, perr)
+		return
+	}
 	var req chatRequest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	if err := dec.Decode(&req); err != nil || req.Model == "" {
@@ -262,7 +274,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		apiError(w, status, code, map[string]string{lmbp.ErrDeviceOffline: "your device is offline", lmbp.ErrModelNotFound: "model not found on your devices", lmbp.ErrInternal: "storage error"}[code])
 		return
 	}
-	run := lmbp.TaskRun{DeviceID: ds.deviceID, Model: model, MaxTokens: req.MaxTokens, Temperature: req.Temperature}
+	run := lmbp.TaskRun{DeviceID: ds.deviceID, Model: model, MaxTokens: params.MaxTokens, Temperature: params.Temperature, TopP: params.TopP, Stop: params.Stop}
 	var blobs []blobData
 	if req.E2EE != "" {
 		if !ds.has(lmbp.CapE2EE) {
@@ -325,6 +337,11 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		trial.TaskID, trial.Iat, trial.Exp, trial.Nonce = taskID, n.Unix(), n.Add(time.Minute).Unix(), lmbp.RandomID("n_")
 		if size := lmbp.TaskRunFrameSize(lmbp.SignTaskRun(g.cfg.SigningKey, g.kid, trial), taskID); size > lmbp.MaxFrameBytes {
 			apiError(w, 413, lmbp.ErrPayloadTooLarge, fmt.Sprintf("request too large: the signed task.run frame would be %d bytes, over max_frame_bytes %d; send large content as images/attachments", size, lmbp.MaxFrameBytes))
+			return
+		}
+		// The payload that will be signed MUST satisfy the published schema.
+		if e := ValidateTaskRun(trial); e != nil {
+			writeParamError(w, e)
 			return
 		}
 	}

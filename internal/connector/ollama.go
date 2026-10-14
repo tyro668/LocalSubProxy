@@ -75,6 +75,12 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskR
 	if run.Temperature != nil {
 		opts["temperature"] = *run.Temperature
 	}
+	if run.TopP != nil {
+		opts["top_p"] = *run.TopP
+	}
+	if len(run.Stop) > 0 {
+		opts["stop"] = run.Stop
+	}
 	if len(opts) > 0 {
 		body["options"] = opts
 	}

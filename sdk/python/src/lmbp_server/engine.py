@@ -26,6 +26,7 @@ from . import anthropic as A
 from . import protocol as L
 from ._http import Request, WSMsgType, web
 from .store import MemoryStore, Store, StoreNotFound
+from .params import ParamError, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
 
 PROBLEM_BASE = "https://localsubproxy.dev/problems/"
 USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ"
@@ -1211,6 +1212,10 @@ class Gateway:
         if not isinstance(r, dict):
             return err(400, "BAD_REQUEST", "invalid JSON body")
         try:
+            validate_anthropic_params(r)
+        except ParamError as e:
+            return json_resp(400, param_error_body(e, True))
+        try:
             out = A.to_openai(r)
         except ValueError as e:
             return err(400, "BAD_REQUEST", str(e))
@@ -1231,8 +1236,14 @@ class Gateway:
             r = json.loads(body)
         except ValueError:
             r = None
-        if not isinstance(r, dict) or not isinstance(r.get("model"), str) or not r["model"]:
-            return err(400, "BAD_REQUEST", "invalid JSON body or missing model")
+        if not isinstance(r, dict):
+            return err(400, "BAD_REQUEST", "invalid JSON body")
+        # Every parameter is validated before anything is stored, queued or
+        # signed (third audit #2; spec/testvectors/params.json).
+        try:
+            params = validate_chat_params(r)
+        except ParamError as e:
+            return json_resp(400, param_error_body(e, bool(getattr(req, "anthropic", False))))
         idem_key = req.headers.get("Idempotency-Key", "")
         if len(idem_key) > 255:
             return err(400, "BAD_REQUEST", "Idempotency-Key too long")
@@ -1296,20 +1307,27 @@ class Gateway:
                 run["tools"] = tools
             if has_tc:
                 run["tool_choice"] = r["tool_choice"]
-        if L.is_int(r.get("max_tokens")) and r["max_tokens"] > 0:
-            run["max_tokens"] = r["max_tokens"]
-        if isinstance(r.get("temperature"), (int, float)) and not isinstance(r.get("temperature"), bool):
-            run["temperature"] = r["temperature"]
+        if params["max_tokens"]:
+            run["max_tokens"] = params["max_tokens"]
+        for k in ("temperature", "top_p", "stop"):
+            if params[k] is not None:
+                run[k] = params[k]
         if blobs:
             run["blobs"] = [b["ref"] for b in blobs]
 
         task_id = L.random_id("task_")
         # limits stage 2/3 (spec §10): the signed task.run frame MUST fit max_frame_bytes
         iat0 = L.now()
-        trial = L.sign_jws(self.key, L.TYP_TASK, self.kid, {**run, "task_id": task_id, "iat": iat0, "exp": iat0 + 60, "nonce": L.random_id("n_")})
+        payload = {**run, "task_id": task_id, "iat": iat0, "exp": iat0 + 60, "nonce": L.random_id("n_")}
+        trial = L.sign_jws(self.key, L.TYP_TASK, self.kid, payload)
         size = L.task_run_frame_size(trial, task_id)
         if size > L.MAX_FRAME_BYTES:
             return err(413, "PAYLOAD_TOO_LARGE", f"request too large: the signed task.run frame would be {size} bytes, over max_frame_bytes {L.MAX_FRAME_BYTES}; send large content as images/attachments")
+        # The payload that will be signed MUST satisfy the published schema.
+        try:
+            validate_task_run(payload)
+        except ParamError as e:
+            return json_resp(400, param_error_body(e, bool(getattr(req, "anthropic", False))))
         # Idempotency record, task row and the in-memory hub are created in one
         # step with no await in between, so from the moment the record exists a
         # duplicate re-attaches to this live, pending task. Every way out of the

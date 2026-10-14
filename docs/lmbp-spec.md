@@ -198,7 +198,12 @@
 | `tools`、`tool_choice` | OPTIONAL，见 §16.1 |
 | `blobs` | OPTIONAL，`[{id, size, sha256, media_type}]`，见 §16.3 |
 | `e2ee` | OPTIONAL，`{blob}`，见 §17 |
-| `max_tokens`、`temperature` | OPTIONAL |
+| `max_tokens` | OPTIONAL，正整数 |
+| `temperature` | OPTIONAL，0–2 |
+| `top_p` | OPTIONAL，0–1 |
+| `stop` | OPTIONAL，1–4 个非空字符串（每个 ≤ 256 字节） |
+
+网关 MUST 在签名前按 `spec/schemas/task.run.payload.json` 校验将要签名的载荷；不满足时 MUST NOT 签名或下发，并以 400 `BAD_REQUEST` 拒绝请求（§6.5）。
 
 设备 MUST 用配对时得到的网关公钥（或 JWKS 中 `kid` 对应的公钥）验证签名。验证失败时，MUST 回复 `task.error`（`BAD_SIGNATURE`），MUST NOT 调用模型。
 
@@ -255,6 +260,22 @@
   - `stream: true`：返回 `text/event-stream`。第一个事件 SHOULD 是 `delta: {role: "assistant", content: ""}`；每个 `task.delta` 对应一个 `chat.completion.chunk` 事件；结束时发送带 `finish_reason`（以及 `usage`，如有）的块，然后发送 `data: [DONE]`。中途出错时 MUST 发送 `data: {"error":{...}}` 后关闭连接，MUST NOT 再发送 `[DONE]`。网关 SHOULD 每 15 秒发送一次注释行 `: keep-alive`。
   - 响应头 `X-Task-Id` 给出 `task_id`。
   - 调用方断开 HTTP 连接时，网关 MUST 向设备发送 `task.cancel`（`reason: "client_disconnected"`）。
+- 请求参数校验：网关 MUST 在存储、排队或签名之前校验下列参数。非法值 MUST 以 400 拒绝，错误对象为 `{"error":{"message","type":"invalid_request_error","code":"BAD_REQUEST","param":"<顶层参数名>"}}`（`/v1/messages` 见 §6.7）。MUST NOT 静默丢弃或修正非法值。`null` 视同未提供。共享测试向量见 `spec/testvectors/params.json`，conformance 检查项为 Z8。
+
+  | 参数 | 合法值 | 写入 `task.run` |
+  |---|---|---|
+  | `model` | 非空字符串 | `model`（路由后） |
+  | `messages` | 数组，1–200 条；`role ∈ {system,user,assistant,tool,developer}`；`content` 为字符串、片段数组或 `null`；`tool` 消息必须有 `tool_call_id` 与 `content`；`tool_calls` 只能出现在 assistant 消息上 | `messages` |
+  | `temperature` | 数字，0–2 | `temperature` |
+  | `top_p` | 数字，0–1 | `top_p` |
+  | `max_tokens`、`max_completion_tokens` | 正整数（后者为别名，两者都有时取 `max_tokens`） | `max_tokens` |
+  | `stop` | 非空字符串，或 1–4 个非空字符串的数组（每个 ≤ 256 字节） | `stop`（统一为数组） |
+  | `n` | 只支持 1 | — |
+  | `stream` | 布尔值 | — |
+  | `tools` | 数组，≤ 128 个；每个 `{type:"function", function:{name, description?, parameters?}}`，`name` 匹配 `^[A-Za-z0-9_-]{1,64}$`，`parameters` 为对象 | `tools` |
+  | `tool_choice` | `"none"`、`"auto"`、`"required"`，或 `{type:"function",function:{name}}` 且 `name` 必须出现在 `tools` 中；除 `"none"` 外必须同时提供 `tools` | `tool_choice` |
+
+  其余不认识的 OpenAI 字段（例如 `presence_penalty`、`seed`、`logprobs`）按上文忽略，不会转发给设备。
 
 ### 6.6 模型路由
 `model` 为 `<device_id>/<model>` 时，路由到该设备（必须属于调用方）。`model` 不带设备前缀时，网关 MAY 选择调用方任意一台声明了该模型的在线设备。设备离线时返回 503（`DEVICE_OFFLINE`）；没有任何设备声明该模型时返回 404（`MODEL_NOT_FOUND`）；设备已达并发上限时返回 429（`DEVICE_BUSY`），并带 `Retry-After` 头。
@@ -276,7 +297,10 @@
 | 其他块类型、服务端工具（`tools[].type` 不是 `custom`） | 400 |
 | `tools[]: {name, description, input_schema}` | `{type:"function", function:{name, description, parameters: input_schema}}` |
 | `tool_choice` `auto` / `any` / `none` / `{type:"tool",name}` | `"auto"` / `"required"` / `"none"` / `{type:"function",function:{name}}` |
-| `max_tokens`、`temperature`、`stream` | 同名字段 |
+| `max_tokens`（必填，正整数）、`temperature`（0–1，Anthropic 的取值范围）、`top_p`（0–1）、`stream`（布尔） | 同名字段 |
+| `stop_sequences`（1–4 个非空字符串的数组） | `stop` |
+
+- 参数校验：按上表的名称与取值范围在翻译之前校验；`tools[]` 必须有符合 `^[A-Za-z0-9_-]{1,64}$` 的 `name` 和对象类型的 `input_schema`；`tool_choice` 必须是对象，`type ∈ {auto, any, tool, none}`，`tool` 需要出现在 `tools` 中的 `name`，除 `none` 外必须同时提供 `tools`。非法值 MUST 以 400 拒绝，错误对象为 `{"type":"error","error":{"type":"invalid_request_error","message","lmbp_code":"BAD_REQUEST","lmbp_param":"<参数名>"}}`。`top_k` 等未列出的字段被忽略。
 
 - **非流式**响应：`{"id":"msg_<task>","type":"message","role":"assistant","model","content":[...],"stop_reason","stop_sequence":null,"usage":{"input_tokens","output_tokens"}}`。`content` 依次为一个 `text` 块（如有文本）和每个工具调用一个 `tool_use` 块（`input` 为解析后的参数对象，解析失败时为 `{}`）。`stop_reason` 由 `finish_reason` 映射：`stop`→`end_turn`、`length`→`max_tokens`、`tool_calls`→`tool_use`，其余→`end_turn`。
 - **流式**（`stream: true`）响应为带事件名的 SSE：`message_start` → 每个内容块 `content_block_start` / 若干 `content_block_delta`（`text_delta` 或 `input_json_delta`）/ `content_block_stop` → `message_delta`（`delta.stop_reason`、`usage`）→ `message_stop`。文本与工具调用交替出现时，网关 MUST 先关闭当前块再开始新块，`index` 从 0 递增。保活使用 `event: ping`。中途出错时发送 `event: error`，`data` 为下述错误对象，然后关闭连接。

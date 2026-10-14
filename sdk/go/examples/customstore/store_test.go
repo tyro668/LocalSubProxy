@@ -86,6 +86,7 @@ func (s *countingStore) AppendEvent(ctx context.Context, e lmbpserver.Event) err
 	s.writes++
 	return s.in.AppendEvent(ctx, e)
 }
+
 // FinishTask must store the terminal event and the terminal state in one
 // transaction (both or neither); a wrapper simply delegates.
 func (s *countingStore) FinishTask(ctx context.Context, e lmbpserver.Event, state string) error {

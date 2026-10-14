@@ -32,7 +32,7 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
@@ -71,6 +71,8 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
                 continue
             p = e["jws"].split(".")[1]
             run = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
+            if on_run:
+                on_run(run)  # tests inspect the signed task.run payload
             if run.get("e2ee"):
                 pending[run["task_id"]] = (run, [])
                 continue
@@ -84,7 +86,7 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
                 await ws.send(json.dumps({"v": 1, "type": typ, "task_id": run["task_id"], "seq": seq, "data": data}))
             last = run["messages"][-1]
             c = last.get("content")
-            text = c if isinstance(c, str) else "".join(x.get("text", "") for x in (c or []) if x.get("type") == "text")
+            text = c if isinstance(c, str) else "".join(x.get("text", "") for x in (c if isinstance(c, list) else []) if isinstance(x, dict) and x.get("type") == "text")
             if run.get("tools") and last["role"] == "user":
                 await send("task.delta", {"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
                                                          "function": {"name": run["tools"][0]["function"]["name"], "arguments": '{"city":'}}]})

@@ -461,7 +461,9 @@ components:
         model: { type: string }
         max_tokens: { type: integer, minimum: 1 }
         stream: { type: boolean }
-        temperature: { type: number }
+        temperature: { type: number, minimum: 0, maximum: 1 }
+        top_p: { type: number, minimum: 0, maximum: 1 }
+        stop_sequences: { type: array, minItems: 1, maxItems: 4, items: { type: string, minLength: 1 } }
         system:
           oneOf:
             - { type: string }
@@ -637,7 +639,14 @@ components:
         tool_choice: { oneOf: [ { enum: [none, auto, required] }, { type: object } ] }
         stream: { type: boolean, default: false }
         max_tokens: { type: integer, minimum: 1 }
+        max_completion_tokens: { type: integer, minimum: 1, description: Alias of max_tokens. }
         temperature: { type: number, minimum: 0, maximum: 2 }
+        top_p: { type: number, minimum: 0, maximum: 1 }
+        stop:
+          oneOf:
+            - { type: string, minLength: 1 }
+            - { type: array, minItems: 1, maxItems: 4, items: { type: string, minLength: 1 } }
+        n: { type: integer, const: 1, description: Only n=1 is supported. }
         lmbp_e2ee:
           type: string
           description: 'JWE compact serialization (alg ECDH-ES, crv X25519, enc A256GCM, cty lmbp-request+json) of an E2EE request {rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key} sealed to the device key from its verified key statement (§17).'

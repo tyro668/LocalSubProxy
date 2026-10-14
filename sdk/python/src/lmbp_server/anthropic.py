@@ -45,8 +45,11 @@ def to_openai(inp: dict) -> dict:
     if "lmbp_e2ee" in inp:
         raise ValueError("lmbp_e2ee is only supported on /v1/chat/completions")
     out: dict[str, Any] = {"model": model, "max_tokens": mt, "stream": inp.get("stream") is True}
-    if isinstance(inp.get("temperature"), (int, float)) and not isinstance(inp.get("temperature"), bool):
-        out["temperature"] = inp["temperature"]
+    for k in ("temperature", "top_p"):
+        if inp.get(k) is not None:
+            out[k] = inp[k]
+    if inp.get("stop_sequences") is not None:
+        out["stop"] = inp["stop_sequences"]
     msgs: list[dict] = []
     sys_ = inp.get("system")
     if isinstance(sys_, str):

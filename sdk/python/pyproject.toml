@@ -23,7 +23,7 @@ Repository = "https://github.com/tyro668/LocalSubProxy"
 where = ["src"]
 
 [tool.setuptools.package-data]
-lmbp_server = ["py.typed"]
+lmbp_server = ["py.typed", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

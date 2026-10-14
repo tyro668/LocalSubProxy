@@ -44,6 +44,12 @@ func (x *Connector) callOpenAI(ctx context.Context, model string, run lmbp.TaskR
 	if run.Temperature != nil {
 		payload["temperature"] = *run.Temperature
 	}
+	if run.TopP != nil {
+		payload["top_p"] = *run.TopP
+	}
+	if len(run.Stop) > 0 {
+		payload["stop"] = run.Stop
+	}
 	if a.ReasoningEffort != "" && (a.ReasoningEffort != "off" || a.Provider == "deepseek") {
 		effort := a.ReasoningEffort
 		if effort == "off" {

@@ -42,6 +42,12 @@ func (o *OpenAIExecutor) Execute(ctx context.Context, run lmbp.TaskRun, emit fun
 	if run.Temperature != nil {
 		body["temperature"] = *run.Temperature
 	}
+	if run.TopP != nil {
+		body["top_p"] = *run.TopP
+	}
+	if len(run.Stop) > 0 {
+		body["stop"] = run.Stop
+	}
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(o.BaseURL, "/")+"/v1/chat/completions", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
