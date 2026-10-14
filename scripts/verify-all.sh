@@ -5,9 +5,14 @@
 #
 # Every step runs in strict mode (CI=1, LMBP_REQUIRE_EXTERNAL=1): missing
 # toolchains, gateways, official clients or schema validators are failures,
-# never silent skips. Each step's log is scanned for skip markers
-# (go "--- SKIP", node:test "# skipped N>0"/"# todo N>0", pytest "skipped",
-# "SKIP " lines from the spec skeletons).
+# never silent skips. Every test run goes through scripts/strict-test.py,
+# which judges from machine-readable output and fails on any skip: go test
+# -json (any Action=skip, at any subtest depth), the node:test TAP reporter
+# (SKIP/TODO directives at any depth, "# skipped"/"# todo" > 0), pytest junit
+# XML (skipped/xfail), unittest's result object, cargo "ignored" > 0. As a
+# second net, each step's raw (unfiltered) log is scanned for skip markers.
+#
+#   VERIFY_ONLY=regex scripts/verify-all.sh   # run only the matching steps (debugging; not a full verification)
 #
 # Matrix:
 #   1. Go: vet + all packages (reference gateway, Go SDK, conformance runner,
@@ -45,8 +50,10 @@ skipped() { # log -> prints skip evidence, returns 0 if any
   grep -nE -e '--- SKIP' -e '^# (skipped|todo) [1-9]' -e '[0-9]+ skipped' -e '^SKIP ' -e '(^|[^A-Za-z])SKIP(PED)?:' -e '# SKIP' "$1" | grep -v 'test name does not match pattern' | head -5
 }
 
+ST=scripts/strict-test.py
 step() { # name cmd...
   local name=$1; shift
+  if [ -n "${VERIFY_ONLY:-}" ] && ! [[ $name =~ $VERIFY_ONLY ]]; then return; fi
   local log="$logs/$(echo "$name" | tr -c 'A-Za-z0-9' '_').log"
   printf '== %-58s ' "$name"
   local t0=$SECONDS
@@ -64,13 +71,13 @@ step() { # name cmd...
 
 gopkgs() { go list ./... | grep -v '/mock/external$'; }  # external: run against live gateways in step 5
 step "go vet" bash -c 'go vet $(go list ./... ) && (cd examples/go-nethttp && go vet ./...)'
-step "go test (reference gateway, Go SDK, conformance, stores, connector)" bash -o pipefail -c "go test -count=1 -v $(gopkgs | tr '\n' ' ') | grep -E '^(--- |ok|FAIL|PASS|panic)'"
-step "go test mock/external CI-mode guard" go test -count=1 -v ./mock/external -run TestExternalGatewayFailsInCIWithoutEnv
+step "go test -json (reference gateway, Go SDK, conformance, stores, connector)" $ST go -count=1 $(gopkgs)
+step "go test -json mock/external CI-mode guard" $ST go -count=1 ./mock/external -run TestExternalGatewayFailsInCIWithoutEnv
 step "examples/go-nethttp build" bash -c 'cd examples/go-nethttp && go build -o /dev/null .'
-step "Node SDK (sdk/node)" bash -c 'cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npm test'
-step "Node mock (mock/node)" bash -c 'cd mock/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && node --test test/'
-step "Python SDK (sdk/python)" bash -c 'cd sdk/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -e ".[test]"; }; } && .venv/bin/python -m pytest -q -rs -p no:cacheprovider'
-step "Python mock (mock/python)" bash -c 'cd mock/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }; } && .venv/bin/python -m unittest -v test_web'
+step "Node SDK (sdk/node)" bash -c 'cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npm run -s build && ../../scripts/strict-test.py node test/'
+step "Node mock (mock/node)" bash -c 'cd mock/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && ../../scripts/strict-test.py node test/'
+step "Python SDK (sdk/python)" bash -c 'cd sdk/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -e ".[test]"; }; } && ../../scripts/strict-test.py pytest .venv/bin/python -q'
+step "Python mock (mock/python)" bash -c 'cd mock/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }; } && ../../scripts/strict-test.py unittest .venv/bin/python test_web'
 step "spec/validate.sh (schemas, JOSE vectors, skeletons incl. Rust)" spec/validate.sh
 step "mock-interop: conformance + connector e2e + official clients" scripts/mock-interop.sh go node python node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi
 step "chat UI e2e (headless Chrome; go node python)" scripts/chat-ui-e2e.sh
@@ -78,4 +85,5 @@ step "chat UI e2e (headless Chrome; go node python)" scripts/chat-ui-e2e.sh
 echo
 printf '%s\n' "${results[@]}"
 if [ $fail -ne 0 ]; then echo "verify-all: FAILED (a failure or a skip above)"; exit 1; fi
+if [ -n "${VERIFY_ONLY:-}" ]; then echo "verify-all: the ${#results[@]} selected steps passed (VERIFY_ONLY=$VERIFY_ONLY: NOT a full verification)"; exit 0; fi
 echo "verify-all: all ${#results[@]} steps passed, nothing skipped"
