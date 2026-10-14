@@ -59,17 +59,31 @@ class LMBPStream:
             await self._it.aclose()
 
 
+class _aclosing:
+    """contextlib.aclosing (3.10+): close a nested async generator now, not at GC."""
+
+    def __init__(self, g):
+        self.g = g
+
+    async def __aenter__(self):
+        return self.g
+
+    async def __aexit__(self, *exc):
+        await self.g.aclose()
+
+
 def _chat_events(c, method, path, body, hdrs):
     async def gen(st):
-        async for _, data, eid in c._sse(path, body, hdrs, method, st):
-            if data == "[DONE]":
-                return
-            v = json.loads(data)
-            if "error" in v:
-                raise LMBPAPIError(502, v["error"].get("code", "ERROR"), v["error"].get("message", ""), v)
-            if eid:
-                st.last_event_id = eid
-            yield v
+        async with _aclosing(c._sse(path, body, hdrs, method, st)) as evs:
+            async for _, data, eid in evs:
+                if data == "[DONE]":
+                    return
+                v = json.loads(data)
+                if "error" in v:
+                    raise LMBPAPIError(502, v["error"].get("code", "ERROR"), v["error"].get("message", ""), v)
+                if eid:
+                    st.last_event_id = eid
+                yield v
         raise IncompleteStreamError(st.task_id, st.last_event_id)
     return LMBPStream(gen)
 
@@ -118,19 +132,27 @@ class _Messages:
         c = self._c
 
         async def gen(st):
-            async for _, data, eid in c._sse("/v1/messages", {**req, "stream": True}, _hdrs(idempotency_key, last_event_id), "POST", st):
-                v = json.loads(data)
-                if v.get("type") == "error":
-                    err = v.get("error") or {}
-                    raise LMBPAPIError(502, err.get("lmbp_code", "ERROR"), err.get("message", ""), v)
-                if eid:
-                    st.last_event_id = eid
-                if v.get("type") != "ping":
-                    yield v
-                if v.get("type") == "message_stop":
-                    return
+            async with _aclosing(c._sse("/v1/messages", {**req, "stream": True}, _hdrs(idempotency_key, last_event_id), "POST", st)) as evs:
+                async for _, data, eid in evs:
+                    v = json.loads(data)
+                    if v.get("type") == "error":
+                        err = v.get("error") or {}
+                        raise LMBPAPIError(502, err.get("lmbp_code", "ERROR"), err.get("message", ""), v)
+                    if eid:
+                        st.last_event_id = eid
+                    if v.get("type") != "ping":
+                        yield v
+                    if v.get("type") == "message_stop":
+                        return
             raise IncompleteStreamError(st.task_id, st.last_event_id)
         return LMBPStream(gen)
+
+
+class _Failed:
+    __slots__ = ("err",)
+
+    def __init__(self, err: BaseException):
+        self.err = err
 
 
 class InProcessClient:
@@ -178,9 +200,28 @@ class InProcessClient:
             if isinstance(resp, Response) and not req.started:
                 await resp.send_to(req)
         task = asyncio.ensure_future(run())
-        task.add_done_callback(lambda f: (not start.done() and start.set_exception(f.exception() or RuntimeError("no response")))
-                               if not f.cancelled() else None)
-        status, headers = await start
+
+        def finished(f: asyncio.Future):
+            # One terminal path for the producer: a failure reaches the waiter
+            # for headers, or the body consumer as an error item; never a hang.
+            err = None if f.cancelled() else f.exception()
+            if not start.done():
+                start.set_exception(err or RuntimeError("lmbp in-process handler returned no response"))
+            elif err is not None:
+                q.put_nowait(_Failed(err))
+            else:
+                q.put_nowait(None)  # idempotent: a second terminator is never read
+        task.add_done_callback(finished)
+
+        def release():
+            gone.set()
+            if not task.done():
+                task.cancel()
+        try:
+            status, headers = await start
+        except BaseException:
+            release()  # cancelled (or failed) before headers: stop the engine
+            raise
 
         async def chunks():
             try:
@@ -188,10 +229,11 @@ class InProcessClient:
                     c = await q.get()
                     if c is None:
                         return
+                    if isinstance(c, _Failed):
+                        raise c.err
                     yield c
             finally:
-                if not task.done():
-                    task.cancel()
+                release()  # mid-stream cancel, consumer close, or done
         return status, headers, chunks()
 
     async def _json(self, method, path, body, extra):
@@ -209,18 +251,21 @@ class InProcessClient:
         if status >= 400 or not headers.get("content-type", "").startswith("text/event-stream"):
             data = b"".join([c async for c in it])
             raise _error(status, json.loads(data) if data else None)
-        buf = ""
-        async for c in it:
-            buf += c.decode()
-            while "\n\n" in buf:
-                block, buf = buf.split("\n\n", 1)
-                ev, data, eid = "", "", ""
-                for line in block.split("\n"):
-                    if line.startswith("event: "):
-                        ev = line[7:]
-                    elif line.startswith("data: "):
-                        data += line[6:]
-                    elif line.startswith("id: "):
-                        eid = line[4:]
-                if data:
-                    yield ev, data, eid
+        try:
+            buf = ""
+            async for c in it:
+                buf += c.decode()
+                while "\n\n" in buf:
+                    block, buf = buf.split("\n\n", 1)
+                    ev, data, eid = "", "", ""
+                    for line in block.split("\n"):
+                        if line.startswith("event: "):
+                            ev = line[7:]
+                        elif line.startswith("data: "):
+                            data += line[6:]
+                        elif line.startswith("id: "):
+                            eid = line[4:]
+                    if data:
+                        yield ev, data, eid
+        finally:
+            await it.aclose()  # deterministic release (nested generators are not)

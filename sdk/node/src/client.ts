@@ -38,9 +38,11 @@ class FakeRes extends EventEmitter {
     if (this.writableEnded) return this;
     if (chunk) this.write(chunk); else if (!this.headersSent) this.writeHead(this.statusCode);
     this.writableEnded = true; this.out.end();
-    this.emit('finish'); this.emit('close');
+    this.emit('finish'); this.closeOnce();
     return this;
   }
+  private closed = false;
+  closeOnce() { if (!this.closed) { this.closed = true; this.emit('close'); } }
   flushHeaders() {}
 }
 
@@ -59,12 +61,28 @@ export class InProcessClient {
       headers: { host: 'in-process', 'content-type': 'application/json', 'x-end-user': this.endUser, ...lower(headers) },
       [IN_PROCESS]: t,
     });
+    // pre-call cancel: never enter the engine (it would create a task)
+    signal?.throwIfAborted();
     const res = new FakeRes();
-    signal?.addEventListener('abort', () => { res.emit('close'); res.end(); }, { once: true });
-    const done = g.handle(req, res);
-    done.catch((e: unknown) => { if (!res.headersSent) { res.writeHead(500); } res.end(String(e)); });
-    await Promise.race([res.started, done]);
-    await res.started;
+    // One cleanup path for mid-call cancel, consumer close and producer
+    // failure: the engine sees 'close' (it cancels the task), the body ends
+    // with the error, and the abort listener is released.
+    const onAbort = () => fail(signal!.reason ?? new Error('aborted'));
+    const fail = (e: unknown) => {
+      signal?.removeEventListener('abort', onAbort);
+      res.closeOnce();
+      if (!res.out.destroyed) res.out.destroy(e instanceof Error ? e : new Error(String(e)));
+    };
+    // the reader's iterator still rejects with the error; this only keeps an
+    // unread body from raising an uncaught 'error'
+    res.out.on('error', () => {});
+    signal?.addEventListener('abort', onAbort, { once: true });
+    res.out.once('close', () => { signal?.removeEventListener('abort', onAbort); res.closeOnce(); });
+    const done = Promise.resolve().then(() => g.handle(req, res));
+    let failed: unknown;
+    done.then(() => { if (!res.writableEnded) res.end(); }, (e: unknown) => { failed = e; fail(e); });
+    await Promise.race([res.started, done.catch(() => {})]);
+    if (!res.headersSent) throw failed ?? new Error('lmbp in-process handler returned no response');
     return { status: res.statusCode, headers: res.headers, body: res.out };
   }
 

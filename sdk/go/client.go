@@ -24,9 +24,14 @@ func (s *Server) Transport() http.RoundTripper { return inproc{s.handler} }
 type inproc struct{ h http.Handler }
 
 func (t inproc) RoundTrip(req *http.Request) (*http.Response, error) {
+	// pre-call cancel: never start the handler (it would create a task)
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(req.Context())
 	pr, pw := io.Pipe()
 	w := &pipeWriter{hdr: http.Header{}, pw: pw, ready: make(chan struct{})}
-	r := req.Clone(req.Context())
+	r := req.Clone(ctx)
 	if r.Host == "" {
 		r.Host = "in-process"
 	}
@@ -35,19 +40,43 @@ func (t inproc) RoundTrip(req *http.Request) (*http.Response, error) {
 	if r.Body == nil {
 		r.Body = http.NoBody
 	}
+	failed := make(chan error, 1)
 	go func() {
-		defer w.finish()
+		defer cancel()
+		defer func() {
+			// producer failure: the consumer gets an error, never a hang or a
+			// clean EOF that looks like a finished response
+			if v := recover(); v != nil {
+				err := fmt.Errorf("lmbp in-process handler failed: %v", v)
+				failed <- err
+				_ = pw.CloseWithError(err)
+				return
+			}
+			w.finish()
+		}()
 		t.h.ServeHTTP(w, r)
 	}()
 	select {
 	case <-w.ready:
+	case err := <-failed:
+		return nil, err
 	case <-req.Context().Done():
+		cancel()
 		pr.Close()
 		return nil, req.Context().Err()
 	}
-	return &http.Response{StatusCode: w.code, Status: http.StatusText(w.code), Header: w.hdr, Body: pr, Request: req,
+	// Body.Close (Stream.Close) cancels the handler's context, so the
+	// gateway sees the caller leave and cancels the task.
+	return &http.Response{StatusCode: w.code, Status: http.StatusText(w.code), Header: w.hdr, Body: &inprocBody{pr, cancel}, Request: req,
 		Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1, ContentLength: -1}, nil
 }
+
+type inprocBody struct {
+	*io.PipeReader
+	cancel context.CancelFunc
+}
+
+func (b *inprocBody) Close() error { b.cancel(); return b.PipeReader.Close() }
 
 type pipeWriter struct {
 	hdr   http.Header
