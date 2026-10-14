@@ -3,7 +3,7 @@
 // adapter pointed at the fake model's /api/chat) through the page, chat with
 // streaming, multi-turn, image upload, stop, CONSENT_DENIED and DEVICE_OFFLINE.
 //
-//   node chat-ui.mjs [go node python]
+//   node chat-ui.mjs [go node python java rust]
 // env: LMBP_BIN (dir with localsubproxy + lspmock), CHROME (browser path),
 //      SHOTS (screenshot dir), PYTHON (python with aiohttp/cryptography)
 import { spawn } from 'node:child_process';
@@ -21,7 +21,8 @@ const python = process.env.PYTHON || path.join(repo, 'mock/python/.venv/bin/pyth
 const impls = process.argv.slice(2).length ? process.argv.slice(2) : ['go', 'node', 'python'];
 fs.mkdirSync(shots, { recursive: true });
 const key = crypto.randomBytes(24).toString('hex');            // tenant API key, never printed
-const env = { ...process.env, LSP_TENANT_KEY_ACME: key, LOCALSUBPROXY_DATA_KEY: crypto.randomBytes(32).toString('hex') };
+const env = { ...process.env, LSP_TENANT_KEY_ACME: key, LOCALSUBPROXY_DATA_KEY: crypto.randomBytes(32).toString('hex'),
+  LSP_SIGNING_SEED: process.env.LSP_SIGNING_SEED || crypto.randomBytes(32).toString('hex') };   // the Go gateway refuses an ephemeral key
 const procs = [];
 const run = (cmd, args, opts = {}) => {
   const p = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
@@ -45,6 +46,8 @@ function startGateway(impl, port) {
       '-tenant-profiles', profiles, '-issuer', iss, '-chat-ui']);
     case 'node': return run('node', [path.join(repo, 'mock/node/gateway.mjs'), '--listen', listen, '--issuer', iss, '--tenant-profiles', profiles]);
     case 'python': return run(python, [path.join(repo, 'mock/python/gateway.py'), '--listen', listen, '--issuer', iss, '--tenant-profiles', profiles]);
+    case 'java': return run('java', ['-jar', path.join(repo, 'mock/java/build/lmbp-mock.jar'), '--listen', listen, '--issuer', iss, '--tenant-profiles', profiles, '--web-dir', path.join(repo, 'mock/web')]);
+    case 'rust': return run(path.join(repo, 'mock/rust/target/release/lmbp-mock'), ['--listen', listen, '--issuer', iss, '--tenant-profiles', profiles, '--web-dir', path.join(repo, 'mock/web')]);
   }
   throw new Error('unknown impl ' + impl);
 }

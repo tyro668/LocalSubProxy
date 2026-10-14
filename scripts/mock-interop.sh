@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Run lmbp-conformance and the Go-connector end-to-end test against the
-# Node and Python mock gateways (and the Go reference gateway).
+# Node, Python, Java and Rust mock gateways (and the Go reference gateway).
 #
 #   scripts/mock-interop.sh            # node python go
+#   scripts/mock-interop.sh java rust  # the dependency-free JDK / Rust ports
 #   scripts/mock-interop.sh node       # just one
 #   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi   # SDK variants
 set -euo pipefail
@@ -14,8 +15,9 @@ pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$tmp"; }
 trap cleanup EXIT
 
-export LSP_TENANT_KEY_ACME
+export LSP_TENANT_KEY_ACME LSP_SIGNING_SEED
 LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # never printed
+LSP_SIGNING_SEED=${LSP_SIGNING_SEED:-$(openssl rand -hex 32)}   # the Go gateway refuses an ephemeral key
 go build -o "$tmp/lmbp-conformance" ./cmd/lmbp-conformance
 
 start() { # impl port
@@ -34,6 +36,12 @@ start() { # impl port
       go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
       "$tmp/localsubproxy" server -listen "127.0.0.1:$port" -db "$tmp/go.db" -tenants acme:LSP_TENANT_KEY_ACME \
         -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui >"$tmp/$impl.log" 2>&1 & ;;
+    java)
+      mock/java/build.sh >/dev/null
+      java -jar mock/java/build/lmbp-mock.jar --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json >"$tmp/$impl.log" 2>&1 & ;;
+    rust)
+      (cd mock/rust && cargo build -q --release)
+      mock/rust/target/release/lmbp-mock --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json >"$tmp/$impl.log" 2>&1 & ;;
     express)
       (cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build)
       (cd examples/express && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)

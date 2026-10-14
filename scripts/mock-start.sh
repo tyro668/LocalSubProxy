@@ -3,7 +3,8 @@
 # /api/chat and OpenAI /v1) plus one gateway with the chat page, then print
 # the chat URL, the dev login and the exact connector pairing command.
 #
-#   scripts/mock-start.sh [go|node|python] [port]    # default: go 8080
+#   scripts/mock-start.sh [go|node|python|java|rust] [port]    # default: go 8080
+#   (java/rust keep gateway state in memory: no --db, pairings end at a restart)
 #   scripts/mock-stop.sh                              # stop everything
 #
 # State lives in .mock/ (gitignored, override with LMBP_MOCK_DIR): dev keys
@@ -18,7 +19,7 @@ port=${2:-8080}
 model_port=${LMBP_MOCK_MODEL_PORT:-11500}
 models=${LMBP_MOCK_MODELS:-qwen3-8b}
 dir=${LMBP_MOCK_DIR:-$repo/.mock}
-case $impl in go|node|python) ;; *) echo "usage: $0 [go|node|python] [port]" >&2; exit 2 ;; esac
+case $impl in go|node|python|java|rust) ;; *) echo "usage: $0 [go|node|python|java|rust] [port]" >&2; exit 2 ;; esac
 for t in go curl openssl; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
 
 mkdir -p "$dir/bin" "$dir/logs" "$dir/run" "$dir/connector"
@@ -38,7 +39,7 @@ if [ ! -f "$dir/env" ]; then
   umask 022
 fi
 set -a; . "$dir/env"; set +a
-export LMBP_SIGNING_SEED=$LSP_SIGNING_SEED   # node/python read this name
+export LMBP_SIGNING_SEED=$LSP_SIGNING_SEED   # node/python/java/rust read this name
 
 gw="http://127.0.0.1:$port"
 cat >"$dir/tenant-profiles.json" <<JSON
@@ -94,6 +95,16 @@ case $impl in
     [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && (cd mock/python && .venv/bin/pip install -q -r requirements.txt); }
     bg gateway mock/python/.venv/bin/python mock/python/gateway.py --listen "127.0.0.1:$port" --issuer "$gw" \
       --tenant-profiles "$dir/tenant-profiles.json" --db "$dir/gateway-python.db" ;;
+  java)   # JDK 21+, no dependencies; in-memory state (no --db)
+    for t in java javac jar; do command -v "$t" >/dev/null || { echo "missing tool: $t (JDK 21+)" >&2; exit 1; }; done
+    mock/java/build.sh >/dev/null
+    bg gateway java -jar mock/java/build/lmbp-mock.jar --listen "127.0.0.1:$port" --issuer "$gw" \
+      --tenant-profiles "$dir/tenant-profiles.json" --web-dir "$repo/mock/web" ;;
+  rust)   # in-memory state (no --db)
+    command -v cargo >/dev/null || { echo "missing tool: cargo" >&2; exit 1; }
+    (cd mock/rust && cargo build -q --release)
+    bg gateway mock/rust/target/release/lmbp-mock --listen "127.0.0.1:$port" --issuer "$gw" \
+      --tenant-profiles "$dir/tenant-profiles.json" --web-dir "$repo/mock/web" ;;
 esac
 wait_http gateway "$gw/healthz"
 

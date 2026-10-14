@@ -7,6 +7,7 @@ from the runner's machine-readable output, never from filtered text.
   scripts/strict-test.py pytest  PYTHON [pytest args...]  # pytest --junitxml parsed
   scripts/strict-test.py unittest PYTHON MODULE...        # unittest result object inspected
   scripts/strict-test.py cargo   [cargo test args...]     # "test result" lines; ignored > 0 fails
+  scripts/strict-test.py selftest CMD [args...]           # framework-free suites (mock/java): "selftest: N passed, M failed"
 
 The full raw output is echoed so logs stay readable. A Go package without
 test files (go test reports it as a package-level skip with "[no test
@@ -146,9 +147,25 @@ def run_cargo(args):
     ok(f"cargo: {passed} passed, 0 ignored")
 
 
+def run_selftest(cmd):
+    if not cmd:
+        die("selftest: no command")
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    sys.stdout.write(p.stdout)
+    res = re.findall(r"^selftest: (\d+) passed, (\d+) failed$", p.stdout, re.M)
+    if len(res) != 1:
+        die(f"selftest: exit {p.returncode}, expected exactly one summary line, got {len(res)}")
+    passed, failed = int(res[0][0]), int(res[0][1])
+    if failed or p.returncode:
+        die(f"selftest: exit {p.returncode}, {failed} failed")
+    if passed == 0:
+        die("selftest: no test ran")
+    ok(f"selftest: {passed} passed, 0 skipped")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         die(__doc__)
     kind, rest = sys.argv[1], sys.argv[2:]
-    {"go": lambda: run_go(rest), "node": lambda: run_node(rest), "cargo": lambda: run_cargo(rest),
+    {"go": lambda: run_go(rest), "node": lambda: run_node(rest), "cargo": lambda: run_cargo(rest), "selftest": lambda: run_selftest(rest),
      "pytest": lambda: run_pytest(rest[0], rest[1:]), "unittest": lambda: run_unittest(rest[0], rest[1:])}.get(kind, lambda: die("unknown kind " + kind))()
