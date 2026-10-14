@@ -2,21 +2,17 @@ package connector
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"localsubproxy/internal/protocol"
-	"localsubproxy/internal/server"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 // The test binary doubles as a small App Server. It never calls a model.
@@ -135,26 +131,25 @@ func fakeCodex() {
 	}
 }
 
-func fakeCommand() protocol.Command {
-	req := protocol.CreateTask{Target: protocol.Target{DeviceID: "dev_1", AdapterID: "codex-local", ModelID: "fake-model"}, Operation: "agent.run", Input: protocol.Input{Messages: []protocol.Message{{Role: "user", Content: "say hello"}}}}
-	return protocol.Command{TaskID: "task_1", AttemptID: "attempt_1", Request: req}
+func fakeMessages() []lmbp.Message {
+	return []lmbp.Message{{Role: "user", Content: lmbp.Text("say hello")}}
 }
 
 func TestCodexProbeAndStreaming(t *testing.T) {
 	t.Setenv("CODEX_HOME", "normal")
-	x := &Connector{cfg: Config{AdapterID: "codex-local", AdapterType: "codex_app_server", CodexBin: os.Args[0], AllowedModels: []string{"fake-model"}}}
+	x := &Connector{running: map[string]string{}}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	models, err := CodexModels(ctx, os.Args[0])
 	if err != nil || len(models) != 1 || models[0] != "fake-model" {
 		t.Fatalf("model discovery: %v %v", models, err)
 	}
-	h := x.probeCodex(ctx)
+	h := x.probeCodexAdapter(ctx, AdapterConfig{ID: "codex-local", Type: "codex_app_server", CodexBin: os.Args[0], Models: []string{"fake-model"}, Enabled: true})
 	if h.Health != "ready" || h.AuthState != "ready" || len(h.Models) != 1 || h.InferenceLocation != "provider_cloud" {
 		t.Fatalf("probe: %#v", h)
 	}
 	var answer string
-	if err := runCodex(ctx, fakeCommand(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -167,7 +162,7 @@ func TestCodexFinalAnswerFromTurnSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var answer string
-	if err := runCodex(ctx, fakeCommand(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -181,7 +176,7 @@ func TestCodexRejectsUnsupportedExecution(t *testing.T) {
 			t.Setenv("CODEX_HOME", mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			err := runCodex(ctx, fakeCommand(), os.Args[0], func(string) error { return nil })
+			err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
 			var known knownFailure
 			if !errors.As(err, &known) {
 				t.Fatalf("expected known failure, got %v", err)
@@ -207,7 +202,9 @@ func TestCodexCancellationSendsInterrupt(t *testing.T) {
 	t.Setenv("CODEX_HOME", "cancel:"+marker)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runCodex(ctx, fakeCommand(), os.Args[0], func(string) error { return nil }) }()
+	go func() {
+		done <- runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker + ".ready"); err == nil {
@@ -238,7 +235,9 @@ func TestCodexCancellationWithoutCompletionIsUncertain(t *testing.T) {
 	t.Setenv("CODEX_HOME", "cancel-unconfirmed:"+marker)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- runCodex(ctx, fakeCommand(), os.Args[0], func(string) error { return nil }) }()
+	go func() {
+		done <- runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(marker + ".ready"); err == nil {
@@ -261,90 +260,25 @@ func TestCodexCancellationWithoutCompletionIsUncertain(t *testing.T) {
 	}
 }
 
-func TestCodexTaskThroughRemoteService(t *testing.T) {
+func TestCodexTaskThroughExecutor(t *testing.T) {
 	t.Setenv("CODEX_HOME", "normal")
-	const deviceToken = "device-token-0123456789-0123456789-abc"
-	const remoteToken = "remote-token-0123456789-0123456789-abcd"
-	const key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-	dir := t.TempDir()
-	s, err := server.New(server.Config{DataFile: filepath.Join(dir, "server.json"), RemoteToken: remoteToken, DeviceID: "dev_1", DeviceToken: deviceToken})
+	x, err := New(Config{Adapters: []AdapterConfig{{ID: "codex-local", Type: "codex_app_server", CodexBin: os.Args[0], Models: []string{"fake-model"}, Enabled: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cloud := httptest.NewServer(s.Handler())
-	defer cloud.Close()
-	x, err := New(Config{ServerURL: cloud.URL, DeviceID: "dev_1", DeviceToken: deviceToken, AdapterID: "codex-local", AdapterType: "codex_app_server", CodexBin: os.Args[0], AllowedModels: []string{"fake-model"}, JournalFile: filepath.Join(dir, "journal.enc"), JournalKey: key})
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if caps := x.ModelCapabilities()["codex-local/fake-model"]; len(caps) != 1 || caps[0] != lmbp.ModelCapParams {
+		t.Fatalf("codex must be text-only and declare no request parameters: %v", caps)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	runDone := make(chan struct{})
-	go func() { defer close(runDone); _ = x.Run(ctx) }()
-	defer func() { cancel(); <-runDone }()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest("GET", cloud.URL+"/v1/connectors", nil)
-		req.Header.Set("Authorization", "Bearer "+remoteToken)
-		resp, err := cloud.Client().Do(req)
-		if err == nil {
-			var v struct {
-				Devices []struct {
-					Adapter protocol.AdapterHealth `json:"adapter"`
-				} `json:"devices"`
-			}
-			_ = json.NewDecoder(resp.Body).Decode(&v)
-			resp.Body.Close()
-			if len(v.Devices) > 0 && v.Devices[0].Adapter.Health == "ready" {
-				break
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	var out strings.Builder
+	run := lmbp.TaskRun{TaskID: "task_1", Model: "codex-local/fake-model", Messages: fakeMessages()}
+	done, fail := x.Execute(ctx, run, func(d lmbp.TaskDelta) error { out.WriteString(d.Text); return nil })
+	if fail != nil || done.FinishReason != "stop" || out.String() != "hello world" {
+		t.Fatalf("execute: %v %v %q", done, fail, out.String())
 	}
-	create := fakeCommand().Request
-	body, _ := json.Marshal(create)
-	req, _ := http.NewRequest("POST", cloud.URL+"/v1/llm-tasks", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+remoteToken)
-	req.Header.Set("Idempotency-Key", "codex-task-001")
-	resp, err := cloud.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 202 {
-		t.Fatalf("create status %d", resp.StatusCode)
-	}
-	var task protocol.Task
-	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
-		t.Fatal(err)
-	}
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		req, _ := http.NewRequest("GET", cloud.URL+"/v1/llm-tasks/"+task.ID, nil)
-		req.Header.Set("Authorization", "Bearer "+remoteToken)
-		resp, err := cloud.Client().Do(req)
-		if err == nil {
-			_ = json.NewDecoder(resp.Body).Decode(&task)
-			resp.Body.Close()
-		}
-		if task.State == "SUCCEEDED" {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if task.State != "SUCCEEDED" {
-		t.Fatalf("task state %s", task.State)
-	}
-	var answer string
-	for _, event := range task.Events {
-		if event.Kind == "output.delta" {
-			var v struct {
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal(event.Data, &v)
-			answer += v.Text
-		}
-	}
-	if answer != "hello world" {
-		t.Fatalf("answer %q", answer)
+	run.Tools = []lmbp.Tool{{Type: "function", Function: lmbp.FunctionDef{Name: "f"}}}
+	if _, fail := x.Execute(ctx, run, func(lmbp.TaskDelta) error { return nil }); fail == nil || fail.Code != lmbp.ErrUnsupported {
+		t.Fatalf("tools on codex: %v", fail)
 	}
 }

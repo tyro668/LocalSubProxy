@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lmbp/task.done.json",
+  "title": "task.done",
+  "description": "device→gateway",
+  "type": "object",
+  "required": [
+    "finish_reason"
+  ],
+  "properties": {
+    "finish_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "examples": [
+        "stop",
+        "length",
+        "tool_calls",
+        "content_filter"
+      ]
+    },
+    "usage": {
+      "$ref": "defs.json#/$defs/usage"
+    },
+    "e2ee": {
+      "$ref": "defs.json#/$defs/b64url",
+      "description": "Sealed {\"finish_reason\":...} (§17.5); finish_reason and usage stay in cleartext for billing."
+    }
+  }
+}

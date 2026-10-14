@@ -1,0 +1,436 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lmbp/envelope.json",
+  "title": "lmbp WebSocket frame",
+  "description": "Every WebSocket text message is exactly one UTF-8 JSON object (RFC 8259) of this shape. Unknown members MUST be ignored.",
+  "type": "object",
+  "required": [
+    "v",
+    "type"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._]{0,63}$"
+    },
+    "id": {
+      "$ref": "defs.json#/$defs/id"
+    },
+    "task_id": {
+      "$ref": "defs.json#/$defs/id"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "data": {
+      "type": "object"
+    },
+    "jws": {
+      "$ref": "defs.json#/$defs/compactJws"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "hello"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "id",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "hello"
+          },
+          "data": {
+            "$ref": "hello.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "welcome"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "id",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "welcome"
+          },
+          "data": {
+            "$ref": "welcome.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.run"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "jws"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.run"
+          },
+          "data": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.delta"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "seq",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.delta"
+          },
+          "data": {
+            "$ref": "task.delta.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.done"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "seq",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.done"
+          },
+          "data": {
+            "$ref": "task.done.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.error"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "seq",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.error"
+          },
+          "data": {
+            "$ref": "task.error.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.cancel"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.cancel"
+          },
+          "jws": false,
+          "data": {
+            "$ref": "task.cancel.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ping"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "ping"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "pong"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "pong"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "error"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "error"
+          },
+          "data": {
+            "$ref": "error.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "session.token"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "id",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "oneOf": [
+              {
+                "$ref": "session.token.request.json"
+              },
+              {
+                "$ref": "session.token.response.json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "models.update"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "models.update"
+          },
+          "data": {
+            "$ref": "models.update.json"
+          },
+          "jws": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "blob.chunk"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "seq",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "blob.chunk"
+          },
+          "jws": false,
+          "data": {
+            "$ref": "blob.chunk.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.ack"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "v",
+          "type",
+          "task_id",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "task.ack"
+          },
+          "jws": false,
+          "data": {
+            "$ref": "task.ack.json"
+          }
+        }
+      }
+    }
+  ]
+}

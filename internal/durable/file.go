@@ -73,7 +73,7 @@ type Cipher struct{ aead cipher.AEAD }
 func NewCipher(hexKey string) (*Cipher, error) {
 	b, err := hex.DecodeString(hexKey)
 	if err != nil || len(b) != 32 {
-		return nil, fmt.Errorf("journal key must be 32 bytes encoded as 64 hex characters")
+		return nil, fmt.Errorf("data key must be 32 bytes encoded as 64 hex characters")
 	}
 	block, err := aes.NewCipher(b)
 	if err != nil {
@@ -101,7 +101,7 @@ func (c *Cipher) Seal(value any) ([]byte, error) {
 func (c *Cipher) Open(data []byte, value any) error {
 	n := c.aead.NonceSize()
 	if len(data) < n {
-		return errors.New("encrypted journal too short")
+		return errors.New("encrypted file too short")
 	}
 	b, err := c.aead.Open(nil, data[:n], data[n:], nil)
 	if err != nil {

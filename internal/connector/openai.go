@@ -1,7 +1,6 @@
 package connector
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,17 +9,46 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"unicode/utf8"
 
-	"localsubproxy/internal/protocol"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 )
 
-// callOpenAI accepts the Chat Completions SSE subset used by OpenAI-compatible providers.
-// The configured key never enters the remote service protocol, journal, health report or logs.
-func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a AdapterConfig) error {
-	payload := map[string]any{"model": c.Request.Target.ModelID, "messages": c.Request.Input.Messages, "stream": true}
-	if a.MaxOutputTokens > 0 {
-		payload["max_tokens"] = a.MaxOutputTokens
+func providerStatus(code int) error {
+	switch code {
+	case 200:
+		return nil
+	case 401, 403:
+		return knownFailure("AUTH_REQUIRED")
+	case 429:
+		return knownFailure("PROVIDER_RATE_LIMITED")
+	}
+	return knownFailure(fmt.Sprintf("UPSTREAM_ERROR: provider HTTP %d", code))
+}
+
+// callOpenAI forwards the request to an OpenAI-compatible Chat Completions
+// endpoint. lmbp messages, tools, tool_choice and content parts are the
+// OpenAI shapes, so they pass through unchanged. The configured key never
+// enters the protocol, health reports or logs.
+func (x *Connector) callOpenAI(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
+	payload := map[string]any{"model": model, "messages": run.Messages, "stream": true, "stream_options": map[string]bool{"include_usage": true}}
+	if len(run.Tools) > 0 {
+		payload["tools"] = run.Tools
+	}
+	if len(run.ToolChoice) > 0 {
+		payload["tool_choice"] = run.ToolChoice
+	}
+	if mt := maxTokens(run, a); mt > 0 {
+		payload["max_tokens"] = mt
+	}
+	if run.Temperature != nil {
+		payload["temperature"] = *run.Temperature
+	}
+	if run.TopP != nil {
+		payload["top_p"] = *run.TopP
+	}
+	if len(run.Stop) > 0 {
+		payload["stop"] = run.Stop
 	}
 	if a.ReasoningEffort != "" && (a.ReasoningEffort != "off" || a.Provider == "deepseek") {
 		effort := a.ReasoningEffort
@@ -32,7 +60,7 @@ func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a Adapte
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, adapterEndpoint(a, "/chat/completions"), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
@@ -41,101 +69,73 @@ func (x *Connector) callOpenAI(ctx context.Context, c protocol.Command, a Adapte
 	}
 	res, err := x.modelClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
-	switch res.StatusCode {
-	case 200:
-	case 401, 403:
-		return knownFailure("AUTH_REQUIRED")
-	case 429:
-		return knownFailure("PROVIDER_RATE_LIMITED")
-	default:
-		return knownFailure(fmt.Sprintf("UPSTREAM_ERROR: provider HTTP %d", res.StatusCode))
+	if err := providerStatus(res.StatusCode); err != nil {
+		return nil, err
 	}
 	if strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
 		var completion struct {
 			Choices []struct {
 				Message struct {
-					Content string `json:"content"`
+					Content   string          `json:"content"`
+					ToolCalls []lmbp.ToolCall `json:"tool_calls"`
 				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *lmbp.Usage `json:"usage"`
 		}
-		if err := json.NewDecoder(io.LimitReader(res.Body, 10<<20+1)).Decode(&completion); err != nil {
-			return err
+		if err := json.NewDecoder(io.LimitReader(res.Body, maxOutputBytes+1)).Decode(&completion); err != nil {
+			return nil, err
 		}
 		if len(completion.Choices) == 0 {
-			return errors.New("provider returned no choices")
+			return nil, errors.New("provider returned no choices")
 		}
-		total := 0
-		return x.emitProviderText(c, completion.Choices[0].Message.Content, &total)
+		ch := completion.Choices[0]
+		for i := range ch.Message.ToolCalls {
+			idx := i
+			ch.Message.ToolCalls[i].Index = &idx
+		}
+		if err := out.delta(lmbp.TaskDelta{Text: ch.Message.Content, ToolCalls: ch.Message.ToolCalls}); err != nil {
+			return nil, err
+		}
+		if ch.FinishReason == "" {
+			ch.FinishReason = "stop"
+		}
+		return &lmbp.TaskDone{FinishReason: ch.FinishReason, Usage: completion.Usage}, nil
 	}
-	scanner := bufio.NewScanner(res.Body)
-	scanner.Buffer(make([]byte, 64<<10), 1<<20)
-	total := 0
-	done := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
-			done = true
-			break
-		}
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-				FinishReason *string `json:"finish_reason"`
-			} `json:"choices"`
-			Error *struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return errors.New("invalid provider SSE JSON")
-		}
-		if chunk.Error != nil {
-			return knownFailure("UPSTREAM_ERROR: provider stream error")
-		}
-		for _, choice := range chunk.Choices {
-			if err := x.emitProviderText(c, choice.Delta.Content, &total); err != nil {
-				return err
-			}
-		}
+	var emitErr error
+	done, fail := client.RelayOpenAIStream(ctx, res.Body, func(d lmbp.TaskDelta) error {
+		emitErr = out.delta(d)
+		return emitErr
+	})
+	if emitErr != nil {
+		return nil, emitErr
 	}
-	if err := scanner.Err(); err != nil {
-		return err
+	if fail != nil {
+		if fail.Code == lmbp.ErrCancelled {
+			return nil, context.Canceled
+		}
+		return nil, knownFailure("UPSTREAM_ERROR: " + fail.Message)
 	}
-	if !done {
-		return errors.New("provider stream ended without done marker")
-	}
-	return nil
+	return done, nil
 }
 
-func (x *Connector) emitProviderText(c protocol.Command, s string, total *int) error {
-	if !utf8.ValidString(s) {
-		return errors.New("invalid provider UTF-8")
+func maxTokens(run lmbp.TaskRun, a AdapterConfig) int {
+	if run.MaxTokens > 0 && (a.MaxOutputTokens == 0 || run.MaxTokens < a.MaxOutputTokens) {
+		return run.MaxTokens
 	}
-	*total += len(s)
-	if *total > 10<<20 {
-		return knownFailure("OUTPUT_LIMIT_EXCEEDED")
+	return a.MaxOutputTokens
+}
+
+// parseDataURI splits data:<mime>;base64,<data>.
+func parseDataURI(u string) (string, string, bool) {
+	rest, ok := strings.CutPrefix(u, "data:")
+	if !ok {
+		return "", "", false
 	}
-	for len(s) > 0 {
-		n := len(s)
-		if n > 32<<10 {
-			n = 32 << 10
-			for n > 0 && !utf8.RuneStart(s[n]) {
-				n--
-			}
-		}
-		if err := x.emit(c, "output.delta", map[string]string{"channel": "answer", "text": s[:n]}); err != nil {
-			return err
-		}
-		s = s[n:]
-	}
-	return nil
+	meta, data, ok := strings.Cut(rest, ",")
+	mt, b64 := strings.CutSuffix(meta, ";base64")
+	return mt, data, ok && b64
 }

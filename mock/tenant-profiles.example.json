@@ -1,0 +1,12 @@
+{
+  "acme": {
+    "api_key_env": "LSP_TENANT_KEY_ACME",
+    "display_name": "Acme Chat",
+    "homepage_uri": "https://acme.example",
+    "policy_uri": "https://acme.example/privacy",
+    "tos_uri": "https://acme.example/terms",
+    "pairing_uri": "http://127.0.0.1:3000/link",
+    "requested_models": ["qwen3-8b"],
+    "requested_scopes": ["lmbp.chat", "lmbp.tools", "lmbp.vision"]
+  }
+}

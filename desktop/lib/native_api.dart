@@ -54,13 +54,10 @@ class NativeApi {
     }
   }
 
-  Map<String, dynamic> start({String? dataDir, String? journalKey}) {
+  Map<String, dynamic> start({String? dataDir}) {
     final input = <String, dynamic>{};
     if (dataDir != null) {
       input['data_dir'] = dataDir;
-    }
-    if (journalKey != null) {
-      input['journal_key'] = journalKey;
     }
     return (_invoke(_start, input) as Map).cast<String, dynamic>();
   }
@@ -68,71 +65,87 @@ class NativeApi {
   Map<String, dynamic> status() =>
       (_invoke(_call, {'action': 'status'}) as Map).cast<String, dynamic>();
 
-  void prepareConnection(String remoteUrl) =>
-      _invoke(_call, {'action': 'prepare_connection', 'remote_url': remoteUrl});
-
-  Map<String, dynamic> claim(String remoteUrl, String shortCode) =>
+  // lmbp pairing, step 1: resolve the SaaS (https origin or lmbp://pair
+  // link) and verify the gateway's signed metadata. Returns
+  // {state: consent, consent: {saas: {...}, gateway, tenant, ...}}.
+  Map<String, dynamic> pairPrepare(String urlOrLink) =>
       (_invoke(_call, {
-                'action': 'claim',
-                'remote_url': remoteUrl,
-                'short_code': shortCode,
+                'action': 'pair_prepare',
+                if (urlOrLink.startsWith('lmbp://'))
+                  'link': urlOrLink
+                else
+                  'remote_url': urlOrLink,
               })
               as Map)
           .cast<String, dynamic>();
 
-  void disconnect() => _invoke(_call, {'action': 'disconnect'});
+  // Step 2a: the user approved the consent screen. Returns the RFC 8628
+  // user code that the user confirms on the signed-in SaaS page.
+  Map<String, dynamic> pairApprove() =>
+      (_invoke(_call, {'action': 'pair_approve'}) as Map)
+          .cast<String, dynamic>();
 
-  List<Map<String, dynamic>> listAdapters() {
-    final data = (_invoke(_call, {'action': 'list_adapters'}) as Map)
-        .cast<String, dynamic>();
-    return (data['adapters'] as List)
-        .map((item) => (item as Map).cast<String, dynamic>())
+  // Step 2b: the user declined (CONSENT_DENIED); nothing is sent.
+  void pairDeny() => _invoke(_call, {'action': 'pair_deny'});
+
+  // Local audit log and token usage (no prompt content is stored).
+  List<Map<String, dynamic>> usageStats(List<String> groupBy, int days) {
+    final since = DateTime.now()
+        .toUtc()
+        .subtract(Duration(days: days))
+        .toIso8601String();
+    final r = _invoke(_call, {
+      'action': 'usage_stats',
+      'group_by': groupBy,
+      'filter': {'since': since},
+      'local_time': true,
+    }) as Map;
+    return ((r['buckets'] as List?) ?? [])
+        .map((e) => (e as Map).cast<String, dynamic>())
         .toList();
   }
 
-  Map<String, dynamic> createAdapter(Map<String, dynamic> adapter) =>
-      (_invoke(_call, {'action': 'create_adapter', 'adapter': adapter}) as Map)
+  List<Map<String, dynamic>> auditList(int limit) {
+    final r = _invoke(_call, {
+      'action': 'audit_list',
+      'filter': {'limit': limit},
+    }) as Map;
+    return ((r['records'] as List?) ?? [])
+        .map((e) => (e as Map).cast<String, dynamic>())
+        .toList();
+  }
+
+  Map<String, dynamic> pairStatus() =>
+      (_invoke(_call, {'action': 'pair_status'}) as Map)
           .cast<String, dynamic>();
 
-  Map<String, dynamic> updateAdapter(Map<String, dynamic> adapter) =>
-      (_invoke(_call, {'action': 'update_adapter', 'adapter': adapter}) as Map)
-          .cast<String, dynamic>();
+  void pairCancel() => _invoke(_call, {'action': 'pair_cancel'});
 
-  void deleteAdapter(String id) =>
-      _invoke(_call, {'action': 'delete_adapter', 'id': id});
-
-  Map<String, dynamic> testAdapter(Map<String, dynamic> adapter) =>
-      (_invoke(_call, {'action': 'test_adapter', 'adapter': adapter}) as Map)
-          .cast<String, dynamic>();
-
-  List<String> codexModels(String path) =>
-      (_invoke(_call, {'action': 'codex_models', 'path': path}) as List)
-          .cast<String>();
-
-  String startCodexLogin(String path) =>
-      (_invoke(_call, {'action': 'codex_login_start', 'path': path})
-              as Map)['auth_url']
-          as String;
-
-  Map<String, dynamic> checkCodexLogin() =>
-      (_invoke(_call, {'action': 'codex_login_check'}) as Map)
-          .cast<String, dynamic>();
-
-  void cancelCodexLogin() => _invoke(_call, {'action': 'codex_login_cancel'});
-
-  void logoutCodex(String path) =>
-      _invoke(_call, {'action': 'codex_logout', 'path': path});
-
-  void stop() => _invoke(_call, {'action': 'stop'});
 }
 
 // These closures are created outside widget State. Isolate.run otherwise can
 // retain a State (including its Timer), which cannot cross isolate boundaries.
-Future<void> prepareConnectionAsync(String url) =>
-    Isolate.run(() => NativeApi.instance.prepareConnection(url));
+Future<Map<String, dynamic>> pairPrepareAsync(String urlOrLink) =>
+    Isolate.run(() => NativeApi.instance.pairPrepare(urlOrLink));
 
-Future<Map<String, dynamic>> claimAsync(String url, String code) =>
-    Isolate.run(() => NativeApi.instance.claim(url, code));
+Future<Map<String, dynamic>> pairApproveAsync() =>
+    Isolate.run(() => NativeApi.instance.pairApprove());
+
+Future<void> pairDenyAsync() => Isolate.run(() => NativeApi.instance.pairDeny());
+
+Future<List<Map<String, dynamic>>> usageStatsAsync(
+  List<String> groupBy,
+  int days,
+) => Isolate.run(() => NativeApi.instance.usageStats(groupBy, days));
+
+Future<List<Map<String, dynamic>>> auditListAsync(int limit) =>
+    Isolate.run(() => NativeApi.instance.auditList(limit));
+
+Future<Map<String, dynamic>> pairStatusAsync() =>
+    Isolate.run(() => NativeApi.instance.pairStatus());
+
+Future<void> pairCancelAsync() =>
+    Isolate.run(() => NativeApi.instance.pairCancel());
 
 Future<void> disconnectAsync() =>
     Isolate.run(() => NativeApi.instance.disconnect());

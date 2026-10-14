@@ -1,0 +1,699 @@
+openapi: 3.1.0
+info:
+  title: LMBP (Local Model Bridge Protocol) — HTTP surface
+  version: 2.0.0
+  summary: Pairing (RFC 8628), token (RFC 6749/7523), tenant admin and OpenAI-compatible endpoints of an lmbp gateway.
+  description: |
+    Normative text: docs/lmbp-spec.md. The device WebSocket channel (`GET /lmbp/v1/connect`,
+    subprotocol `lmbp`) is described in spec/asyncapi.yaml.
+
+    * OAuth endpoints (`/lmbp/v1/device/authorize`, `/lmbp/v1/token`) take
+      `application/x-www-form-urlencoded` bodies (normative). Gateways MAY also accept JSON.
+      Errors use the RFC 6749 §5.2 shape `{"error": "..."}`.
+    * Tenant admin endpoints (`/lmbp/v1/tenant/*`) return RFC 9457 `application/problem+json` on error.
+    * OpenAI-compatible endpoints (`/v1/*`) return the OpenAI error object so existing SDKs work.
+  license:
+    name: See repository
+servers:
+  - url: https://gateway.example.com
+tags:
+  - name: discovery
+  - name: device-oauth
+  - name: tenant-admin
+  - name: openai
+paths:
+  /.well-known/lsp-connector:
+    get:
+      tags: [discovery]
+      summary: Discovery document (served by the SaaS / remote service, not the gateway)
+      operationId: getDiscovery
+      security: []
+      responses:
+        '200':
+          description: Public, secret-free discovery metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Discovery' }
+  /.well-known/jwks.json:
+    get:
+      tags: [discovery]
+      summary: Gateway signing keys (RFC 7517 JWK Set)
+      operationId: getJwks
+      security: []
+      responses:
+        '200':
+          description: JWK Set with one or more OKP/Ed25519 keys. During key rotation both keys are listed.
+          content:
+            application/jwk-set+json:
+              schema: { $ref: '#/components/schemas/JWKSet' }
+  /.well-known/lmbp-gateway:
+    get:
+      tags: [discovery]
+      summary: Gateway metadata (§18.2); with ?tenant= adds the signed SaaS identity for the pairing consent screen (§19.1)
+      operationId: getGatewayMetadata
+      security: []
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' }
+      responses:
+        '200':
+          description: Metadata. issuer is the gateway https origin; endpoints are on that origin. With tenant, signed_metadata is a JWS (typ lmbp-metadata+jwt) by a JWKS key whose payload supersedes the unsigned fields.
+          headers:
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: 'schemas/gateway-metadata.json' }
+        '404': { $ref: '#/components/responses/Problem' }
+  /healthz:
+    get:
+      tags: [discovery]
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { const: ok } } }
+  /lmbp/v1/device/authorize:
+    post:
+      tags: [device-oauth]
+      summary: RFC 8628 §3.1 device authorization request
+      operationId: deviceAuthorize
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/DeviceAuthorizationRequest' }
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceAuthorizationRequest' }
+      responses:
+        '200':
+          description: RFC 8628 §3.2 response. `user_code` format is `XXXX-XXXX` over the alphabet `BCDFGHJKLMNPQRSTVWXZ`.
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceAuthorizationResponse' }
+        '400': { $ref: '#/components/responses/OAuthError' }
+  /lmbp/v1/token:
+    post:
+      tags: [device-oauth]
+      summary: Token endpoint (device_code grant RFC 8628 §3.4, jwt-bearer grant RFC 7523 §2.1)
+      operationId: token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '200':
+          description: "Access token (JWT, typ at+jwt, RFC 9068 profile, key-bound via cnf.jkt)."
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/OAuthError' }
+  /lmbp/v1/connect:
+    get:
+      tags: [device-oauth]
+      summary: WebSocket upgrade for the device channel (see asyncapi.yaml)
+      operationId: connect
+      security:
+        - accessToken: []
+      parameters:
+        - in: header
+          name: Sec-WebSocket-Protocol
+          required: true
+          schema: { type: string, examples: [lmbp] }
+      responses:
+        '101': { description: Switching Protocols; the server selects subprotocol `lmbp`. }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+  /lmbp/v1/tenant/device-approvals:
+    post:
+      tags: [tenant-admin]
+      summary: Approve or deny a pending user code on behalf of an authenticated end user (RFC 8628 §3.3 back-channel)
+      operationId: approveDevice
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code: { type: string, description: 'Case-insensitive; separators and whitespace are ignored.' }
+                jkt: { type: string, description: 'RFC 7638 thumbprint of the device identity key as shown on the device / carried in verification_uri_complete. When present the gateway MUST reject a mismatch with 409; the tenant SHOULD pin it as the E2EE trust anchor (§17.2).' }
+                deny: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Decision recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { enum: [approved, denied] }
+                  device_id: { type: string }
+                  device_name: { type: string }
+                  jkt: { type: string }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403':
+          description: The code was denied earlier (code CONSENT_DENIED, §19.3); a denied pairing cannot be re-approved.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /lmbp/v1/tenant/devices:
+    get:
+      tags: [tenant-admin]
+      summary: List the end user's devices
+      operationId: listDevices
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      responses:
+        '200':
+          description: Devices owned by X-End-User within the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: { $ref: '#/components/schemas/Device' }
+        '401': { $ref: '#/components/responses/Problem' }
+  /lmbp/v1/tenant/devices/{device_id}/revoke:
+    post:
+      tags: [tenant-admin]
+      summary: Revoke a device; live sessions are closed immediately
+      operationId: revokeDevice
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+        - in: path
+          name: device_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_id: { type: string }
+                  status: { const: revoked }
+        '404': { $ref: '#/components/responses/Problem' }
+  /v1/models:
+    get:
+      tags: [openai]
+      summary: OpenAI-compatible model list (only the caller's online devices)
+      operationId: listModels
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+      responses:
+        '200':
+          description: Model ids are `<device_id>/<model>`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, data]
+                properties:
+                  object: { const: list }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, object]
+                      properties:
+                        id: { type: string, examples: [dev_0192f5e0/lm/qwen3-8b] }
+                        object: { const: model }
+                        owned_by: { type: string }
+                        capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/modelCapability' } }
+        '401': { $ref: '#/components/responses/OpenAIError' }
+  /v1/chat/completions:
+    post:
+      tags: [openai]
+      summary: OpenAI-compatible chat completion, optionally streamed as Server-Sent Events
+      operationId: createChatCompletion
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/LastEventID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+      responses:
+        '200':
+          description: |
+            `stream=false`: one `chat.completion` object.
+            `stream=true`: `text/event-stream` (WHATWG HTML §9.2). Each event is
+            `id: <seq>` + `data: <chat.completion.chunk JSON>`; the stream ends with `data: [DONE]`.
+            The `id` lets a client re-attach after a disconnect (same Idempotency-Key + Last-Event-ID,
+            or GET /lmbp/v1/tenant/tasks/{task_id}/events) and receive exactly the events after that id (§14.4).
+            For lmbp_e2ee requests each chunk carries `lmbp_e2ee: {seq, type, data}` (sealed) instead of
+            delta content; `finish_reason` and `usage` remain cleartext (§17.5).
+            On a mid-stream failure the server sends `data: {"error":{...}}` and closes without `[DONE]`.
+            Comment lines (`: keep-alive`) may appear at any time.
+          headers:
+            X-Task-Id: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatCompletion' }
+            text/event-stream:
+              schema: { type: string }
+              x-sse-data-schema: { $ref: '#/components/schemas/ChatCompletionChunk' }
+        '400': { $ref: '#/components/responses/OpenAIError' }
+        '401': { $ref: '#/components/responses/OpenAIError' }
+        '404': { $ref: '#/components/responses/OpenAIError' }
+        '413': { $ref: '#/components/responses/OpenAIError' }
+        '422': { $ref: '#/components/responses/OpenAIError' }
+        '429': { $ref: '#/components/responses/OpenAIError' }
+        '502': { $ref: '#/components/responses/OpenAIError' }
+        '503': { $ref: '#/components/responses/OpenAIError' }
+        '504': { $ref: '#/components/responses/OpenAIError' }
+  /v1/messages:
+    post:
+      tags: [anthropic]
+      summary: Anthropic Messages-compatible endpoint, optionally streamed as named SSE events (§6.7)
+      operationId: createMessage
+      security:
+        - tenantKey: []
+        - anthropicApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/LastEventID'
+        - in: header
+          name: anthropic-version
+          required: false
+          schema: { type: string, examples: ['2023-06-01'] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MessagesRequest' }
+      responses:
+        '200':
+          description: |
+            `stream=false`: one Anthropic `message` object.
+            `stream=true`: `text/event-stream` with named events message_start, content_block_start,
+            content_block_delta (text_delta | input_json_delta), content_block_stop, message_delta,
+            message_stop, ping and error. Only the last event produced by one task event carries
+            `id: <seq>`; Idempotency-Key + Last-Event-ID resumes after that group.
+          headers:
+            X-Task-Id: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+            text/event-stream:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/AnthropicError' }
+        '401': { $ref: '#/components/responses/AnthropicError' }
+        '404': { $ref: '#/components/responses/AnthropicError' }
+        '413': { $ref: '#/components/responses/AnthropicError' }
+        '422': { $ref: '#/components/responses/AnthropicError' }
+        '429': { $ref: '#/components/responses/AnthropicError' }
+        '502': { $ref: '#/components/responses/AnthropicError' }
+        '503': { $ref: '#/components/responses/AnthropicError' }
+        '504': { $ref: '#/components/responses/AnthropicError' }
+  /lmbp/v1/tenant/tasks/{task_id}/events:
+    get:
+      tags: [openai]
+      summary: Re-attach to a task's SSE stream (resume after a client disconnect)
+      operationId: taskEvents
+      security:
+        - tenantKey: []
+      parameters:
+        - $ref: '#/components/parameters/EndUser'
+        - $ref: '#/components/parameters/LastEventID'
+        - in: path
+          name: task_id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Events with id > Last-Event-ID (or all events), then `[DONE]` or the error event. Finished tasks are replayed from storage.
+          content:
+            text/event-stream:
+              schema: { type: string }
+              x-sse-data-schema: { $ref: '#/components/schemas/ChatCompletionChunk' }
+        '401': { $ref: '#/components/responses/OpenAIError' }
+        '404': { $ref: '#/components/responses/OpenAIError' }
+components:
+  securitySchemes:
+    tenantKey:
+      type: http
+      scheme: bearer
+      description: Tenant API key (server-to-server only; never shipped to browsers or devices). Combined with the X-End-User header.
+    anthropicApiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: The tenant key sent the way Anthropic clients send it; equivalent to tenantKey.
+    accessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Device access token (typ at+jwt). Possession is additionally proven by the hello proof JWT.
+  parameters:
+    EndUser:
+      in: header
+      name: X-End-User
+      required: true
+      description: Stable, opaque id of the end user as authenticated by the tenant (1–128 chars). The gateway trusts it because the tenant key is server-side only.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      description: 'Client-chosen key (1–255 chars, draft-ietf-httpapi-idempotency-key-header). A retry with the same key and body re-attaches to the existing task instead of running it again; the same key with a different body fails with 422 IDEMPOTENCY_KEY_REUSED. With a key, a client disconnect does not cancel the task for 30 s.'
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    LastEventID:
+      in: header
+      name: Last-Event-ID
+      required: false
+      description: SSE id of the last event the client processed (WHATWG HTML §9.2.4); only later events are sent.
+      schema: { type: string, pattern: '^[0-9]+$' }
+  responses:
+    OAuthError:
+      description: RFC 6749 §5.2 / RFC 8628 §3.5 error.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                enum: [invalid_request, invalid_grant, unsupported_grant_type, authorization_pending, slow_down, access_denied, expired_token, server_error]
+              error_description: { type: string }
+    Problem:
+      description: RFC 9457 problem details.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    OpenAIError:
+      description: OpenAI-style error object.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [message, code]
+                properties:
+                  message: { type: string }
+                  type: { type: string, examples: [lmbp_error] }
+                  code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
+    AnthropicError:
+      description: Anthropic-style error object (§6.7).
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [type, error]
+            properties:
+              type: { const: error }
+              error:
+                type: object
+                required: [type, message]
+                properties:
+                  type: { type: string, enum: [invalid_request_error, authentication_error, permission_error, not_found_error, request_too_large, rate_limit_error, api_error, overloaded_error] }
+                  message: { type: string }
+                  lmbp_code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
+  schemas:
+    MessagesRequest:
+      type: object
+      required: [model, max_tokens, messages]
+      properties:
+        model: { type: string }
+        max_tokens: { type: integer, minimum: 1 }
+        stream: { type: boolean }
+        temperature: { type: number, minimum: 0, maximum: 1 }
+        top_p: { type: number, minimum: 0, maximum: 1 }
+        stop_sequences: { type: array, minItems: 1, maxItems: 4, items: { type: string, minLength: 1 } }
+        system:
+          oneOf:
+            - { type: string }
+            - { type: array, items: { type: object, required: [type, text], properties: { type: { const: text }, text: { type: string } } } }
+        messages:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: { enum: [user, assistant] }
+              content:
+                oneOf:
+                  - { type: string }
+                  - type: array
+                    items:
+                      type: object
+                      required: [type]
+                      properties:
+                        type: { enum: [text, image, tool_use, tool_result, thinking, redacted_thinking] }
+        tools:
+          type: array
+          items:
+            type: object
+            required: [name]
+            properties:
+              name: { type: string }
+              description: { type: string }
+              input_schema: { type: object }
+        tool_choice:
+          type: object
+          required: [type]
+          properties:
+            type: { enum: [auto, any, none, tool] }
+            name: { type: string }
+    Message:
+      type: object
+      required: [id, type, role, model, content, stop_reason, usage]
+      properties:
+        id: { type: string, pattern: '^msg_' }
+        type: { const: message }
+        role: { const: assistant }
+        model: { type: string }
+        content:
+          type: array
+          items:
+            oneOf:
+              - { type: object, required: [type, text], properties: { type: { const: text }, text: { type: string } } }
+              - { type: object, required: [type, id, name, input], properties: { type: { const: tool_use }, id: { type: string }, name: { type: string }, input: { type: object } } }
+        stop_reason: { enum: [end_turn, max_tokens, tool_use] }
+        stop_sequence: { type: 'null' }
+        usage:
+          type: object
+          properties:
+            input_tokens: { type: integer }
+            output_tokens: { type: integer }
+    Discovery:
+      type: object
+      required: [gateway_url, tenant, protocol]
+      properties:
+        gateway_url: { type: string, format: uri }
+        tenant: { type: string }
+        link_url: { type: string, format: uri, description: Page where a signed-in user enters the user_code (verification_uri). }
+        protocol: { const: lmbp }
+    JWK:
+      type: object
+      required: [kty, crv, x]
+      properties:
+        kty: { const: OKP }
+        crv: { const: Ed25519 }
+        x: { type: string, description: base64url raw 32-byte public key }
+        kid: { type: string, description: RFC 7638 thumbprint }
+        alg: { const: EdDSA }
+        use: { const: sig }
+    JWKSet:
+      type: object
+      required: [keys]
+      properties:
+        keys: { type: array, items: { $ref: '#/components/schemas/JWK' } }
+    DeviceAuthorizationRequest:
+      type: object
+      required: [tenant, public_key]
+      properties:
+        tenant: { type: string }
+        public_key: { type: string, description: base64url (no padding) of the 32-byte Ed25519 public key }
+        device_name: { type: string, maxLength: 100 }
+    DeviceAuthorizationResponse:
+      type: object
+      required: [device_code, user_code, expires_in, interval]
+      properties:
+        device_code: { type: string }
+        user_code: { type: string, pattern: '^[B-DF-HJ-NP-TV-XZ]{4}-[B-DF-HJ-NP-TV-XZ]{4}$' }
+        verification_uri: { type: string, format: uri }
+        verification_uri_complete: { type: string, format: uri }
+        expires_in: { type: integer }
+        interval: { type: integer, minimum: 1 }
+    TokenRequest:
+      oneOf:
+        - type: object
+          title: device_code grant
+          required: [grant_type, device_code, proof]
+          properties:
+            grant_type: { const: 'urn:ietf:params:oauth:grant-type:device_code' }
+            device_code: { type: string }
+            proof: { type: string, description: 'Proof JWT, typ lmbp-proof+jwt, aud lmbp:token, iss "", ath = base64url(SHA-256(device_code)).' }
+        - type: object
+          title: jwt-bearer grant (refresh with the device key)
+          required: [grant_type, assertion]
+          properties:
+            grant_type: { const: 'urn:ietf:params:oauth:grant-type:jwt-bearer' }
+            assertion: { type: string, description: 'JWT typ JWT signed by the device key; iss=sub=device_id, aud <issuer>/lmbp/v1/token (§18.3), exp-iat <= 300, unique jti.' }
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, device_id, gateway_key]
+      properties:
+        access_token: { type: string }
+        token_type: { const: Bearer }
+        expires_in: { type: integer }
+        device_id: { type: string }
+        gateway_key: { $ref: '#/components/schemas/JWK' }
+        issuer: { type: string, description: 'Gateway issuer origin (§18.1); devices MUST check it equals the metadata issuer. The token has iss=<issuer>, aud=<issuer>/tenants/<tenant>.' }
+    Device:
+      type: object
+      required: [device_id, name, status, online, models]
+      properties:
+        device_id: { type: string }
+        name: { type: string }
+        status: { enum: [active, revoked] }
+        created_at: { type: string, format: date-time, description: RFC 3339 UTC }
+        online: { type: boolean }
+        models: { type: array, items: { type: string } }
+        public_key: { $ref: '#/components/schemas/JWK' }
+        jkt: { type: string, description: RFC 7638 thumbprint of the device identity key }
+        e2ee_key: { type: string, description: 'Latest E2EE key statement (JWS, typ lmbp-e2ee-key+jwt). Tenants MUST verify it against the jkt they pinned at pairing, never against this response alone.' }
+        model_capabilities: { $ref: 'schemas/defs.json#/$defs/modelCapabilities' }
+        capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/capability' } }
+        max_concurrency: { type: integer }
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri, examples: ['https://localsubproxy.dev/problems/device-offline'] }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { $ref: 'schemas/defs.json#/$defs/errorCode' }
+    ChatRequest:
+      type: object
+      required: [model]
+      additionalProperties: true
+      description: Either messages (cleartext) or lmbp_e2ee (sealed) MUST be present, not both.
+      oneOf:
+        - required: [messages]
+          not: { required: [lmbp_e2ee] }
+        - required: [lmbp_e2ee]
+          properties:
+            messages: false
+            tools: false
+      properties:
+        model: { type: string, description: '`<device_id>/<model>` or a bare model name served by exactly one of the caller''s devices' }
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: 'schemas/defs.json#/$defs/message' }
+        tools:
+          type: array
+          maxItems: 128
+          items: { $ref: 'schemas/defs.json#/$defs/tool' }
+          description: Requires the model capability `tools` (else 400 CAPABILITY_UNSUPPORTED).
+        tool_choice: { oneOf: [ { enum: [none, auto, required] }, { type: object } ] }
+        stream: { type: boolean, default: false }
+        max_tokens: { type: integer, minimum: 1 }
+        max_completion_tokens: { type: integer, minimum: 1, description: Alias of max_tokens. }
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        top_p: { type: number, minimum: 0, maximum: 1 }
+        stop:
+          oneOf:
+            - { type: string, minLength: 1 }
+            - { type: array, minItems: 1, maxItems: 4, items: { type: string, minLength: 1 } }
+        n: { type: integer, const: 1, description: Only n=1 is supported. }
+        lmbp_e2ee:
+          type: string
+          description: 'JWE compact serialization (alg ECDH-ES, crv X25519, enc A256GCM, cty lmbp-request+json) of an E2EE request {rid, iat, model, messages, tools?, tool_choice?, max_tokens?, temperature?, response_key} sealed to the device key from its verified key statement (§17).'
+    ChatCompletion:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object: { const: chat.completion }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              message: { $ref: 'schemas/defs.json#/$defs/message' }
+              finish_reason: { type: string }
+        usage: { $ref: 'schemas/defs.json#/$defs/usage' }
+    ChatCompletionChunk:
+      type: object
+      required: [id, object, created, model, choices]
+      properties:
+        id: { type: string }
+        object: { const: chat.completion.chunk }
+        created: { type: integer }
+        model: { type: string }
+        choices:
+          type: array
+          items:
+            type: object
+            properties:
+              index: { type: integer }
+              delta:
+                type: object
+                properties:
+                  role: { type: string }
+                  content: { type: string }
+                  tool_calls: { type: array, items: { $ref: 'schemas/defs.json#/$defs/toolCall' } }
+              finish_reason: { type: [string, 'null'] }
+        usage: { $ref: 'schemas/defs.json#/$defs/usage' }
+        lmbp_e2ee:
+          type: object
+          required: [seq, type, data]
+          description: Sealed result frame; open with the request's response_key (nonce 0^32||BE64(seq), AAD "lmbp-e2ee/v1|rid|type|seq").
+          properties:
+            seq: { type: integer, minimum: 1 }
+            type: { enum: [task.delta, task.done] }
+            data: { type: string, description: base64url ciphertext||tag }

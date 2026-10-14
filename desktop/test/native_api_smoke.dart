@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:localsubproxy_ui/native_api.dart';
@@ -34,26 +33,6 @@ Future<void> main() async {
     }
     api.stop();
     final identityFile = File('${dir.path}/identity.json');
-    final key =
-        (jsonDecode(await identityFile.readAsString()) as Map)['journal_key']
-            as String;
-    await identityFile.delete();
-    try {
-      api.start(dataDir: dir.path);
-      throw StateError('legacy data accepted without its key');
-    } catch (e) {
-      if (!e.toString().contains(
-        'legacy encrypted data requires journal key',
-      )) {
-        rethrow;
-      }
-    }
-    final migrated = api.start(dataDir: dir.path, journalKey: key);
-    if (migrated['paired'] != false ||
-        api.listAdapters().single['name'] != 'Renamed') {
-      throw StateError('legacy migration failed');
-    }
-    api.stop();
     final restarted = api.start(dataDir: dir.path);
     if (restarted['paired'] != false ||
         api.listAdapters().single['name'] != 'Renamed') {

@@ -1,0 +1,408 @@
+asyncapi: 3.0.0
+info:
+  title: LMBP (Local Model Bridge Protocol) — device WebSocket channel
+  version: 2.0.0
+  description: |
+    Normative text: docs/lmbp-spec.md. Written from the **device (connector)** point of view:
+    `send` = device→gateway, `receive` = gateway→device. A gateway implements the mirror image.
+
+    Every WebSocket *text* message is one JSON object (RFC 8259, UTF-8) matching
+    `schemas/envelope.json`. Binary messages MUST NOT be sent; a receiver MUST close with 1003.
+
+    Data frames (blob.chunk, task.run, task.delta, task.done, task.error) carry a per-task,
+    per-direction `seq` starting at 1 and are acknowledged with task.ack (capabilities
+    `resume` and `flow`, docs/lmbp-spec.md §14–§15). Control frames carry no seq.
+servers:
+  production:
+    host: gateway.example.com
+    pathname: /lmbp/v1/connect
+    protocol: wss
+    description: TLS is REQUIRED except on loopback in development. Use the connect_endpoint from /.well-known/lmbp-gateway (§18.2).
+    security:
+      - $ref: '#/components/securitySchemes/accessToken'
+channels:
+  device:
+    address: /lmbp/v1/connect
+    title: Device session
+    bindings:
+      ws:
+        method: GET
+        headers:
+          type: object
+          required: [Authorization, Sec-WebSocket-Protocol]
+          properties:
+            Authorization:
+              type: string
+              pattern: '^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$'
+              description: 'Access token (typ at+jwt) with iss = gateway issuer origin and aud = <issuer>/tenants/<tenant> (docs/lmbp-spec.md §18.3). The gateway rejects other iss/aud with 401; the device rejects tokens that do not match its stored issuer/audience before connecting (§18.4).'
+            Sec-WebSocket-Protocol:
+              type: string
+              description: MUST offer lmbp; the server selects exactly lmbp.
+        bindingVersion: 0.1.0
+    messages:
+      hello:
+        $ref: '#/components/messages/hello'
+      welcome:
+        $ref: '#/components/messages/welcome'
+      taskRun:
+        $ref: '#/components/messages/taskRun'
+      taskCancel:
+        $ref: '#/components/messages/taskCancel'
+      taskDelta:
+        $ref: '#/components/messages/taskDelta'
+      taskDone:
+        $ref: '#/components/messages/taskDone'
+      taskError:
+        $ref: '#/components/messages/taskError'
+      sessionTokenRequest:
+        $ref: '#/components/messages/sessionTokenRequest'
+      sessionTokenResponse:
+        $ref: '#/components/messages/sessionTokenResponse'
+      modelsUpdate:
+        $ref: '#/components/messages/modelsUpdate'
+      pingFromGateway:
+        $ref: '#/components/messages/pingFromGateway'
+      pongToGateway:
+        $ref: '#/components/messages/pongToGateway'
+      pingFromDevice:
+        $ref: '#/components/messages/pingFromDevice'
+      pongFromGateway:
+        $ref: '#/components/messages/pongFromGateway'
+      errorFromGateway:
+        $ref: '#/components/messages/errorFromGateway'
+      blobChunk:
+        $ref: '#/components/messages/blobChunk'
+      taskAckFromGateway:
+        $ref: '#/components/messages/taskAckFromGateway'
+      taskAckToGateway:
+        $ref: '#/components/messages/taskAckToGateway'
+operations:
+  sendHello:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/hello'
+  receiveWelcome:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/welcome'
+  receiveTaskRun:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskRun'
+  receiveTaskCancel:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskCancel'
+  sendTaskDelta:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskDelta'
+  sendTaskDone:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskDone'
+  sendTaskError:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskError'
+  sendSessionTokenRequest:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/sessionTokenRequest'
+  receiveSessionTokenResponse:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/sessionTokenResponse'
+  sendModelsUpdate:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/modelsUpdate'
+  receivePingFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pingFromGateway'
+  sendPongToGateway:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pongToGateway'
+  sendPingFromDevice:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pingFromDevice'
+  receivePongFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/pongFromGateway'
+  receiveErrorFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/errorFromGateway'
+  receiveBlobChunk:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/blobChunk'
+  receiveTaskAckFromGateway:
+    action: receive
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskAckFromGateway'
+  sendTaskAckToGateway:
+    action: send
+    channel:
+      $ref: '#/channels/device'
+    messages:
+      - $ref: '#/channels/device/messages/taskAckToGateway'
+components:
+  securitySchemes:
+    accessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token (typ at+jwt) from POST /lmbp/v1/token, bound to the device key via cnf.jkt; possession proven by the hello proof JWT.
+  messages:
+    hello:
+      name: 'hello'
+      title: hello
+      contentType: application/json
+      summary: "Device→gateway, first frame. Requires id. May carry flow (windows granted to the gateway), resume {token, tasks[{task_id, recv_seq}]}, model_capabilities and e2ee_key (key statement JWS)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'hello'
+    welcome:
+      name: 'welcome'
+      title: welcome
+      contentType: application/json
+      summary: "Gateway→device answer to hello (same id). Carries negotiated capabilities, flow, resume_token, resume_window_seconds and, on resume, resume {resumed, tasks}."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'welcome'
+    taskRun:
+      name: 'task.run'
+      title: task.run
+      contentType: application/json
+      summary: "Gateway→device data frame (seq). No data; the payload is the compact JWS in `jws` (typ lmbp-task+jws, schema task.run.payload.json) and may reference blobs, tools and an e2ee sealed request."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.run'
+    taskCancel:
+      name: 'task.cancel'
+      title: task.cancel
+      contentType: application/json
+      summary: "Gateway→device."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.cancel'
+    taskDelta:
+      name: 'task.delta'
+      title: task.delta
+      contentType: application/json
+      summary: "Device→gateway data frame: text and/or tool_calls, or e2ee (sealed delta)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.delta'
+    taskDone:
+      name: 'task.done'
+      title: task.done
+      contentType: application/json
+      summary: "Device→gateway, terminal."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.done'
+    taskError:
+      name: 'task.error'
+      title: task.error
+      contentType: application/json
+      summary: "Device→gateway, terminal."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.error'
+    sessionTokenRequest:
+      name: 'session.token'
+      title: session.token
+      contentType: application/json
+      summary: "Device→gateway mid-connection token swap."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'session.token'
+    sessionTokenResponse:
+      name: 'session.token'
+      title: session.token
+      contentType: application/json
+      summary: "Gateway→device acknowledgement."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'session.token'
+    modelsUpdate:
+      name: 'models.update'
+      title: models.update
+      contentType: application/json
+      summary: "Device→gateway."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'models.update'
+    pingFromGateway:
+      name: 'ping'
+      title: ping
+      contentType: application/json
+      summary: "Application-level ping (either side may also use WebSocket control pings)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'ping'
+    pongToGateway:
+      name: 'pong'
+      title: pong
+      contentType: application/json
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'pong'
+    pingFromDevice:
+      name: 'ping'
+      title: ping
+      contentType: application/json
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'ping'
+    pongFromGateway:
+      name: 'pong'
+      title: pong
+      contentType: application/json
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'pong'
+    errorFromGateway:
+      name: 'error'
+      title: error
+      contentType: application/json
+      summary: "Connection-level error; usually followed by close."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'error'
+    blobChunk:
+      name: 'blob.chunk'
+      title: blob.chunk
+      contentType: application/json
+      summary: "Gateway→device data frame: a chunk of a blob referenced by the preceding task.run (capability multimodal / e2ee)."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'blob.chunk'
+    taskAckFromGateway:
+      name: 'task.ack'
+      title: task.ack
+      contentType: application/json
+      summary: "Gateway→device control frame: acknowledges device data frames ≤ data.seq; frees flow-control window."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.ack'
+    taskAckToGateway:
+      name: 'task.ack'
+      title: task.ack
+      contentType: application/json
+      summary: "Device→gateway control frame: acknowledges gateway data frames ≤ data.seq."
+      payload:
+        allOf:
+          - $ref: 'schemas/envelope.json'
+          - type: object
+            properties:
+              type:
+                const: 'task.ack'

@@ -1,0 +1,407 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lmbp/defs.json",
+  "title": "lmbp shared definitions",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._~-]+$",
+      "description": "Opaque identifier. Implementations SHOULD use UUIDv7 or ULID, optionally with a type prefix."
+    },
+    "compactJws": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$",
+      "maxLength": 262144,
+      "description": "RFC 7515 compact serialization, base64url without padding."
+    },
+    "numericDate": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 253402300799,
+      "description": "RFC 7519 NumericDate (seconds since epoch, UTC)."
+    },
+    "modelId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^\\S+$"
+    },
+    "errorCode": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{1,63}$",
+      "description": "Stable error code; see docs/lmbp-spec.md §9. Unknown codes MUST be treated as non-retryable unless retryable=true."
+    },
+    "capability": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "role"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "developer"
+          ]
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "string",
+              "maxLength": 1048576
+            },
+            {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/contentPart"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "tool_calls": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/toolCall"
+          }
+        },
+        "tool_call_id": {
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "tool"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "tool_call_id",
+              "content"
+            ]
+          }
+        }
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "required": [
+        "prompt_tokens",
+        "completion_tokens"
+      ],
+      "properties": {
+        "prompt_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completion_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "errorBody": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/errorCode"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "retryable": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "b64url": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]*$",
+      "description": "base64url without padding (RFC 4648 §5)."
+    },
+    "compactJwe": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+$",
+      "maxLength": 44040192,
+      "description": "RFC 7516 compact serialization (alg ECDH-ES, enc A256GCM; empty encrypted key)."
+    },
+    "modelCapability": {
+      "enum": [
+        "tools",
+        "vision",
+        "audio",
+        "params",
+        "temperature",
+        "top_p",
+        "stop",
+        "max_tokens"
+      ],
+      "description": "tools/vision/audio: input kinds. params: the model's request-parameter support is declared, and each of temperature, top_p, stop, max_tokens is honoured only if listed (§16.4)."
+    },
+    "modelCapabilities": {
+      "type": "object",
+      "description": "Per-model capability flags (§16).",
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "$ref": "#/$defs/modelCapability"
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "required": [
+        "task_window",
+        "conn_window"
+      ],
+      "description": "Receive windows the sender of this object grants its peer: bytes of serialized, unacknowledged data frames (§15).",
+      "properties": {
+        "task_window": {
+          "type": "integer",
+          "minimum": 65536,
+          "maximum": 1073741824
+        },
+        "conn_window": {
+          "type": "integer",
+          "minimum": 65536,
+          "maximum": 4294967296
+        }
+      }
+    },
+    "resumeTask": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "recv_seq"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "recv_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Highest contiguous seq received from the peer for this task."
+        }
+      }
+    },
+    "contentPart": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "text",
+            "image_url",
+            "input_audio"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "image_url": {
+          "type": "object",
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "https:// URL, or lmbp-blob:<id> on the tunnel (data: URIs are moved into blobs by the gateway)."
+            },
+            "detail": {
+              "enum": [
+                "auto",
+                "low",
+                "high"
+              ]
+            }
+          }
+        },
+        "input_audio": {
+          "type": "object",
+          "required": [
+            "data",
+            "format"
+          ],
+          "properties": {
+            "data": {
+              "type": "string"
+            },
+            "format": {
+              "type": "string",
+              "maxLength": 16
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "text"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "text"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "image_url"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "image_url"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "input_audio"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "input_audio"
+            ]
+          }
+        }
+      ]
+    },
+    "toolCall": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "type": {
+          "const": "function"
+        },
+        "function": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "arguments": {
+              "type": "string",
+              "maxLength": 1048576
+            }
+          }
+        }
+      },
+      "required": [
+        "function"
+      ]
+    },
+    "tool": {
+      "type": "object",
+      "required": [
+        "type",
+        "function"
+      ],
+      "properties": {
+        "type": {
+          "const": "function"
+        },
+        "function": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 8192
+            },
+            "parameters": {
+              "type": "object"
+            },
+            "strict": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "blobRef": {
+      "type": "object",
+      "required": [
+        "id",
+        "size",
+        "sha256",
+        "media_type"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20971520
+        },
+        "sha256": {
+          "$ref": "#/$defs/b64url"
+        },
+        "media_type": {
+          "type": "string",
+          "maxLength": 255
+        }
+      }
+    }
+  }
+}

@@ -13,8 +13,8 @@ const _brandDark = Color(0xFFAB94FF);
 const _brandDarkForeground = Color(0xFF0C1224);
 
 String _transportLabel(Object? transport) => switch (transport) {
-  'http' => 'HTTP 长轮询',
-  'https' => 'HTTPS 长轮询',
+  'wss' => 'WSS（lmbp）',
+  'ws' => 'WS（lmbp，仅本机联调）',
   _ => '未连接',
 };
 
@@ -65,7 +65,6 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final remoteUrl = TextEditingController();
-  final legacyKey = TextEditingController();
   Timer? timer;
   bool kernelReady = false;
   String? kernelError;
@@ -75,8 +74,14 @@ class _HomePageState extends State<HomePage> {
   bool busy = false;
   bool awaitingCode = false;
   String? pendingRemoteURL;
-  String claimCodeValue = '';
-  int otpGeneration = 0;
+  // Pairing (RFC 8628 style): code shown on this device, confirmed on the
+  // remote service page.
+  String? pairUserCode;
+  String? pairLinkUrl;
+  // Verified SaaS identity awaiting the user's explicit approve/deny.
+  Map<String, dynamic>? consent;
+  // Local token usage (last 7 days, by SaaS and model).
+  List<Map<String, dynamic>> usage = [];
   VoidCallback? _connectionRefresh;
 
   NativeApi get api => NativeApi.instance;
@@ -95,14 +100,16 @@ class _HomePageState extends State<HomePage> {
       (_) => AppTray.instance.init(),
     );
     boot();
-    timer = Timer.periodic(const Duration(seconds: 2), (_) => refresh());
+    timer = Timer.periodic(const Duration(seconds: 2), (_) {
+      refresh();
+      pollPairing();
+    });
   }
 
   @override
   void dispose() {
     timer?.cancel();
     remoteUrl.dispose();
-    legacyKey.dispose();
     super.dispose();
   }
 
@@ -168,10 +175,9 @@ class _HomePageState extends State<HomePage> {
     return yes == true;
   }
 
-  Future<void> boot({String? journalKey}) async {
+  Future<void> boot() async {
     try {
-      api.start(journalKey: journalKey);
-      legacyKey.clear();
+      api.start();
       if (mounted) {
         setState(() {
           kernelReady = true;
@@ -219,13 +225,11 @@ class _HomePageState extends State<HomePage> {
     }
     setState(() => busy = true);
     try {
-      await prepareConnectionAsync(url);
+      final p = await pairPrepareAsync(url);
       if (mounted) {
         setState(() {
-          awaitingCode = true;
           pendingRemoteURL = url;
-          claimCodeValue = '';
-          otpGeneration++;
+          consent = (p['consent'] as Map?)?.cast<String, dynamic>();
         });
       }
     } catch (e) {
@@ -235,37 +239,88 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> claim() async {
-    final code = claimCodeValue.trim();
-    if (!RegExp(r'^\d{8}$').hasMatch(code)) {
-      show('请输入远端服务页面显示的 8 位数字验证码。', error: true);
-      return;
-    }
+  Future<void> approveConsent() async {
     setState(() => busy = true);
     try {
-      final url = pendingRemoteURL ?? remoteUrl.text.trim();
-      await claimAsync(url, code);
+      final p = await pairApproveAsync();
       if (mounted) {
+        setState(() {
+          consent = null;
+          awaitingCode = true;
+          pairUserCode = p['user_code'] as String?;
+          pairLinkUrl = p['link_url'] as String?;
+        });
+      }
+    } catch (e) {
+      if (mounted) show('配对失败：$e', error: true);
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> denyConsent() async {
+    try {
+      await pairDenyAsync();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        consent = null;
+        pendingRemoteURL = null;
+      });
+      show('已拒绝该服务的配对请求（CONSENT_DENIED）');
+    }
+  }
+
+  Future<void> loadUsage() async {
+    try {
+      final u = await usageStatsAsync(['saas', 'model'], 7);
+      if (mounted) setState(() => usage = u);
+    } catch (_) {}
+  }
+
+  Future<void> pollPairing() async {
+    if (pairUserCode == null || !awaitingCode) return;
+    try {
+      final st = await pairStatusAsync();
+      if (!mounted) return;
+      if (st['state'] == 'paired') {
         setState(() {
           awaitingCode = false;
           pendingRemoteURL = null;
-          claimCodeValue = '';
-          otpGeneration++;
+          pairUserCode = null;
+          pairLinkUrl = null;
         });
+        await refresh(force: true);
+        show('配对成功，正在连接远端服务');
+      } else if (st['state'] == 'failed' || st['state'] == 'denied') {
+        setState(() {
+          awaitingCode = false;
+          pairUserCode = null;
+          pairLinkUrl = null;
+        });
+        show('配对失败：${st['error'] ?? ''}', error: true);
       }
-      await refresh(force: true);
-      show('配对成功，正在连接远端服务');
-    } catch (e) {
-      if (mounted) show('连接失败：$e', error: true);
-    } finally {
-      if (mounted) setState(() => busy = false);
+    } catch (_) {}
+  }
+
+  Future<void> cancelPairing() async {
+    try {
+      await pairCancelAsync();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        awaitingCode = false;
+        pendingRemoteURL = null;
+        pairUserCode = null;
+        pairLinkUrl = null;
+      });
     }
   }
 
   Future<void> disconnect() async {
     final yes = await confirm(
       title: '断开连接',
-      message: '将清除本机连接信息。模型配置会保留；再次连接需从远端服务获取新验证码。',
+      message: '将清除本机连接信息和设备私钥。模型配置会保留；再次连接需要重新配对。',
       action: '断开',
       destructive: true,
     );
@@ -320,49 +375,23 @@ class _HomePageState extends State<HomePage> {
 
   Widget connectionCard() {
     if (!kernelReady) {
-      final needsMigration =
-          kernelError?.contains('legacy encrypted data requires journal key') ==
-          true;
       return Card(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Alert(
-              destructive: !needsMigration,
-              leading: Icon(
-                needsMigration
-                    ? LucideIcons.keyRound
-                    : LucideIcons.triangleAlert,
-              ),
-              title: Text(needsMigration ? '需要迁移旧版配置' : '内核启动失败'),
-              content: Text(
-                needsMigration
-                    ? '检测到旧版加密配置。输入之前使用的本机加密密钥以迁移模型配置。'
-                    : (kernelError ?? '内核启动失败'),
-              ),
+              destructive: true,
+              leading: const Icon(LucideIcons.triangleAlert),
+              title: const Text('内核启动失败'),
+              content: Text(kernelError ?? '内核启动失败'),
             ),
-            if (needsMigration) ...[
-              const Gap(16),
-              LabeledField(
-                label: '旧版 64 位十六进制本机加密密钥',
-                child: TextField(
-                  controller: legacyKey,
-                  placeholder: const Text('64 位十六进制'),
-                  features: const [InputFeature.passwordToggle()],
-                ),
-              ),
-            ],
             const Gap(16),
             Align(
               alignment: Alignment.centerRight,
               child: PrimaryButton(
-                onPressed: () => boot(
-                  journalKey: needsMigration ? legacyKey.text.trim() : null,
-                ),
-                leading: Icon(
-                  needsMigration ? LucideIcons.keyRound : LucideIcons.refreshCw,
-                ),
-                child: Text(needsMigration ? '迁移并启动' : '重试'),
+                onPressed: boot,
+                leading: const Icon(LucideIcons.refreshCw),
+                child: const Text('重试'),
               ),
             ),
           ],
@@ -406,6 +435,10 @@ class _HomePageState extends State<HomePage> {
           ),
           if (paired) ...[
             const Gap(14),
+            if ((status?['saas_name'] ?? '') != '')
+              _StatRow('服务', '${status?['saas_name']}'),
+            if ((status?['issuer'] ?? '') != '')
+              _StatRow('网关', '${status?['issuer']}'),
             _StatRow(
               '设备',
               '${status?['device_name'] ?? status?['device_id'] ?? ''}',
@@ -413,9 +446,54 @@ class _HomePageState extends State<HomePage> {
             _StatRow('地址', '${status?['remote_url'] ?? ''}'),
             _StatRow('传输', _transportLabel(status?['transport'])),
             _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
+            const Gap(14),
+            Row(
+              children: [
+                Expanded(child: const Text('近 7 天用量').small().medium()),
+                GhostButton(
+                  size: ButtonSize.small,
+                  onPressed: loadUsage,
+                  child: const Text('刷新用量'),
+                ),
+              ],
+            ),
+            if (usage.isEmpty)
+              const Text('暂无记录（不记录对话内容）').small().muted()
+            else
+              for (final b in usage)
+                _StatRow(
+                  '${b['saas_name'] ?? b['saas'] ?? ''} · ${b['model'] ?? ''}',
+                  '${b['requests']} 次 · ${b['total_tokens']} tokens'
+                      '${(b['errors'] ?? 0) > 0 ? ' · ${b['errors']} 失败' : ''}',
+                ),
+          ] else if (consent != null) ...[
+            const Gap(12),
+            _ConsentView(consent: consent!),
+            const Gap(16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                OutlineButton(
+                  onPressed: busy ? null : denyConsent,
+                  child: const Text('拒绝'),
+                ),
+                const Gap(8),
+                PrimaryButton(
+                  onPressed: busy ? null : approveConsent,
+                  leading: const Icon(LucideIcons.link),
+                  child: Text(busy ? '处理中…' : '同意并配对'),
+                ),
+              ],
+            ),
           ] else ...[
             const Gap(8),
-            const Text('输入远端服务地址并点击连接，再输入远端服务页面显示的验证码。').small().muted(),
+            const Text(
+              '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
+            ).small().muted(),
+            if ((status?['pairing_error'] ?? '') != '' && !awaitingCode) ...[
+              const Gap(8),
+              Text('${status?['pairing_error']}').small(),
+            ],
             const Gap(16),
             if (awaitingCode)
               Text(
@@ -426,33 +504,32 @@ class _HomePageState extends State<HomePage> {
                 label: '远端服务地址',
                 child: TextField(
                   controller: remoteUrl,
-                  placeholder: const Text('https://remote.example.com'),
+                  placeholder: const Text(
+                    'https://remote.example.com 或 lmbp://pair?… 链接',
+                  ),
                   features: const [InputFeature.clear()],
                 ),
               ),
             if (awaitingCode) ...[
               const Gap(16),
               LabeledField(
-                label: '远端服务页面显示的数字验证码',
-                hint: '8 位数字，可直接粘贴',
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: InputOTP(
-                    key: ValueKey(otpGeneration),
-                    onChanged: (value) => claimCodeValue = value.otpToString(),
-                    onSubmitted: (_) {
-                      if (!busy) claim();
-                    },
-                    children: [
-                      for (var i = 0; i < 4; i++)
-                        InputOTPChild.character(allowDigit: true),
-                      InputOTPChild.separator,
-                      for (var i = 0; i < 4; i++)
-                        InputOTPChild.character(allowDigit: true),
-                    ],
+                label: '配对码（请在远端服务页面输入）',
+                hint: '10 分钟内有效；确认后本机会自动完成连接',
+                child: Text(
+                  pairUserCode ?? '',
+                  style: const TextStyle(
+                    fontSize: 28,
+                    letterSpacing: 4,
+                    fontFamily: 'monospace',
                   ),
                 ),
               ),
+              if (pairLinkUrl != null && pairLinkUrl!.isNotEmpty) ...[
+                const Gap(8),
+                Text('打开：$pairLinkUrl').small().muted(),
+              ],
+              const Gap(8),
+              const Text('等待远端服务确认…').small().muted(),
             ],
             const Gap(16),
             Row(
@@ -460,25 +537,17 @@ class _HomePageState extends State<HomePage> {
               children: [
                 if (awaitingCode) ...[
                   GhostButton(
-                    onPressed: busy
-                        ? null
-                        : () => setState(() {
-                            awaitingCode = false;
-                            pendingRemoteURL = null;
-                            claimCodeValue = '';
-                            otpGeneration++;
-                          }),
+                    onPressed: busy ? null : cancelPairing,
                     child: const Text('返回'),
                   ),
                   const Gap(8),
                 ],
-                PrimaryButton(
-                  onPressed: busy
-                      ? null
-                      : (awaitingCode ? claim : prepareConnection),
-                  leading: const Icon(LucideIcons.link),
-                  child: Text(busy ? '处理中…' : (awaitingCode ? '完成连接' : '连接')),
-                ),
+                if (!awaitingCode)
+                  PrimaryButton(
+                    onPressed: busy ? null : prepareConnection,
+                    leading: const Icon(LucideIcons.link),
+                    child: Text(busy ? '处理中…' : '连接'),
+                  ),
               ],
             ),
           ],
@@ -961,6 +1030,55 @@ class _ToggleRow extends StatelessWidget {
         ),
         const Gap(12),
         Switch(value: value, onChanged: onChanged),
+      ],
+    );
+  }
+}
+
+/// Consent screen: the SaaS identity verified from the gateway's signed
+/// metadata (docs/lmbp-spec.md §19). Nothing here comes from the link.
+class _ConsentView extends StatelessWidget {
+  const _ConsentView({required this.consent});
+  final Map<String, dynamic> consent;
+
+  @override
+  Widget build(BuildContext context) {
+    final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
+    final models = ((consent['requested_models'] as List?) ?? []).join(', ');
+    final scopes = ((consent['requested_scopes'] as List?) ?? []).join(', ');
+    final logo = '${saas['logo_uri'] ?? ''}';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            if (logo.startsWith('https://'))
+              Padding(
+                padding: const EdgeInsets.only(right: 10),
+                child: Image.network(logo, width: 32, height: 32,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+              ),
+            Expanded(
+              child: Text('「${saas['name'] ?? ''}」请求使用本机模型').medium(),
+            ),
+          ],
+        ),
+        const Gap(4),
+        Text(consent['verified'] == true
+                ? '身份已通过网关签名校验'
+                : '身份未校验')
+            .small()
+            .muted(),
+        const Gap(10),
+        _StatRow('网关', '${consent['gateway'] ?? ''}'),
+        _StatRow('租户', '${consent['tenant'] ?? ''}'),
+        if ('${saas['homepage_uri'] ?? ''}' != '')
+          _StatRow('主页', '${saas['homepage_uri']}'),
+        if ('${saas['policy_uri'] ?? ''}' != '')
+          _StatRow('隐私政策', '${saas['policy_uri']}'),
+        _StatRow('请求模型', models.isEmpty ? '由本机配置决定' : models),
+        _StatRow('请求权限', scopes),
+        _StatRow('网关密钥', '${consent['gateway_key_id'] ?? ''}'),
       ],
     );
   }

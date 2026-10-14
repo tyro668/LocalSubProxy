@@ -1,0 +1,12 @@
+{
+  "name": "lmbp-example-express",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "express": "^5.1.0",
+    "lmbp-server": "file:../../sdk/node",
+    "openai": "^7.32.0"
+  }
+}

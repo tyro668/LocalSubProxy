@@ -1,0 +1,5 @@
+-e ../../sdk/python[server]
+fastapi>=0.110
+openai>=1.50
+anthropic>=0.40
+websockets>=12

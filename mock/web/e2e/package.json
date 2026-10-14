@@ -1,0 +1,8 @@
+{
+  "name": "lmbp-chat-ui-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Headless-browser E2E for the shared mock chat page against the Go, Node and Python gateways with the real Go connector",
+  "scripts": { "test": "node chat-ui.mjs" },
+  "dependencies": { "playwright-core": "^1.48.0" }
+}
