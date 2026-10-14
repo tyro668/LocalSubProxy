@@ -22,6 +22,7 @@ class ProfileWorkspace extends StatefulWidget {
     required this.onChanged,
     this.status,
     this.onConnectionTap,
+    this.onUsageTap,
   });
 
   final NativeApi api;
@@ -29,6 +30,7 @@ class ProfileWorkspace extends StatefulWidget {
   final Future<void> Function() onChanged;
   final Map<String, dynamic>? status;
   final VoidCallback? onConnectionTap;
+  final VoidCallback? onUsageTap;
 
   @override
   State<ProfileWorkspace> createState() => _ProfileWorkspaceState();
@@ -646,6 +648,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       selectedID = draft['id'] as String;
       highlightedID = selectedID;
       dirty = false;
+      editorOpen = false;
       await widget.onChanged();
       if (mounted) {
         setState(() => testStatus ??= '设置已保存');
@@ -795,6 +798,11 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           GhostButton(
             onPressed: widget.onConnectionTap,
             child: Text(paired ? '连接详情  ›' : '连接远端服务  ›'),
+          ),
+          const SizedBox(width: 4),
+          GhostButton(
+            onPressed: widget.onUsageTap,
+            child: const Text('用量统计  ›'),
           ),
         ],
       ),
