@@ -1056,7 +1056,7 @@ class _ConsentView extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(right: 10),
                 child: Image.network(logo, width: 32, height: 32,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+                    errorBuilder: (_, _, _) => const SizedBox.shrink()),
               ),
             Expanded(
               child: Text('「${saas['name'] ?? ''}」请求使用本机模型').medium(),
