@@ -46,7 +46,7 @@ cat >"$dir/tenant-profiles.json" <<JSON
   "acme": {
     "api_key_env": "LSP_TENANT_KEY_ACME",
     "display_name": "Acme Chat (mock)",
-    "homepage_uri": "https://acme.example",
+    "homepage_uri": "$gw",
     "pairing_uri": "$gw/chat",
     "requested_models": ["$(echo "$models" | cut -d, -f1)"],
     "requested_scopes": ["lmbp.chat", "lmbp.tools", "lmbp.vision"]

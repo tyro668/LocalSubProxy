@@ -148,6 +148,9 @@ func prepare(ctx context.Context, hc *http.Client, gatewayURL, tenant, remote, l
 		if err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && lmbp.IsLoopbackHost(u.Hostname()))) {
 			return nil, errors.New("pairing page must be https")
 		}
+		if remote == "" {
+			remote = u.Scheme + "://" + u.Host
+		}
 	}
 	return &PairRequest{hc: hc, meta: signed, gwKey: key, remoteURL: remote, linkURL: linkURL, Consent: Consent{
 		SaaS: *signed.SaaS, Gateway: iss, Tenant: tenant, Audience: signed.Audience, RequestedModels: append([]string{}, signed.RequestedModels...),

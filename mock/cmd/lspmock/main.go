@@ -45,9 +45,10 @@ func main() {
 		listen := f.String("listen", "127.0.0.1:8090", "")
 		db := f.String("db", "gateway.db", "SQLite file")
 		tenants := f.String("tenants", "acme:LSP_TENANT_KEY_ACME", "comma list of tenant:ENV_VAR_WITH_API_KEY")
+		profiles := f.String("tenant-profiles", "", "optional JSON file with per-tenant SaaS display identity")
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
 		f.Parse(os.Args[2:])
-		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, AllowEphemeralKey: true, Wrap: web.Wrap})
+		err = gateway.Serve(ctx, gateway.ServeOptions{Listen: *listen, DB: *db, Tenants: *tenants, Retention: *retention, AllowEphemeralKey: true, Profiles: *profiles, Wrap: web.Wrap})
 	case "saas":
 		f := flag.NewFlagSet("saas", flag.ExitOnError)
 		listen := f.String("listen", "127.0.0.1:3000", "")

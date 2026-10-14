@@ -412,10 +412,7 @@ func LSP_Call(raw *C.char) *C.char {
 			return result(nil, err)
 		}
 		wctx, wcancel := context.WithCancel(context.Background())
-		remote := req.Consent.Remote
-		if remote == "" {
-			remote = req.Consent.SaaS.HomepageURI
-		}
+		remote := req.Consent.Remote // Consent.Remote falls back to the pairing page origin in client.Prepare; stay empty rather than probing a marketing homepage
 		runtime.pairing, runtime.pairCancel, runtime.pairState, runtime.pairErr = p, wcancel, "pending", ""
 		go finishPairing(wctx, p, remote)
 		return result(map[string]any{"user_code": p.UserCode, "link_url": p.LinkURL, "jkt": p.JKT, "expires_at": p.ExpiresAt, "consent": p.Consent}, nil)

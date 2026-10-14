@@ -92,7 +92,7 @@
       if (!res.ok) throw await parseError(res);
       issuer = (await res.json()).issuer;
     } catch (e) { issuer = location.origin; toast('读取网关元数据失败：' + describe(e.code, e.message), true); }
-    pairLink = 'lmbp://pair?v=1&gateway=' + encodeURIComponent(issuer) + '&tenant=' + encodeURIComponent(auth.tenant);
+    pairLink = 'lmbp://pair?v=1&gateway=' + encodeURIComponent(issuer) + '&tenant=' + encodeURIComponent(auth.tenant) + '&remote=' + encodeURIComponent(location.origin);
     $('pairLink').textContent = pairLink;
     $('qr').textContent = '';
     if (window.qrcode) {

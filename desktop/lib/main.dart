@@ -378,6 +378,7 @@ class _HomePageState extends State<HomePage> {
           host: this,
           title: '远端服务连接',
           content: connectionCard,
+          maxWidth: 800,
         ),
       ),
     ).future;
@@ -517,73 +518,60 @@ class _HomePageState extends State<HomePage> {
     }
 
     final paired = status?['paired'] == true;
-    final connected = status?['connected'] == true;
-    final theme = Theme.of(context);
     final recovery = status?['adapter_recovery'] as Map?;
-    return Card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (recovery != null && !recoveryDismissed) ...[
-            // Informational, dismissible and shown once: the app works
-            // normally with an empty adapter list; the old file is kept.
-            Alert(
-              leading: const Icon(LucideIcons.info),
-              title: const Text('旧的模型方案配置已备份'),
-              content: Text(
-                '本机保存的模型方案配置无法用当前密钥解密（可能来自旧版本应用），'
-                '已备份到：${recovery['backup']}\n'
-                '应用可以正常使用，请重新添加模型方案即可。',
-              ),
-              trailing: GhostButton(
-                onPressed: dismissRecovery,
-                child: const Text('知道了'),
-              ),
+    final step = paired
+        ? 3
+        : awaitingCode
+        ? 2
+        : consent != null
+        ? 1
+        : 0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (recovery != null && !recoveryDismissed) ...[
+          // Informational, dismissible and shown once: the app works
+          // normally with an empty adapter list; the old file is kept.
+          Alert(
+            leading: const Icon(LucideIcons.info),
+            title: const Text('旧的模型方案配置已备份'),
+            content: Text(
+              '本机保存的模型方案配置无法用当前密钥解密（可能来自旧版本应用），'
+              '已备份到：${recovery['backup']}\n'
+              '应用可以正常使用，请重新添加模型方案即可。',
+            ),
+            trailing: GhostButton(
+              onPressed: dismissRecovery,
+              child: const Text('知道了'),
+            ),
+          ),
+          const Gap(16),
+        ],
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(width: 180, child: _StepRail(current: step)),
+            const Gap(40),
+            Expanded(child: _connectStepPane(step)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _connectStepPane(int step) {
+    final theme = Theme.of(context);
+    switch (step) {
+      case 1: // 身份验证：consent — the SaaS identity was verified by signature
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _StepHeader(
+              icon: LucideIcons.shieldCheck,
+              title: '身份验证',
+              desc: '远端服务身份已通过网关签名校验，请确认授权信息。',
             ),
             const Gap(16),
-          ],
-          Row(
-            children: [
-              Icon(
-                connected ? LucideIcons.circleCheck : LucideIcons.cloudOff,
-                size: 18,
-                color: connected
-                    ? theme.colorScheme.chart2
-                    : theme.colorScheme.mutedForeground,
-              ),
-              const Gap(8),
-              Expanded(child: Text(connected ? '已连接' : '未连接').medium()),
-              Tooltip(
-                tooltip: (context) => const TooltipContainer(child: Text('刷新')),
-                child: IconButton.ghost(
-                  density: ButtonDensity.icon,
-                  icon: const Icon(LucideIcons.refreshCw),
-                  onPressed: busy ? null : () => refresh(),
-                ),
-              ),
-              if (paired)
-                OutlineButton(
-                  size: ButtonSize.small,
-                  onPressed: busy ? null : disconnect,
-                  child: const Text('断开'),
-                ),
-            ],
-          ),
-          if (paired) ...[
-            const Gap(14),
-            if ((status?['saas_name'] ?? '') != '')
-              _StatRow('服务', '${status?['saas_name']}'),
-            if ((status?['issuer'] ?? '') != '')
-              _StatRow('网关', '${status?['issuer']}'),
-            _StatRow(
-              '设备',
-              '${status?['device_name'] ?? status?['device_id'] ?? ''}',
-            ),
-            _StatRow('地址', '${status?['remote_url'] ?? ''}'),
-            _StatRow('传输', _transportLabel(status?['transport'])),
-            _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
-          ] else if (consent != null) ...[
-            const Gap(12),
             _ConsentView(consent: consent!, localModels: _localModels()),
             const Gap(16),
             Row(
@@ -601,13 +589,21 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
             ),
-          ] else if (awaitingCode) ...[
-            const Gap(16),
+          ],
+        );
+      case 2: // 确认授权：show the pairing code for the remote page
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _StepHeader(
+              icon: LucideIcons.keyRound,
+              title: '确认授权',
+              desc: '请在远端服务页面输入以下配对码完成设备验证。',
+            ),
+            const Gap(20),
             Center(
               child: Column(
                 children: [
-                  const Text('配对码（请在远端服务页面输入）').small().muted(),
-                  const Gap(6),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -642,6 +638,27 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             const Gap(16),
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.muted,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  Icon(
+                    LucideIcons.info,
+                    size: 15,
+                    color: theme.colorScheme.mutedForeground,
+                  ),
+                  const Gap(8),
+                  const Expanded(
+                    child: Text('请在已登录的远端服务页面输入此配对码，完成后将自动进入下一步。'),
+                  ),
+                ],
+              ).small().muted(),
+            ),
+            const Gap(16),
             Align(
               alignment: Alignment.centerRight,
               child: GhostButton(
@@ -649,11 +666,80 @@ class _HomePageState extends State<HomePage> {
                 child: const Text('返回'),
               ),
             ),
-          ] else ...[
-            const Gap(8),
-            const Text(
-              '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
-            ).small().muted(),
+          ],
+        );
+      case 3: // 完成连接：paired
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _StepHeader(
+              icon: LucideIcons.circleCheck,
+              iconColor: theme.colorScheme.chart2,
+              title: '已成功连接',
+              desc: '远端服务已连接，可以开始使用。',
+            ),
+            const Gap(16),
+            Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: theme.colorScheme.border),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Spacer(),
+                      Tooltip(
+                        tooltip: (context) =>
+                            const TooltipContainer(child: Text('刷新')),
+                        child: IconButton.ghost(
+                          density: ButtonDensity.icon,
+                          icon: const Icon(LucideIcons.refreshCw),
+                          onPressed: busy ? null : () => refresh(),
+                        ),
+                      ),
+                      OutlineButton(
+                        size: ButtonSize.small,
+                        onPressed: busy ? null : disconnect,
+                        child: const Text('断开'),
+                      ),
+                    ],
+                  ),
+                  if ((status?['saas_name'] ?? '') != '')
+                    _StatRow('服务', '${status?['saas_name']}'),
+                  if ((status?['issuer'] ?? '') != '')
+                    _StatRow('网关', '${status?['issuer']}'),
+                  _StatRow(
+                    '设备',
+                    '${status?['device_name'] ?? status?['device_id'] ?? ''}',
+                  ),
+                  _StatRow('地址', '${status?['remote_url'] ?? ''}'),
+                  _StatRow('传输', _transportLabel(status?['transport'])),
+                  _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
+                ],
+              ),
+            ),
+            const Gap(16),
+            Align(
+              alignment: Alignment.centerRight,
+              child: PrimaryButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('完成'),
+              ),
+            ),
+          ],
+        );
+      default: // 输入地址
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _StepHeader(
+              icon: LucideIcons.link,
+              title: '连接远端服务',
+              desc: '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
+            ),
             if ((status?['pairing_error'] ?? '') != '') ...[
               const Gap(8),
               Text('${status?['pairing_error']}').small(),
@@ -679,9 +765,8 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ],
-        ],
-      ),
-    );
+        );
+    }
   }
 
   Widget adapterTile(Map<String, dynamic> adapter) {
@@ -763,16 +848,121 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+/// Numbered rail for the connect dialog's 4 steps.
+class _StepRail extends StatelessWidget {
+  const _StepRail({required this.current});
+
+  final int current;
+  static const _labels = ['输入地址', '身份验证', '确认授权', '完成连接'];
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < _labels.length; i++) ...[
+          Row(
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: i <= current
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.muted,
+                ),
+                alignment: Alignment.center,
+                child: i < current
+                    ? const Icon(
+                        LucideIcons.check,
+                        size: 12,
+                        color: Colors.white,
+                      )
+                    : Text(
+                        '${i + 1}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: i == current
+                              ? Colors.white
+                              : theme.colorScheme.mutedForeground,
+                        ),
+                      ),
+              ),
+              const Gap(8),
+              Expanded(
+                child: i <= current
+                    ? Text(_labels[i]).small().medium()
+                    : Text(_labels[i]).small().muted(),
+              ),
+            ],
+          ),
+          if (i < _labels.length - 1) const Gap(18),
+        ],
+      ],
+    );
+  }
+}
+
+/// Icon tile + title + description header for each connect step.
+class _StepHeader extends StatelessWidget {
+  const _StepHeader({
+    required this.icon,
+    required this.title,
+    required this.desc,
+    this.iconColor,
+  });
+
+  final IconData icon;
+  final String title;
+  final String desc;
+  final Color? iconColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = iconColor ?? theme.colorScheme.primary;
+    return Row(
+      children: [
+        Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          alignment: Alignment.center,
+          child: Icon(icon, size: 20, color: color),
+        ),
+        const Gap(12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title).medium(),
+              const Gap(3),
+              Text(desc).xSmall().muted(),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _DialogRelay extends StatefulWidget {
   const _DialogRelay({
     required this.host,
     required this.title,
     required this.content,
+    this.maxWidth = 420,
   });
 
   final _HomePageState host;
   final String title;
   final Widget Function() content;
+  final double maxWidth;
 
   @override
   State<_DialogRelay> createState() => _DialogRelayState();
@@ -797,7 +987,7 @@ class _DialogRelayState extends State<_DialogRelay> {
 
   @override
   Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(maxWidth: 420),
+    constraints: BoxConstraints(maxWidth: widget.maxWidth),
     child: AlertDialog(
       title: Row(
         children: [
