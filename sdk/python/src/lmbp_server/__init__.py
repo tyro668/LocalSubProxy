@@ -25,11 +25,11 @@ from . import protocol as _L
 from .asgi import LMBPASGI, LMBPMiddleware
 from .client import IncompleteStreamError, InProcessClient, LMBPAPIError, LMBPStream
 from .types import ChatRequest, MessagesRequest
-from .e2ee import E2EESealed, decode_e2ee_delta, seal_e2ee_request
+from .e2ee import E2EEReader, E2EESealed, decode_e2ee_delta, seal_e2ee_request
 from .engine import Gateway, norm_code
 from .store import MemoryStore, SQLiteStore, Store, StoreConflict, StoreNotFound
 
-__all__ = ["LMBPStream", "IncompleteStreamError", "E2EESealed", "seal_e2ee_request", "decode_e2ee_delta", "LMBPServer", "TenantConfig", "PairingInfo", "PendingPairing", "ApproveResult", "DeviceInfo", "PairingError",
+__all__ = ["LMBPStream", "IncompleteStreamError", "E2EESealed", "E2EEReader", "seal_e2ee_request", "decode_e2ee_delta", "LMBPServer", "TenantConfig", "PairingInfo", "PendingPairing", "ApproveResult", "DeviceInfo", "PairingError",
            "Store", "StoreConflict", "StoreNotFound", "MemoryStore", "SQLiteStore", "InProcessClient", "LMBPAPIError", "LMBPMiddleware", "anthropic", "Gateway", "ChatRequest", "MessagesRequest"]
 __version__ = "0.1.0"
 

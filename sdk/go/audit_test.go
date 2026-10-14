@@ -122,19 +122,22 @@ func TestClientE2EE(t *testing.T) {
 		t.Fatal(err)
 	}
 	var text string
+	rd := sealed.Reader()
 	for st.Next() {
 		ch := st.Current()
 		if ch.E2EE == nil {
 			continue
 		}
-		p, err := sealed.Open(*ch.E2EE)
+		p, err := rd.Next(*ch.E2EE)
 		if err != nil {
 			t.Fatal(err)
 		}
-		d, _ := lmbpserver.DecodeE2EEDelta(p)
-		text += d.Text
+		if ch.E2EE.Type == "task.delta" {
+			d, _ := lmbpserver.DecodeE2EEDelta(p)
+			text += d.Text
+		}
 	}
-	if st.Err() != nil || text != "echo:secret" {
-		t.Fatalf("e2ee stream: %q %v", text, st.Err())
+	if st.Err() != nil || rd.Finish() != nil || text != "echo:secret" {
+		t.Fatalf("e2ee stream: %q %v %v", text, st.Err(), rd.Finish())
 	}
 }

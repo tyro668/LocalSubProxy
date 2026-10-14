@@ -118,16 +118,18 @@ async def test_client_e2ee_round_trip(serve_app):
         sealed = seal_e2ee_request(dev, dev.jkt, {"model": "m1", "messages": [{"role": "user", "content": "secret"}]})
         assert "secret" not in sealed.jwe
         text, frames = "", 0
+        rd = sealed.reader()
         async for ch in lsp.client(T, "u1").chat.completions.stream(model="m1", lmbp_e2ee=sealed.jwe):
             f = ch.get("lmbp_e2ee")
             if not f:
                 continue
             frames += 1
-            pt = sealed.open(f)
+            pt = rd.next(f)
             if f["type"] == "task.delta":
                 text += decode_e2ee_delta(pt).get("text", "")
             with pytest.raises(ValueError):
                 sealed.open({**f, "seq": f["seq"] + 1})
+        rd.finish()
         assert text == "echo:secret" and frames >= 2
         await ws.close()
         task.cancel()

@@ -5,9 +5,14 @@ cannot read them; only your backend and the user's device can::
 
     dev = server.pairing.list_devices(tenant, user)[0]
     sealed = seal_e2ee_request(dev, pinned_jkt, {"model": m, "messages": msgs})
+    rd = sealed.reader()  # enforces seq order and the sealed task.done
     async for c in client.chat.completions.stream(model=m, lmbp_e2ee=sealed.jwe):
-        if c.get("lmbp_e2ee"):
-            text += decode_e2ee_delta(sealed.open(c["lmbp_e2ee"])).get("text", "")
+        f = c.get("lmbp_e2ee")
+        if f:
+            p = rd.next(f)
+            if f["type"] == "task.delta":
+                text += decode_e2ee_delta(p).get("text", "")
+    rd.finish()  # raises if the gateway truncated the response
 
 pinned_jkt is the device key thumbprint your backend recorded at pairing
 (ApproveResult.jkt); pinning stops a compromised gateway from substituting its
@@ -80,7 +85,49 @@ class E2EESealed:
     response_key: bytes
 
     def open(self, frame: dict) -> bytes:
+        """Open one frame. Stateless: on its own it does NOT detect reordered,
+        duplicated, dropped or truncated frames; use reader()."""
         return open_chunk(self.response_key, self.rid, frame["type"], frame["seq"], frame["data"])
+
+    def reader(self, after: int = 0) -> "E2EEReader":
+        """Stateful reader for this response (after = last seq already read, for a resumed stream)."""
+        return E2EEReader(self, after)
+
+
+class E2EEReader:
+    """Opens one response's sealed frames in order (spec §17.5): next() accepts
+    only seq last+1 of type task.delta/task.done and nothing after task.done;
+    finish() raises unless the sealed task.done was read."""
+
+    def __init__(self, sealed: E2EESealed, after: int = 0):
+        self._s, self.last, self.done, self._err = sealed, after, False, None
+
+    def _fail(self, msg: str, cause: Exception | None = None):
+        self._err = ValueError("lmbp e2ee: " + msg)
+        raise self._err from cause
+
+    def next(self, frame: dict) -> bytes:
+        if self._err:
+            raise self._err
+        seq, typ = frame.get("seq"), frame.get("type")
+        if self.done:
+            self._fail(f"frame seq {seq} after task.done")
+        if typ not in ("task.delta", "task.done"):
+            self._fail(f"unexpected frame type {typ!r}")
+        if seq != self.last + 1:
+            self._fail(f"frame seq {seq}, want {self.last + 1} (reordered, duplicated or dropped)")
+        try:
+            p = self._s.open(frame)
+        except ValueError as e:
+            self._fail(f"frame seq {seq}: {e}", e)
+        self.last, self.done = seq, typ == "task.done"
+        return p
+
+    def finish(self) -> None:
+        if self._err:
+            raise self._err
+        if not self.done:
+            self._fail(f"response ended after seq {self.last} without the sealed task.done (truncated)")
 
 
 def seal_e2ee_request(dev: Any, pinned_jkt: str, req: dict) -> E2EESealed:

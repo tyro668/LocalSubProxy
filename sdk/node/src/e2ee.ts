@@ -5,8 +5,13 @@
  *
  *   const dev = server.pairing.listDevices(tenant, user)[0];
  *   const sealed = sealE2EERequest(dev, pinnedJkt, { model, messages });
- *   for await (const c of client.chat.completions.stream({ model, lmbp_e2ee: sealed.jwe }))
- *     if (c.lmbp_e2ee) text += decodeE2EEDelta(sealed.open(c.lmbp_e2ee)).text ?? '';
+ *   const rd = sealed.reader(); // enforces seq order and the sealed task.done
+ *   for await (const c of client.chat.completions.stream({ model, lmbp_e2ee: sealed.jwe })) {
+ *     if (!c.lmbp_e2ee) continue;
+ *     const p = rd.next(c.lmbp_e2ee);
+ *     if (c.lmbp_e2ee.type === 'task.delta') text += decodeE2EEDelta(p).text ?? '';
+ *   }
+ *   rd.finish(); // throws if the gateway truncated the response
  *
  * pinnedJkt is the device key thumbprint your backend recorded at pairing
  * (ApproveResult.jkt). Pinning stops a compromised gateway from substituting
@@ -24,7 +29,41 @@ export interface E2EERequest {
   model: string; messages: unknown[]; tools?: unknown[]; tool_choice?: unknown; max_tokens?: number; temperature?: number;
   rid?: string; iat?: number; response_key?: string;
 }
-export interface E2EESealed { jwe: string; rid: string; responseKey: Buffer; open(f: E2EEFrame): Buffer }
+export interface E2EESealed {
+  jwe: string; rid: string; responseKey: Buffer;
+  /** Open one frame. Stateless: on its own it does NOT detect reordered, duplicated, dropped or truncated frames; use reader(). */
+  open(f: E2EEFrame): Buffer;
+  /** Stateful reader for this response (after = last seq already read, for a resumed stream). */
+  reader(after?: number): E2EEReader;
+}
+
+/** Opens one response's sealed frames in order (spec §17.5): next() accepts only
+ * seq last+1 of type task.delta/task.done and nothing after task.done;
+ * finish() throws unless the sealed task.done was read. */
+export interface E2EEReader { next(f: E2EEFrame): Buffer; finish(): void; readonly last: number; readonly done: boolean }
+
+export function e2eeReader(sealed: Pick<E2EESealed, 'open'>, after = 0): E2EEReader {
+  let last = after, done = false, err: Error | null = null;
+  const fail = (m: string) => { err = new Error('lmbp e2ee: ' + m); throw err; };
+  return {
+    get last() { return last; },
+    get done() { return done; },
+    next(f) {
+      if (err) throw err;
+      if (done) fail(`frame seq ${f.seq} after task.done`);
+      if (f.type !== 'task.delta' && f.type !== 'task.done') fail(`unexpected frame type ${JSON.stringify(f.type)}`);
+      if (f.seq !== last + 1) fail(`frame seq ${f.seq}, want ${last + 1} (reordered, duplicated or dropped)`);
+      let p: Buffer;
+      try { p = sealed.open(f); } catch (e) { return fail(`frame seq ${f.seq}: ${(e as Error).message}`); }
+      last = f.seq; done = f.type === 'task.done';
+      return p;
+    },
+    finish() {
+      if (err) throw err;
+      if (!done) fail(`response ended after seq ${last} without the sealed task.done (truncated)`);
+    },
+  };
+}
 export interface E2EEDevice { deviceId: string; publicKey: Buffer; e2eeKey: string }
 
 const b64 = (b: Uint8Array) => Buffer.from(b).toString('base64url');
@@ -77,7 +116,11 @@ export function sealE2EERequest(dev: E2EEDevice, pinnedJkt: string, req: E2EEReq
   const responseKey = req.response_key && unb64(req.response_key).length === 32 ? unb64(req.response_key) : crypto.randomBytes(32);
   const r = { ...req, rid: req.rid || L.randomID('rid_'), iat: req.iat || L.now(), response_key: b64(responseKey) };
   const jwe = sealJwe(x, kid, Buffer.from(JSON.stringify(r)));
-  return { jwe, rid: r.rid, responseKey, open: (f) => openChunk(responseKey, r.rid, f.type, f.seq, f.data) };
+  const sealed: E2EESealed = {
+    jwe, rid: r.rid, responseKey, open: (f) => openChunk(responseKey, r.rid, f.type, f.seq, f.data),
+    reader: (after = 0) => e2eeReader(sealed, after),
+  };
+  return sealed;
 }
 
 /** Parse an opened task.delta frame ({ text?, tool_calls?, ... }). */

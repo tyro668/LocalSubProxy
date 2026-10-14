@@ -640,7 +640,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 ### 17.5 密封输出
 - 每个结果帧用 `response_key` 以 AES-256-GCM 加密：nonce = 4 字节 0 ‖ BE64(seq)，AAD = UTF-8 `"lmbp-e2ee/v1|" + rid + "|" + type + "|" + seq`。`task.delta.data = {e2ee: base64url(密文‖tag)}`，明文为 `{text?, tool_calls?}`，MUST NOT 同时带明文字段；`task.done` 保留明文 `finish_reason`、`usage`（计费需要），另带密封的 `{finish_reason}`。
-- 网关的 SSE 块带 `lmbp_e2ee: {seq, type, data}`；租户用 `response_key` 解开。由于 `seq`、`type`、`rid` 都绑定在 AAD 中，网关无法重排、跨请求拼接或伪造帧。
+- 网关的 SSE 块带 `lmbp_e2ee: {seq, type, data}`；租户用 `response_key` 解开。`seq`、`type`、`rid` 都绑定在 AAD 中，所以网关无法修改单帧的序号或类型、跨请求拼接或伪造帧。
+- 单帧解密是无状态的：只靠它，察觉不到网关对整条响应重排、重复、丢帧或截断。租户 MUST 按顺序读取整条响应：每帧 `seq` MUST 等于上一帧加 1（首帧为 1，续传时从已读的最后一帧之后开始），`type` 只能是 `task.delta` 或 `task.done`，密封 `task.done` 之后 MUST NOT 再接受帧；响应结束时若没有读到密封 `task.done`，MUST 视为截断。参考 SDK 的响应读取器（Go `E2EESealed.Reader`/`ReaderAfter`，Node `sealed.reader()`，Python `sealed.reader()`）实现这些检查。
 
 ### 17.6 威胁模型
 | 威胁 | 结果 |
@@ -648,7 +649,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 | 网关读取提示词/输出 | 防御：只有密文 |
 | 网关替换设备公钥 | 防御：租户用配对时钉住的 jkt 校验 |
 | 网关重放请求 | 防御：`iat` 300 秒 + `rid` 去重 |
-| 网关重排/删改输出帧 | 防御：AAD 绑定 seq/type/rid；删尾可被察觉（缺少密封 `task.done`） |
+| 网关重排/重复/删改/截断输出帧 | 防御：AAD 绑定 seq/type/rid（单帧），租户按序读取（seq 连续、以密封 `task.done` 结束）发现重排、重复、丢帧和截断 |
 | 网关拒绝服务、观察元数据（模型名、时间、长度、用量） | 不防御 |
 | 设备或租户本身被攻破 | 不在范围 |
 不提供前向保密之外的保证：X25519 设备密钥泄露会暴露用该密钥加密的历史请求，设备 SHOULD 定期轮换（`models.update.e2ee_key`）。

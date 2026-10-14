@@ -114,13 +114,15 @@ test('client E2EE: sealE2EERequest + open sealed stream frames', async () => {
     assert.ok(!sealed.jwe.includes('secret'));
     const c = s.lsp.client(T, 'u1');
     let text = ''; let frames = 0;
+    const rd = sealed.reader();
     for await (const ch of c.chat.completions.stream({ model: 'm1', lmbp_e2ee: sealed.jwe })) {
       if (!ch.lmbp_e2ee) continue;
       frames++;
-      if (ch.lmbp_e2ee.type === 'task.delta') text += decodeE2EEDelta(sealed.open(ch.lmbp_e2ee)).text ?? '';
-      else sealed.open(ch.lmbp_e2ee);
+      const p = rd.next(ch.lmbp_e2ee);
+      if (ch.lmbp_e2ee.type === 'task.delta') text += decodeE2EEDelta(p).text ?? '';
       assert.throws(() => sealed.open({ ...ch.lmbp_e2ee, seq: ch.lmbp_e2ee.seq + 1 }), 'reordered frame must not open');
     }
+    rd.finish();
     assert.equal(text, 'echo:secret');
     assert.ok(frames >= 2);
   } finally { ws.close(); await s.close(); }

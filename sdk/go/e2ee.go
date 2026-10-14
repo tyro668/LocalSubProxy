@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/tyro668/LocalSubProxy/internal/lmbp"
@@ -68,10 +69,76 @@ func SealE2EERequest(dev DeviceInfo, pinnedJKT string, r E2EERequest) (*E2EESeal
 }
 
 // Open decrypts one sealed response frame (ChatCompletionChunk.E2EE or an
-// element of ChatCompletion.E2EE). It fails if the frame was altered,
-// reordered (seq/type are authenticated) or belongs to another request.
+// element of ChatCompletion.E2EE). It fails if the frame was altered, its
+// seq/type were changed, or it belongs to another request. Open is
+// stateless: on its own it does NOT detect frames that were reordered,
+// duplicated, dropped or truncated. Read a response with Reader instead.
 func (s *E2EESealed) Open(f E2EEFrame) ([]byte, error) {
 	return lmbp.OpenChunk(s.ResponseKey, s.RID, f.Type, f.Seq, f.Data)
+}
+
+// Reader returns a stateful reader for one response (spec §17.5).
+func (s *E2EESealed) Reader() *E2EEReader { return s.ReaderAfter(0) }
+
+// ReaderAfter is Reader for a stream resumed after seq (the last sealed
+// frame already read, e.g. from a previous reader's Last).
+func (s *E2EESealed) ReaderAfter(seq int64) *E2EEReader {
+	return &E2EEReader{s: s, last: seq}
+}
+
+// E2EEReader opens the sealed frames of one response in order. Next accepts
+// only seq last+1 of type task.delta or task.done and nothing after
+// task.done; Finish fails unless the sealed task.done was read. Together
+// they detect a gateway that reorders, duplicates, drops or truncates frames.
+type E2EEReader struct {
+	s    *E2EESealed
+	last int64
+	done bool
+	err  error
+}
+
+// Next opens f. After an error the reader stays failed.
+func (r *E2EEReader) Next(f E2EEFrame) ([]byte, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	switch {
+	case r.done:
+		r.err = fmt.Errorf("lmbp e2ee: frame seq %d after task.done", f.Seq)
+	case f.Type != lmbp.TypeTaskDelta && f.Type != lmbp.TypeTaskDone:
+		r.err = fmt.Errorf("lmbp e2ee: unexpected frame type %q", f.Type)
+	case f.Seq != r.last+1:
+		r.err = fmt.Errorf("lmbp e2ee: frame seq %d, want %d (reordered, duplicated or dropped)", f.Seq, r.last+1)
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	p, err := r.s.Open(f)
+	if err != nil {
+		r.err = fmt.Errorf("lmbp e2ee: frame seq %d: %w", f.Seq, err)
+		return nil, r.err
+	}
+	r.last = f.Seq
+	r.done = f.Type == lmbp.TypeTaskDone
+	return p, nil
+}
+
+// Last is the seq of the last frame read (the resume point for ReaderAfter).
+func (r *E2EEReader) Last() int64 { return r.last }
+
+// Done reports whether the sealed task.done was read.
+func (r *E2EEReader) Done() bool { return r.done }
+
+// Finish ends the response: an error if a frame failed or the sealed
+// task.done never arrived (truncation).
+func (r *E2EEReader) Finish() error {
+	if r.err != nil {
+		return r.err
+	}
+	if !r.done {
+		return fmt.Errorf("lmbp e2ee: response ended after seq %d without the sealed task.done (truncated)", r.last)
+	}
+	return nil
 }
 
 // DecodeE2EEDelta parses an opened task.delta frame.
