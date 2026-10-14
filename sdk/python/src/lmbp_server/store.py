@@ -21,6 +21,17 @@ TaskRecord = dict  # id, tenant, owner, device, model, state, events: list[TaskE
 TaskEvent = dict   # seq, type, data
 
 
+class StoreConflict(Exception):
+    """A seq or a terminal state already exists."""
+
+
+class StoreNotFound(Exception):
+    """The task does not exist."""
+
+
+TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
+
+
 @runtime_checkable
 class Store(Protocol):
     def get_secret(self, name: str) -> Optional[bytes]: ...
@@ -40,7 +51,16 @@ class Store(Protocol):
 
     def put_task(self, t: TaskRecord) -> None: ...
     def get_task(self, id: str) -> Optional[TaskRecord]: ...
+    # append_event stores a non-terminal event; raises StoreConflict if the
+    # seq is already stored (a seq is never reused).
     def append_event(self, task_id: str, ev: TaskEvent) -> None: ...
+    # finish_task atomically stores the terminal event (task.done/task.error)
+    # AND the terminal state (SUCCEEDED/FAILED/CANCELLED): both or neither.
+    # Raises StoreConflict if the seq is taken or the task already has a
+    # terminal state, StoreNotFound if the task does not exist. put_task is for
+    # non-terminal states only. Recovery relies on this: a stored terminal
+    # event always agrees with the stored state.
+    def finish_task(self, task_id: str, ev: TaskEvent, state: str) -> None: ...
 
     def close(self) -> None: ...
 
@@ -97,8 +117,23 @@ class MemoryStore:
 
     def append_event(self, task_id, ev):
         t = self.tasks.get(task_id)
-        if t is not None and not any(e is ev for e in t["events"]):
-            t["events"].append(ev)
+        if t is None:
+            return
+        if any(e["seq"] == ev["seq"] for e in t["events"]):
+            raise StoreConflict(f"task {task_id}: seq {ev['seq']} already stored")
+        t["events"].append(ev)
+
+    def finish_task(self, task_id, ev, state):
+        t = self.tasks.get(task_id)
+        if t is None:
+            raise StoreNotFound(f"task {task_id} not found")
+        if t.get("state") in TERMINAL_STATES:
+            raise StoreConflict(f"task {task_id} already {t['state']}")
+        if any(e["seq"] == ev["seq"] for e in t["events"]):
+            raise StoreConflict(f"task {task_id}: seq {ev['seq']} already stored")
+        # One synchronous step: event and state change together.
+        t["events"].append(ev)
+        t["state"] = state
 
     def close(self):
         pass
@@ -197,7 +232,30 @@ class SQLiteStore:
         return t
 
     def append_event(self, task_id, ev):
-        self._x("INSERT OR IGNORE INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)", task_id, ev["seq"], _enc(ev))
+        with self._lock:
+            cur = self.db.execute("INSERT OR IGNORE INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)", (task_id, ev["seq"], _enc(ev)))
+            if cur.rowcount == 0:
+                raise StoreConflict(f"task {task_id}: seq {ev['seq']} already stored")
+
+    def finish_task(self, task_id, ev, state):
+        """One transaction: the terminal event row and the task's terminal state."""
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                r = self.db.execute("SELECT doc FROM lmbp_tasks WHERE id = ?", (task_id,)).fetchone()
+                if r is None:
+                    raise StoreNotFound(f"task {task_id} not found")
+                t = _dec(r[0])
+                if t.get("state") in TERMINAL_STATES:
+                    raise StoreConflict(f"task {task_id} already {t['state']}")
+                if self.db.execute("SELECT 1 FROM lmbp_events WHERE task_id = ? AND seq = ?", (task_id, ev["seq"])).fetchone():
+                    raise StoreConflict(f"task {task_id}: seq {ev['seq']} already stored")
+                self.db.execute("INSERT INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)", (task_id, ev["seq"], _enc(ev)))
+                self.db.execute("UPDATE lmbp_tasks SET doc = ? WHERE id = ?", (_enc({**t, "events": [], "state": state}), task_id))
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
 
     def close(self):
         with self._lock:

@@ -77,3 +77,60 @@ func TestIdempotencyKeysUnambiguous(t *testing.T) {
 		}
 	}
 }
+
+// Third audit #1: FinishTask is all-or-nothing and never reuses a seq or
+// overwrites a terminal state (both stores).
+func TestFinishTaskAtomic(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "f.db")
+	sq, err := OpenSQLite(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sq.Close()
+	for name, s := range map[string]Store{"memory": NewMemory(), "sqlite": sq} {
+		t.Run(name, func(t *testing.T) {
+			if err := s.CreateTask(ctx, Task{ID: "t1", TenantID: "a", OwnerID: "u", State: "RUNNING", Request: []byte("{}")}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AppendEvent(ctx, Event{TaskID: "t1", Seq: 1, Kind: "task.delta"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AppendEvent(ctx, Event{TaskID: "t1", Seq: 1, Kind: "task.delta"}); err != ErrExists {
+				t.Fatalf("reused seq: %v", err)
+			}
+			if err := s.FinishTask(ctx, Event{TaskID: "t1", Seq: 1, Kind: "task.done"}, "SUCCEEDED"); err != ErrExists {
+				t.Fatalf("terminal on a used seq: %v", err)
+			}
+			if tk, _ := s.GetTask(ctx, "t1"); tk.State != "RUNNING" {
+				t.Fatalf("failed FinishTask changed the state to %s", tk.State)
+			}
+			if err := s.FinishTask(ctx, Event{TaskID: "t1", Seq: 2, Kind: "task.done"}, "SUCCEEDED"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.FinishTask(ctx, Event{TaskID: "t1", Seq: 3, Kind: "task.error"}, "FAILED"); err != ErrExists {
+				t.Fatalf("second terminal accepted: %v", err)
+			}
+			_ = s.SetTaskState(ctx, "t1", "RUNNING")
+			tk, _ := s.GetTask(ctx, "t1")
+			evs, _ := s.ListEvents(ctx, "t1")
+			if tk.State != "SUCCEEDED" || len(evs) != 2 || evs[1].Kind != "task.done" {
+				t.Fatalf("state %s events %+v", tk.State, evs)
+			}
+			if err := s.FinishTask(ctx, Event{TaskID: "nope", Seq: 1, Kind: "task.done"}, "SUCCEEDED"); err != ErrNotFound {
+				t.Fatalf("missing task: %v", err)
+			}
+		})
+	}
+	// SQLite: a status update failing inside the transaction rolls back the event.
+	_ = sq.CreateTask(ctx, Task{ID: "t2", TenantID: "a", OwnerID: "u", State: "RUNNING", Request: []byte("{}")})
+	if _, err := sq.db.Exec(`CREATE TRIGGER f BEFORE UPDATE OF state ON tasks WHEN NEW.state='SUCCEEDED' BEGIN SELECT RAISE(ABORT,'injected'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sq.FinishTask(ctx, Event{TaskID: "t2", Seq: 1, Kind: "task.done"}, "SUCCEEDED"); err == nil {
+		t.Fatal("injected failure not reported")
+	}
+	if evs, _ := sq.ListEvents(ctx, "t2"); len(evs) != 0 {
+		t.Fatalf("event committed without its state: %+v", evs)
+	}
+}

@@ -111,3 +111,13 @@ func TestNoAckWithoutPersistedTerminalState(t *testing.T) {
 		t.Fatalf("terminal frame ACKed (%d) without persisted terminal state (done seq %d)", a, doneSeq)
 	}
 }
+
+func (f *failStore) FinishTask(ctx context.Context, e store.Event, state string) error {
+	if n := f.failEventSeq.Load(); n != 0 && e.Seq == n && e.Kind != lmbp.TypeTaskError {
+		return errDisk
+	}
+	if f.failState.Load() {
+		return errDisk
+	}
+	return f.Store.FinishTask(ctx, e, state)
+}

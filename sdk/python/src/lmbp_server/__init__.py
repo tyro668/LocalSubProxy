@@ -26,10 +26,10 @@ from .asgi import LMBPASGI, LMBPMiddleware
 from .client import InProcessClient, LMBPAPIError, LMBPStream
 from .e2ee import E2EESealed, decode_e2ee_delta, seal_e2ee_request
 from .engine import Gateway, norm_code
-from .store import MemoryStore, SQLiteStore, Store
+from .store import MemoryStore, SQLiteStore, Store, StoreConflict, StoreNotFound
 
 __all__ = ["LMBPStream", "E2EESealed", "seal_e2ee_request", "decode_e2ee_delta", "LMBPServer", "TenantConfig", "PairingInfo", "PendingPairing", "ApproveResult", "DeviceInfo", "PairingError",
-           "Store", "MemoryStore", "SQLiteStore", "InProcessClient", "LMBPAPIError", "LMBPMiddleware", "anthropic", "Gateway"]
+           "Store", "StoreConflict", "StoreNotFound", "MemoryStore", "SQLiteStore", "InProcessClient", "LMBPAPIError", "LMBPMiddleware", "anthropic", "Gateway"]
 __version__ = "0.1.0"
 
 

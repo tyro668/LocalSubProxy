@@ -182,8 +182,33 @@ func (m *Memory) SetTaskState(_ context.Context, id, state string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	if t.State != "QUEUED" && t.State != "RUNNING" && t.State != "" {
+		return nil // never overwrite a terminal state (see Store)
+	}
 	t.State, t.UpdatedAt = state, time.Now()
 	m.tasks[id] = t
+	return nil
+}
+
+// FinishTask stores the terminal event and state under one lock: both or
+// neither (see Store).
+func (m *Memory) FinishTask(_ context.Context, e Event, state string) error {
+	defer m.lock()()
+	t, ok := m.tasks[e.TaskID]
+	if !ok {
+		return ErrNotFound
+	}
+	if t.State != "QUEUED" && t.State != "RUNNING" && t.State != "" {
+		return ErrExists
+	}
+	for _, x := range m.events[e.TaskID] {
+		if x.Seq == e.Seq {
+			return ErrExists
+		}
+	}
+	m.events[e.TaskID] = append(m.events[e.TaskID], e)
+	t.State, t.UpdatedAt = state, time.Now()
+	m.tasks[e.TaskID] = t
 	return nil
 }
 
@@ -200,7 +225,7 @@ func (m *Memory) AppendEvent(_ context.Context, e Event) error {
 	defer m.lock()()
 	for _, x := range m.events[e.TaskID] {
 		if x.Seq == e.Seq {
-			return nil
+			return ErrExists // a seq is never reused (same as the SQLite primary key)
 		}
 	}
 	m.events[e.TaskID] = append(m.events[e.TaskID], e)

@@ -535,6 +535,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 - 调用方 MAY 带 `Idempotency-Key`（1–255 字符）。同一租户、同一终端用户内，相同 key + 相同请求体（按 SHA-256 比较）MUST 接回已有任务而不是再次执行；请求体不同 MUST 返回 422 `IDEMPOTENCY_KEY_REUSED`。key 至少保留 24 小时。
 - 幂等记录、任务记录、排队等待设备并发槽位与网关内存中的任务登记 MUST 构成一个整体：从幂等记录可见的那一刻起，任务即处于“待执行（pending）”状态，此时到达的重复请求 MUST 接回这个待执行任务（等待并得到同一结果），MUST NOT 返回 404、`OUTCOME_UNKNOWN` 或再次执行。任务在排队阶段失败（如 `DEVICE_BUSY`、`DEVICE_OFFLINE`）时，网关 MUST 把该错误记录为任务的终止事件，此后用同一 key 重放得到同一错误；要重新执行，调用方使用新的 key。
 - 持久化先于确认：网关 MUST 先把设备数据帧（终止帧还包括任务终止状态）写入存储，再向订阅者发布并发送覆盖该帧的 `task.ack`。写入失败时 MUST NOT 确认该帧（设备保留在续传缓冲区中），MUST 通知设备取消任务，并以 `INTERNAL` 结束任务，不得把未持久化的结果作为成功返回给调用方。
+- 终止原子性：终止事件（`task.done` / `task.error`）与任务终止状态（SUCCEEDED / FAILED / CANCELLED）MUST 在同一个事务中提交，要么都写入，要么都不写入。每个任务最多有一个终止事件；`seq` MUST NOT 复用，已有终止状态 MUST NOT 被覆盖。终止写入失败时，网关以 `INTERNAL` 结束任务，这个本地错误使用同一 `seq`（失败的事务没有占用它）。
+- 恢复判定：从存储重放已结束的任务时，网关 MUST 只在最后一个事件为终止事件、且存储的状态与之一致（done ↔ SUCCEEDED，error ↔ FAILED/CANCELLED）时按原结果重放；否则（没有终止事件，或旧数据中两者不一致）MUST 报告 `OUTCOME_UNKNOWN`。这个事件只用于响应、不写入存储，使用下一个未用的 `seq`。同一个幂等请求因此不会在故障前后得到相反的结果。
 - 重新接入时带 `Last-Event-ID: <n>`（POST 同一 key，或 `GET /lmbp/v1/tenant/tasks/{id}/events`），网关 MUST 只发送 `id > n` 的事件；已结束的任务从存储重放。
 - 带 key 的请求，调用方断开后网关 SHOULD 保留任务 30 秒再取消；不带 key 时按 §6.5 立即取消。
 

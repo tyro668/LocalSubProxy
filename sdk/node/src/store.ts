@@ -65,14 +65,30 @@ export interface Store {
   /** First writer wins: an existing (tenant, owner, key) record is kept. */
   putIdempotency(tenant: string, owner: string, key: string, rec: Idempotency): void;
 
-  /** putTask writes the task's metadata; events are written with appendEvent. */
+  /** putTask writes the task's metadata; events are written with appendEvent / finishTask.
+   *  It is used for non-terminal states (QUEUED, RUNNING) only. */
   putTask(t: TaskRecord): void;
   /** getTask returns the task with all its events. */
   getTask(id: string): TaskRecord | undefined;
+  /** appendEvent stores a non-terminal event; throws StoreConflict if the seq is already stored (a seq is never reused). */
   appendEvent(taskID: string, ev: TaskEvent): void;
+  /**
+   * finishTask atomically stores the terminal event (task.done / task.error)
+   * AND the terminal state (SUCCEEDED, FAILED, CANCELLED): both or neither.
+   * Throws StoreConflict if the seq is taken or the task already has a
+   * terminal state, StoreNotFound if the task does not exist. Recovery relies
+   * on this: a stored terminal event always agrees with the stored state.
+   */
+  finishTask(taskID: string, ev: TaskEvent, state: string): void;
 
   close?(): void;
 }
+
+/** Thrown by appendEvent / finishTask when a seq or a terminal state already exists. */
+export class StoreConflict extends Error { constructor(m: string) { super(m); this.name = 'StoreConflict'; } }
+/** Thrown by finishTask when the task does not exist. */
+export class StoreNotFound extends Error { constructor(m: string) { super(m); this.name = 'StoreNotFound'; } }
+const TERMINAL_STATES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
 
 /** In-memory store (the default). State is lost on restart. */
 export class MemoryStore implements Store {
@@ -107,7 +123,18 @@ export class MemoryStore implements Store {
   getTask(id: string) { return this.tasks.get(id); }
   appendEvent(id: string, ev: TaskEvent) {
     const t = this.tasks.get(id);
-    if (t && !t.events.includes(ev)) t.events.push(ev);
+    if (!t) return;
+    if (t.events.some((e) => e.seq === ev.seq)) throw new StoreConflict(`task ${id}: seq ${ev.seq} already stored`);
+    t.events.push(ev);
+  }
+  finishTask(id: string, ev: TaskEvent, state: string) {
+    const t = this.tasks.get(id);
+    if (!t) throw new StoreNotFound(`task ${id} not found`);
+    if (TERMINAL_STATES.has(t.state)) throw new StoreConflict(`task ${id} already ${t.state}`);
+    if (t.events.some((e) => e.seq === ev.seq)) throw new StoreConflict(`task ${id}: seq ${ev.seq} already stored`);
+    // Single synchronous step: event and state change together.
+    t.events.push(ev);
+    t.state = state;
   }
 }
 
@@ -190,6 +217,25 @@ export class SqliteStore implements Store {
     if (t) t.events = this.db.prepare('SELECT doc FROM lmbp_events WHERE task_id = ? ORDER BY seq').all(id).map((r) => dec<TaskEvent>(r.doc));
     return t;
   }
-  appendEvent(id: string, ev: TaskEvent) { this.db.prepare('INSERT OR IGNORE INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)').run(id, ev.seq, enc(ev)); }
+  appendEvent(id: string, ev: TaskEvent) {
+    const r: any = this.db.prepare('INSERT OR IGNORE INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)').run(id, ev.seq, enc(ev));
+    if (r && r.changes === 0) throw new StoreConflict(`task ${id}: seq ${ev.seq} already stored`);
+  }
+  /** One transaction: the terminal event row and the task's terminal state. */
+  finishTask(id: string, ev: TaskEvent, state: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const t = this.one<TaskRecord>('SELECT doc FROM lmbp_tasks WHERE id = ?', id);
+      if (!t) throw new StoreNotFound(`task ${id} not found`);
+      if (TERMINAL_STATES.has(t.state)) throw new StoreConflict(`task ${id} already ${t.state}`);
+      if (this.db.prepare('SELECT 1 FROM lmbp_events WHERE task_id = ? AND seq = ?').get(id, ev.seq)) throw new StoreConflict(`task ${id}: seq ${ev.seq} already stored`);
+      this.db.prepare('INSERT INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)').run(id, ev.seq, enc(ev));
+      this.db.prepare('UPDATE lmbp_tasks SET doc = ? WHERE id = ?').run(enc({ ...t, events: [], state }), id);
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw e;
+    }
+  }
   close() { this.db.close(); }
 }

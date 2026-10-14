@@ -212,8 +212,39 @@ func (s *SQLite) CreateTask(ctx context.Context, t Task) error {
 }
 
 func (s *SQLite) SetTaskState(ctx context.Context, id, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET state=?, updated_at=? WHERE id=?`, state, time.Now().UnixNano(), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET state=?, updated_at=? WHERE id=? AND state IN ('QUEUED','RUNNING')`, state, time.Now().UnixNano(), id)
 	return err
+}
+
+// FinishTask writes the terminal event and the terminal state in one
+// transaction (see Store).
+func (s *SQLite) FinishTask(ctx context.Context, e Event, state string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var cur string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM tasks WHERE id=?`, e.TaskID).Scan(&cur); err != nil {
+		return nf(err)
+	}
+	if cur != "QUEUED" && cur != "RUNNING" {
+		return ErrExists
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE task_id=? AND seq=?`, e.TaskID, e.Seq).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrExists
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(task_id,seq,kind,data,at) VALUES(?,?,?,?,?)`, e.TaskID, e.Seq, e.Kind, s.c.Seal(e.Data), e.At.UnixNano()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET state=?, updated_at=? WHERE id=?`, state, time.Now().UnixNano(), e.TaskID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLite) GetTask(ctx context.Context, id string) (Task, error) {
@@ -230,8 +261,14 @@ func (s *SQLite) GetTask(ctx context.Context, id string) (Task, error) {
 }
 
 func (s *SQLite) AppendEvent(ctx context.Context, e Event) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO events(task_id,seq,kind,data,at) VALUES(?,?,?,?,?)`, e.TaskID, e.Seq, e.Kind, s.c.Seal(e.Data), e.At.UnixNano())
-	return err
+	r, err := s.db.ExecContext(ctx, `INSERT INTO events(task_id,seq,kind,data,at) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, e.TaskID, e.Seq, e.Kind, s.c.Seal(e.Data), e.At.UnixNano())
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		return ErrExists // a seq is never reused
+	}
+	return nil
 }
 
 func (s *SQLite) ListEvents(ctx context.Context, taskID string) ([]Event, error) {

@@ -138,7 +138,8 @@ async def test_no_ack_without_persistence(serve_app, mode):
     if mode == "event":
         st.append_event = lambda id, ev: (_ for _ in ()).throw(OSError("disk full")) if ev["seq"] == 2 and ev["type"] != "task.error" else append(id, ev)
     else:
-        st.put_task = lambda rec: (_ for _ in ()).throw(OSError("disk full")) if rec.get("state") in ("SUCCEEDED", "FAILED", "CANCELLED") else put_task(rec)
+        # Terminal states are written with their event by finish_task (atomic).
+        st.finish_task = lambda *a: (_ for _ in ()).throw(OSError("disk full"))
     lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: logs.append(" ".join(map(str, a))))
     async with serve_app(lsp.asgi()) as base:
         ws, task, _ = await pair_and_connect(lsp, base, T, "u1")

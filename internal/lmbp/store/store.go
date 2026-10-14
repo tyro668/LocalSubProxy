@@ -116,9 +116,21 @@ type Store interface {
 	GetIdempotency(ctx context.Context, tenantID, ownerID, key string) (Idempotency, error)
 
 	CreateTask(ctx context.Context, t Task) error
+	// SetTaskState sets a non-terminal state (QUEUED, RUNNING). It never
+	// overwrites a terminal state; terminal states are only written by
+	// FinishTask.
 	SetTaskState(ctx context.Context, id, state string) error
 	GetTask(ctx context.Context, id string) (Task, error)
+	// AppendEvent stores a non-terminal event; ErrExists if (task, seq) is
+	// already stored (a seq is never reused).
 	AppendEvent(ctx context.Context, e Event) error
+	// FinishTask atomically stores the terminal event e (task.done /
+	// task.error) AND sets the terminal state (SUCCEEDED, FAILED,
+	// CANCELLED): both are committed or neither is. ErrExists if e.Seq is
+	// taken or the task already has a terminal state; ErrNotFound if the task
+	// does not exist. Recovery relies on this: a stored terminal event always
+	// agrees with the stored state.
+	FinishTask(ctx context.Context, e Event, state string) error
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 
 	// Purge deletes finished tasks (and their events) and expired device

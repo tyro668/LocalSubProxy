@@ -131,9 +131,9 @@ for (const mode of ['event', 'state']) {
     const st = new MemoryStore();
     const logs = [];
     const append = st.appendEvent.bind(st);
-    const putTask = st.putTask.bind(st);
+    // Terminal states are written with their event by finishTask (atomic).
     if (mode === 'event') st.appendEvent = (id, ev) => { if (ev.seq === 2 && ev.type !== 'task.error') throw new Error('disk full'); return append(id, ev); };
-    else st.putTask = (rec) => { if (['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(rec.state)) throw new Error('disk full'); return putTask(rec); };
+    else st.finishTask = () => { throw new Error('disk full'); };
     const s = await setup({ store: st, log: (...a) => logs.push(a.join(' ')) });
     const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
     try {

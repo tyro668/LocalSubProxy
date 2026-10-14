@@ -25,7 +25,7 @@ from urllib.parse import parse_qsl
 from . import anthropic as A
 from . import protocol as L
 from ._http import Request, WSMsgType, web
-from .store import MemoryStore, Store
+from .store import MemoryStore, Store, StoreNotFound
 
 PROBLEM_BASE = "https://localsubproxy.dev/problems/"
 USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ"
@@ -39,6 +39,15 @@ DEFAULT_FLOW = {"task_window": 1 << 20, "conn_window": 4 << 20}
 
 def err_status(code):
     return STATUS_OF.get(code, 502)
+
+
+TERMINAL_STATES = frozenset({"SUCCEEDED", "FAILED", "CANCELLED"})
+
+
+def state_of(ev):
+    if ev["type"] == "task.done":
+        return "SUCCEEDED"
+    return "CANCELLED" if (ev.get("data") or {}).get("code") == "CANCELLED" else "FAILED"
 
 
 def is_terminal(t):
@@ -318,8 +327,20 @@ class Task:
     def finished(cls, g, rec, req_model):
         t = cls(g, None, rec["id"], rec["tenant"], rec["owner"], req_model, False, False, done=True, events=list(rec["events"]))
         t.replayed = True
-        if not t.events or not is_terminal(t.events[-1]["type"]):
-            t.events.append({"seq": len(t.events) + 1, "type": "task.error", "data": error_body("OUTCOME_UNKNOWN", "task outcome unknown")})
+        # Recovery decides from a consistent terminal state: the last event is
+        # terminal AND the stored state agrees (finish_task writes both
+        # atomically). Otherwise (no terminal event, or a legacy row whose event
+        # and state disagree) the outcome is OUTCOME_UNKNOWN: a synthetic event
+        # that is only served, never stored, at the next unused seq.
+        last = t.events[-1] if t.events else None
+        last_seq = last["seq"] if last else 0
+        consistent = bool(last) and is_terminal(last["type"]) and (
+            rec.get("state") == "SUCCEEDED" if last["type"] == "task.done" else rec.get("state") in ("FAILED", "CANCELLED"))
+        if not consistent:
+            if last and is_terminal(last["type"]):
+                g.log(f"lmbp: task {rec['id']}: stored terminal {last['type']} disagrees with state {rec.get('state')}; reporting OUTCOME_UNKNOWN")
+                t.events.pop()
+            t.events.append({"seq": last_seq + 1, "type": "task.error", "data": error_body("OUTCOME_UNKNOWN", "task outcome unknown")})
         return t
 
     def _timeout(self):
@@ -343,12 +364,16 @@ class Task:
                 f.set_result(None)
 
     def record(self, ev):
-        """Publish a gateway-local event; a failed write is logged (a later
-        re-attach then reports OUTCOME_UNKNOWN) - there is nothing to ACK."""
+        """Publish a gateway-local terminal event. It is stored atomically with
+        the terminal state; if that fails nothing is stored and a later
+        re-attach reports OUTCOME_UNKNOWN (an error, never a success). There is
+        nothing to ACK."""
         self.events.append(ev)
         if not getattr(self, "replayed", False):
             try:
-                self.g.store.append_event(self.id, ev)
+                self.g.store.finish_task(self.id, ev, state_of(ev))
+            except StoreNotFound:
+                pass  # the task row was never created (storage error at creation)
             except Exception as e:  # noqa: BLE001 - any store failure
                 self.g.log(f"lmbp: task {self.id}: persisting local event failed: {e}")
         self.broadcast()
@@ -364,19 +389,20 @@ class Task:
         if inp["type"] == "task.delta" and not self.e2ee and data.get("e2ee"):
             data = {k: v for k, v in data.items() if k != "e2ee"}
         ev = {"seq": inp["seq"], "type": inp["type"], "data": data}
-        try:
-            self.g.store.append_event(self.id, ev)
-        except Exception as e:  # noqa: BLE001
-            return self.persist_failed(inp["seq"], "event", e)
         state = ""
         if is_terminal(inp["type"]):
-            state = "SUCCEEDED"
-            if inp["type"] == "task.error":
-                state = "CANCELLED" if data.get("code") == "CANCELLED" else "FAILED"
+            # Terminal event + terminal state in one transaction: on failure
+            # neither is stored, so the local INTERNAL error can take this seq.
+            state = state_of(ev)
             try:
-                self.g.set_task_state(self.id, state)
+                self.g.store.finish_task(self.id, ev, state)
             except Exception as e:  # noqa: BLE001
-                return self.persist_failed(inp["seq"], "terminal state", e)
+                return self.persist_failed(inp["seq"], "terminal event and state", e)
+        else:
+            try:
+                self.g.store.append_event(self.id, ev)
+            except Exception as e:  # noqa: BLE001
+                return self.persist_failed(inp["seq"], "event", e)
         self.events.append(ev)
         self.persisted = inp["seq"]
         self.broadcast()
@@ -415,7 +441,7 @@ class Task:
             return
         seq = (self.events[-1]["seq"] if self.events else 0) + 1
         self.record({"seq": seq, "type": "task.error", "data": error_body(code, msg, retryable)})
-        self.finish("CANCELLED" if code == "CANCELLED" else "FAILED", False)
+        self.finish("CANCELLED" if code == "CANCELLED" else "FAILED", False, write_state=False)
 
     def fail_offline(self, code, msg):
         if code == "DEVICE_OFFLINE" and self.sent_run:
@@ -430,11 +456,6 @@ class Task:
         for h in self.timers + ([self.grace] if self.grace else []):
             h.cancel()
         self.broadcast()
-        if write_state:
-            try:
-                self.g.set_task_state(self.id, state)
-            except Exception as e:  # noqa: BLE001
-                self.g.log(f"lmbp: task {self.id}: persisting state {state} failed: {e}")
         ds = self.ds
         if ds is not None:
             if from_device:
@@ -1328,10 +1349,11 @@ class Gateway:
         return await self.serve(req, task, 0, bool(r.get("stream")), {"X-Task-Id": task_id})
 
     def set_task_state(self, id, state):
+        """Non-terminal states only (terminal states are written with their
+        event by store.finish_task); never overwrites a terminal state."""
         rec = self.store.get_task(id)
-        if rec is not None:
-            rec["state"] = state
-            self.store.put_task(rec)
+        if rec is not None and rec.get("state") not in TERMINAL_STATES:
+            self.store.put_task({**rec, "state": state})
 
     async def dispatch(self, t, jws, blobs):
         """task.run, then the blob chunks, through the flow-controlled outbox."""

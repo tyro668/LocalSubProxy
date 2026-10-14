@@ -19,6 +19,7 @@ import { MemoryStore, SqliteStore, type Store } from './store.js';
 import { InProcessClient } from './client.js';
 
 export { MemoryStore, SqliteStore, InProcessClient };
+export { StoreConflict, StoreNotFound } from './store.js';
 export type { Store, Device, DeviceAuth, TaskRecord, TaskEvent, Idempotency, SqlDatabase } from './store.js';
 export * as anthropic from './anthropic.js';
 export * from './e2ee.js';

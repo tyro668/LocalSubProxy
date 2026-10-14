@@ -22,6 +22,8 @@ const STATUS_OF = {
 };
 const errStatus = (code) => STATUS_OF[code] ?? 502;
 const isTerminal = (t) => t === 'task.done' || t === 'task.error';
+const TERMINAL_STATES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
+const stateOf = (ev) => ev.type === 'task.done' ? 'SUCCEEDED' : (ev.data?.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED');
 const errorBody = (code, message, retryable = false) => ({ code, message, retryable });
 
 export class Gateway {
@@ -648,9 +650,11 @@ export class Gateway {
     return this.serve(req, res, task, 0, !!r.stream, abort.signal, anthropic);
   }
 
+  // Non-terminal states only; terminal states are written with their terminal
+  // event by store.finishTask. Never overwrites a terminal state.
   setTaskState(id, state) {
     const rec = this.store.getTask(id);
-    if (rec) { rec.state = state; this.store.putTask(rec); }
+    if (rec && !TERMINAL_STATES.has(rec.state)) this.store.putTask({ ...rec, state });
   }
 
   async dispatch(t, jws, blobs) {
@@ -815,17 +819,33 @@ class Task {
   static finished(g, rec, reqModel) {
     const t = Object.create(Task.prototype);
     Object.assign(t, { g, ds: null, id: rec.id, reqModel, e2ee: false, replayed: true, created: L.now(), events: [...rec.events], waiters: [], done: true, subs: new Map(), nextSub: 0 });
-    if (!t.events.length || !isTerminal(t.events.at(-1).type)) t.events.push({ seq: t.events.length + 1, type: 'task.error', data: errorBody('OUTCOME_UNKNOWN', 'task outcome unknown') });
+    // Recovery decides from a consistent terminal state: the last event is
+    // terminal AND the stored state agrees (finishTask writes both
+    // atomically). Otherwise (no terminal event, or a legacy row whose event
+    // and state disagree) the outcome is OUTCOME_UNKNOWN: a synthetic event
+    // that is only served, never stored, at the next unused seq.
+    const last = t.events.at(-1);
+    const lastSeq = last?.seq ?? 0;
+    const consistent = last && isTerminal(last.type) && (last.type === 'task.done' ? rec.state === 'SUCCEEDED' : rec.state === 'FAILED' || rec.state === 'CANCELLED');
+    if (!consistent) {
+      if (last && isTerminal(last.type)) { g.cfg.log(`lmbp: task ${rec.id}: stored terminal ${last.type} disagrees with state ${rec.state}; reporting OUTCOME_UNKNOWN`); t.events.pop(); }
+      t.events.push({ seq: lastSeq + 1, type: 'task.error', data: errorBody('OUTCOME_UNKNOWN', 'task outcome unknown') });
+    }
     return t;
   }
   recvSeq() { return this.ds?.inb ? this.ds.inb.recv(this.id) : 0; }
   broadcast() { for (const w of this.waiters.splice(0)) w(); }
   // record publishes a gateway-local event; a failed write is logged (a
   // later re-attach then reports OUTCOME_UNKNOWN), there is nothing to ACK.
+  // A local terminal event is stored atomically with the terminal state; if
+  // that fails nothing is stored and a later re-attach reports
+  // OUTCOME_UNKNOWN (an error, never a success).
   record(ev) {
     this.events.push(ev);
     if (!this.replayed) {
-      try { this.g.store.appendEvent(this.id, ev); } catch (e) { this.g.cfg.log(`lmbp: task ${this.id}: persisting local event failed: ${e?.message ?? e}`); }
+      try { this.g.store.finishTask(this.id, ev, stateOf(ev)); } catch (e) {
+        if (e?.name !== 'StoreNotFound') this.g.cfg.log(`lmbp: task ${this.id}: persisting local event failed: ${e?.message ?? e}`);
+      }
     }
     this.broadcast();
   }
@@ -839,12 +859,13 @@ class Task {
     if (inp.type === 'task.delta' && !this.e2ee && data.e2ee) { data = { ...data }; delete data.e2ee; }
     const ev = { seq: inp.seq, type: inp.type, data };
     let state = '';
-    try {
-      this.g.store.appendEvent(this.id, ev);
-    } catch (e) { return this.persistFailed(inp.seq, 'event', e); }
     if (isTerminal(inp.type)) {
-      state = inp.type === 'task.error' ? (data.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED') : 'SUCCEEDED';
-      try { this.g.setTaskState(this.id, state); } catch (e) { return this.persistFailed(inp.seq, 'terminal state', e); }
+      // Terminal event + terminal state in one transaction: on failure
+      // neither is stored, so the local INTERNAL error can take this seq.
+      state = stateOf(ev);
+      try { this.g.store.finishTask(this.id, ev, state); } catch (e) { return this.persistFailed(inp.seq, 'terminal event and state', e); }
+    } else {
+      try { this.g.store.appendEvent(this.id, ev); } catch (e) { return this.persistFailed(inp.seq, 'event', e); }
     }
     this.events.push(ev);
     this.persisted = inp.seq;
@@ -874,7 +895,7 @@ class Task {
   failLocal(code, msg, retryable = false) {
     if (this.done) return;
     this.record({ seq: (this.events.at(-1)?.seq ?? 0) + 1, type: 'task.error', data: errorBody(code, msg, retryable) });
-    this.finish(code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', false);
+    this.finish(code === 'CANCELLED' ? 'CANCELLED' : 'FAILED', false, false);
   }
   failOffline(code, msg) {
     if (code === 'DEVICE_OFFLINE' && this.sentRun) { code = 'OUTCOME_UNKNOWN'; msg += '; outcome unknown'; }
@@ -887,9 +908,6 @@ class Task {
     this.slot = false;
     clearTimeout(this.grace); clearTimeout(this.timeout); clearInterval(this.watch);
     this.broadcast();
-    if (writeState) {
-      try { this.g.setTaskState(this.id, state); } catch (e) { this.g.cfg.log(`lmbp: task ${this.id}: persisting state ${state} failed: ${e?.message ?? e}`); }
-    }
     const ds = this.ds;
     if (ds) {
       if (fromDevice) this.maybeAck();

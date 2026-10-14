@@ -102,9 +102,31 @@ func (g *Gateway) finishedTask(st store.Task, reqModel string) (*gtask, error) {
 	for _, e := range evs {
 		t.events = append(t.events, event{Seq: e.Seq, Type: e.Kind, Data: e.Data})
 	}
-	if len(t.events) == 0 || !isTerminal(t.events[len(t.events)-1].Type) {
+	// Recovery decides from a consistent terminal state: the last event is
+	// terminal AND the stored state agrees with it (FinishTask writes both
+	// atomically). Anything else (no terminal event, or a legacy row whose
+	// event and state disagree) is reported as OUTCOME_UNKNOWN. That event is
+	// synthetic, only served, never stored, and takes the next unused seq.
+	var lastSeq int64
+	if n := len(t.events); n > 0 {
+		lastSeq = t.events[n-1].Seq
+	}
+	consistent := false
+	if n := len(t.events); n > 0 {
+		switch t.events[n-1].Type {
+		case lmbp.TypeTaskDone:
+			consistent = st.State == "SUCCEEDED"
+		case lmbp.TypeTaskError:
+			consistent = st.State == "FAILED" || st.State == "CANCELLED"
+		}
+		if !consistent && isTerminal(t.events[n-1].Type) {
+			g.cfg.Logger.Printf("lmbp: task %s: stored terminal %s disagrees with state %s; reporting %s", st.ID, t.events[n-1].Type, st.State, lmbp.ErrOutcomeUnknown)
+			t.events = t.events[:n-1]
+		}
+	}
+	if !consistent {
 		b, _ := json.Marshal(lmbp.ErrorBody{Code: lmbp.ErrOutcomeUnknown, Message: "task outcome unknown"})
-		t.events = append(t.events, event{Seq: int64(len(t.events) + 1), Type: lmbp.TypeTaskError, Data: b})
+		t.events = append(t.events, event{Seq: lastSeq + 1, Type: lmbp.TypeTaskError, Data: b})
 	}
 	return t, nil
 }
@@ -148,10 +170,7 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 	// drop the frame from its resume buffer, so it must only cover frames the
 	// gateway can still serve after a restart (re-attach / replay).
 	ctx := context.Background()
-	if err := t.g.cfg.Store.AppendEvent(ctx, store.Event{TaskID: t.id, Seq: in.Seq, Kind: in.Type, Data: data, At: time.Now()}); err != nil {
-		t.persistFailed(in.Seq, "event", err)
-		return
-	}
+	ev := store.Event{TaskID: t.id, Seq: in.Seq, Kind: in.Type, Data: data, At: time.Now()}
 	state := ""
 	if isTerminal(in.Type) {
 		state = "SUCCEEDED"
@@ -162,10 +181,16 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 				state = "CANCELLED"
 			}
 		}
-		if err := t.g.cfg.Store.SetTaskState(ctx, t.id, state); err != nil {
-			t.persistFailed(in.Seq, "terminal state", err)
+		// Terminal event + terminal state in one transaction: if it fails,
+		// neither is stored, so the local INTERNAL error below can take this
+		// seq without conflicting with a half-written done.
+		if err := t.g.cfg.Store.FinishTask(ctx, ev, state); err != nil {
+			t.persistFailed(in.Seq, "terminal event and state", err)
 			return
 		}
+	} else if err := t.g.cfg.Store.AppendEvent(ctx, ev); err != nil {
+		t.persistFailed(in.Seq, "event", err)
+		return
 	}
 	t.mu.Lock()
 	if t.done { // failed locally while we were writing
@@ -274,16 +299,18 @@ func (t *gtask) failLocal(code, msg string, retryable bool) {
 	t.events = append(t.events, event{Seq: seq, Type: lmbp.TypeTaskError, Data: b})
 	t.broadcastLocked()
 	t.mu.Unlock()
-	// A gateway-local terminal event is not a device frame (nothing to ACK);
-	// if it cannot be stored, a later re-attach reports OUTCOME_UNKNOWN.
-	if err := t.g.cfg.Store.AppendEvent(context.Background(), store.Event{TaskID: t.id, Seq: seq, Kind: lmbp.TypeTaskError, Data: b, At: time.Now()}); err != nil {
-		t.g.cfg.Logger.Printf("lmbp: task %s: persisting local %s failed: %v", t.id, code, err)
-	}
 	state := "FAILED"
 	if code == lmbp.ErrCancelled {
 		state = "CANCELLED"
 	}
-	t.finish(state, false)
+	// A gateway-local terminal event is not a device frame (nothing to ACK).
+	// It is stored atomically with the terminal state; if that fails nothing
+	// is stored and a later re-attach reports OUTCOME_UNKNOWN (an error, never
+	// a success).
+	if err := t.g.cfg.Store.FinishTask(context.Background(), store.Event{TaskID: t.id, Seq: seq, Kind: lmbp.TypeTaskError, Data: b, At: time.Now()}, state); err != nil && err != store.ErrNotFound {
+		t.g.cfg.Logger.Printf("lmbp: task %s: persisting local %s failed: %v", t.id, code, err)
+	}
+	t.finishWith(state, false, false)
 }
 
 // failOffline ends a task whose device is gone: DEVICE_OFFLINE is retryable
@@ -295,10 +322,9 @@ func (t *gtask) failOffline(code, msg string) {
 	t.failLocal(code, msg, code == lmbp.ErrDeviceOffline)
 }
 
-func (t *gtask) finish(state string, fromDevice bool) { t.finishWith(state, fromDevice, true) }
-
-// finishWith ends the task; writeState=false when the caller already stored it.
-func (t *gtask) finishWith(state string, fromDevice, writeState bool) {
+// finishWith ends the in-memory task. The terminal state is always stored by
+// the caller together with its terminal event (Store.FinishTask).
+func (t *gtask) finishWith(state string, fromDevice, _ bool) {
 	t.mu.Lock()
 	if t.done {
 		t.mu.Unlock()
@@ -312,11 +338,6 @@ func (t *gtask) finishWith(state string, fromDevice, writeState bool) {
 	}
 	t.broadcastLocked()
 	t.mu.Unlock()
-	if writeState {
-		if err := t.g.cfg.Store.SetTaskState(context.Background(), t.id, state); err != nil {
-			t.g.cfg.Logger.Printf("lmbp: task %s: persisting state %s failed: %v", t.id, state, err)
-		}
-	}
 	if ds := t.ds; ds != nil {
 		if fromDevice {
 			t.maybeAck() // release the device's resume buffer
