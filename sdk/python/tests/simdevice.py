@@ -32,16 +32,39 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
     await ws.send(json.dumps({"v": 1, "type": "hello", "id": "h1", "data": {
         "device_id": tok["device_id"], "client": "sdk-test", "models": list(models), "model_capabilities": {m: ["tools"] for m in models},
-        "max_concurrency": max_concurrency, "capabilities": ["tools", "e2ee"] if x else ["tools"],
+        "max_concurrency": max_concurrency, "capabilities": (["tools", "e2ee"] if x else ["tools"]) + (["flow"] if flood else []),
         **({"e2ee_key": E.sign_key_statement(key, tok["device_id"], x[1])} if x else {}), "proof": proof(key, tok["device_id"], L.PROOF_HELLO, tok["access_token"])}}))
     w = json.loads(await ws.recv())
     assert w["type"] == "welcome", w
+    # flood {n, size, stats}: answer every task with n deltas of size bytes,
+    # honouring the gateway's flow window (§15.3); stats["sent"] counts bytes.
+    fl = {"win": (w.get("data") or {}).get("flow", {}).get("task_window", float("inf")), "acked": 0, "frames": [],
+          "wake": asyncio.Event()}
+
+    async def do_flood(run):
+        n, size, stats = flood["n"], flood["size"], flood["stats"]
+
+        def unacked():
+            return sum(ln for s, ln in fl["frames"] if s > fl["acked"])
+        for i in range(n + 1):
+            last = i == n
+            m = json.dumps({"v": 1, "type": "task.done" if last else "task.delta", "task_id": run["task_id"], "seq": i + 1,
+                            "data": {"finish_reason": "stop", "usage": {"prompt_tokens": 1, "completion_tokens": n}} if last else {"text": "x" * size}})
+            while unacked() > 0 and unacked() + len(m) > fl["win"]:
+                fl["wake"].clear()
+                try:
+                    await asyncio.wait_for(fl["wake"].wait(), 0.05)
+                except asyncio.TimeoutError:
+                    pass
+            fl["frames"].append((i + 1, len(m)))
+            await ws.send(m)
+            stats["sent"] += len(m)
 
     pending = {}  # task_id -> (run, chunks) while an E2EE blob arrives
 
@@ -67,6 +90,13 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
                     del pending[e["task_id"]]
                     await run_e2ee(run, b"".join(chunks).decode())
                 continue
+            if flood and e["type"] == "task.cancel":
+                flood["stats"]["cancelled"] = True
+                continue
+            if flood and e["type"] == "task.ack":
+                fl["acked"] = max(fl["acked"], e["data"]["seq"])
+                fl["wake"].set()
+                continue
             if e["type"] != "task.run":
                 continue
             p = e["jws"].split(".")[1]
@@ -75,6 +105,9 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
                 on_run(run)  # tests inspect the signed task.run payload
             if run.get("e2ee"):
                 pending[run["task_id"]] = (run, [])
+                continue
+            if flood:
+                asyncio.ensure_future(do_flood(run))
                 continue
             seq = 0
 

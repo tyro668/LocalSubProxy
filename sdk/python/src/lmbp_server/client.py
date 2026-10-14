@@ -148,6 +148,10 @@ class _Messages:
         return LMBPStream(gen)
 
 
+#: Upper bound on unread response bytes held for one in-process call.
+IN_PROCESS_BUFFER_BYTES = 64 * 1024
+
+
 class _Failed:
     __slots__ = ("err",)
 
@@ -176,7 +180,13 @@ class InProcessClient:
             hs.append((k.encode(), v.encode()))
         scope = {"type": "http", "method": method, "path": path, "headers": hs, "query_string": b"", "scheme": "http",
                  "lmbp.in_process_tenant": t}
+        # Body buffer bounded by bytes: send() waits for room, so the
+        # gateway's write blocks, its subscriber cursor (and task.ack) holds,
+        # and the device stops at its flow window (§15.2). The terminator
+        # and failure items never wait, so close and errors always arrive.
         q: asyncio.Queue = asyncio.Queue()
+        buffered = 0
+        room = asyncio.Event()
         start: asyncio.Future = asyncio.get_running_loop().create_future()
         gone = asyncio.Event()
 
@@ -189,10 +199,16 @@ class InProcessClient:
                 if not start.done():
                     start.set_result((m["status"], {k.decode().lower(): v.decode() for k, v in m["headers"]}))
             elif m["type"] == "http.response.body":
-                if m.get("body"):
-                    await q.put(m["body"])
+                nonlocal buffered
+                b = m.get("body")
+                if b:
+                    while buffered > 0 and buffered + len(b) > IN_PROCESS_BUFFER_BYTES:
+                        room.clear()
+                        await room.wait()  # cancelled with the route when the reader leaves
+                    buffered += len(b)
+                    q.put_nowait(b)
                 if not m.get("more_body"):
-                    await q.put(None)
+                    q.put_nowait(None)
         req = Request(scope, receive, send, raw)
 
         async def run():
@@ -231,6 +247,9 @@ class InProcessClient:
                         return
                     if isinstance(c, _Failed):
                         raise c.err
+                    nonlocal buffered
+                    buffered -= len(c)
+                    room.set()
                     yield c
             finally:
                 release()  # mid-stream cancel, consumer close, or done

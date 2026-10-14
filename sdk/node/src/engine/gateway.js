@@ -771,7 +771,7 @@ export class Gateway {
           const eb = e.data || {};
           b = JSON.stringify({ error: { message: eb.message, type: 'lmbp_error', code: eb.code, retryable: !!eb.retryable } });
         }
-        res.write(`id: ${e.seq}\ndata: ${b}\n\n${tail}`);
+        return A.writeOrDrain(res, `id: ${e.seq}\ndata: ${b}\n\n${tail}`);
       });
       // Last-Event-ID at or beyond the terminal event: nothing left, but end
       // with the terminator so clients can tell completion from truncation.
@@ -1021,7 +1021,9 @@ class Task {
         // finished and nothing after the cursor (Last-Event-ID >= terminal seq): end
         if (!batch.length && this.events.length && isTerminal(this.events.at(-1).type)) return true;
         for (const e of batch) {
-          fn(e);
+          const p = fn(e);
+          if (p) await p; // slow reader: hold the cursor (and the ack) until it drains
+          if (signal?.aborted) return false;
           after = e.seq;
           if (this.subs.has(sub)) this.subs.set(sub, after);
           if (isTerminal(e.type)) return true;

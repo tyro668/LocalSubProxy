@@ -167,7 +167,7 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
     wrote = true;
     let s = '';
     g.forEach(([type, data], i) => { s += `event: ${type}\n${i === g.length - 1 && cur > 0 ? `id: ${cur}\n` : ''}data: ${JSON.stringify(data)}\n\n`; });
-    if (s) res.write(s);
+    if (s) return writeOrDrain(res, s);
   };
   send('message_start', { type: 'message_start', message: { id: msgID, type: 'message', role: 'assistant', model: t.reqModel, content: [],
     stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
@@ -236,11 +236,23 @@ export async function serve(res: ServerResponse, t: TaskLike, after: number, str
       const eb = e.data || {};
       send('error', { type: 'error', error: { type: errorType(statusOf(eb.code)), message: eb.message, lmbp_code: eb.code } });
     }
-    flush();
+    return flush();
   });
   // Last-Event-ID at or beyond the terminal event: end with the terminator.
   if (ok && !wrote) res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
   res.end();
+}
+
+/** Write s; if the response is over its buffer limit, the returned promise
+ * resolves once it drains (or closes). stream() awaits it before advancing
+ * the subscriber cursor, so task.ack - and the device - wait for a slow
+ * reader (spec §15.2). */
+export function writeOrDrain(res: { write(s: string): boolean; on(e: string, f: () => void): unknown; off(e: string, f: () => void): unknown }, s: string): Promise<void> | undefined {
+  if (res.write(s)) return undefined;
+  return new Promise((ok) => {
+    const f = () => { res.off('drain', f); res.off('close', f); ok(); };
+    res.on('drain', f); res.on('close', f);
+  });
 }
 
 const STATUS_OF: Record<string, number> = {

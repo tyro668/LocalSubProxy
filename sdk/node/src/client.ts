@@ -22,7 +22,7 @@ class FakeRes extends EventEmitter {
   readonly out = new PassThrough();
   readonly started: Promise<void>;
   private start!: () => void;
-  constructor() { super(); this.started = new Promise((ok) => { this.start = ok; }); }
+  constructor() { super(); this.started = new Promise((ok) => { this.start = ok; }); this.out.on('drain', () => this.emit('drain')); }
   setHeader(k: string, v: string | number) { this.hdrs[k.toLowerCase()] = String(v); return this; }
   getHeader(k: string) { return this.hdrs[k.toLowerCase()]; }
   removeHeader(k: string) { delete this.hdrs[k.toLowerCase()]; }
@@ -33,7 +33,8 @@ class FakeRes extends EventEmitter {
     this.headersSent = true; this.start();
     return this;
   }
-  write(chunk: string | Buffer) { if (!this.headersSent) this.writeHead(this.statusCode); this.out.write(chunk); return true; }
+  // report backpressure like a socket: false when the reader is behind
+  write(chunk: string | Buffer) { if (!this.headersSent) this.writeHead(this.statusCode); return this.out.write(chunk); }
   end(chunk?: string | Buffer) {
     if (this.writableEnded) return this;
     if (chunk) this.write(chunk); else if (!this.headersSent) this.writeHead(this.statusCode);
