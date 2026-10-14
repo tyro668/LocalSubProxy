@@ -5,3 +5,5 @@
 *.test
 /examples/go-nethttp/lmbp-go-nethttp
 /.mock/
+/mock/java/build/
+/mock/rust/target/

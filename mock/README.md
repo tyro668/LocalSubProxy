@@ -12,8 +12,10 @@
 | `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
 | `node/` | Node.js 版完整网关（与参考网关等价，通过 63 项 `lmbp-conformance`），见 [node/README.md](node/README.md) |
 | `python/` | Python（aiohttp）版完整网关，同上，见 [python/README.md](python/README.md) |
-| `web/` | 三种网关共用的模拟 SaaS 聊天页（`/`、`/chat`）：配对、设备、流式对话、图片、停止、用量与耗时，见 [web/README.md](web/README.md) |
-| `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LMBP_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑三种实现 |
+| `java/` | Java 版模拟网关：只依赖 JDK 21，状态仅在内存（无 `--db`），通过 `lmbp-conformance`（103 项），见 [java/README.md](java/README.md) |
+| `rust/` | Rust 版模拟网关：标准库线程 + 少量 crate，状态仅在内存（无 `--db`），通过 `lmbp-conformance`（103 项），见 [rust/README.md](rust/README.md) |
+| `web/` | 各网关共用的模拟 SaaS 聊天页（`/`、`/chat`）：配对、设备、流式对话、图片、停止、用量与耗时，见 [web/README.md](web/README.md) |
+| `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LMBP_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑各实现（`go node python java rust` 及 SDK 变体） |
 
 ## 一条命令看完整流程
 
@@ -26,7 +28,7 @@ go run ./mock/cmd/lspmock demo
 ## 一键启动模拟服务（脚本）
 
 ```bash
-scripts/mock-start.sh [go|node|python] [端口]   # 默认 go 8080
+scripts/mock-start.sh [go|node|python|java|rust] [端口]   # 默认 go 8080
 scripts/mock-stop.sh                             # 停止
 ```
 
@@ -35,7 +37,7 @@ scripts/mock-stop.sh                             # 停止
 - 聊天页地址 `http://127.0.0.1:<端口>/chat`，以及登录用的租户（`acme`）、用户（`alice`）和租户 Key；
 - `lmbp://pair?...` 配对链接，以及可直接复制运行的 `localsubproxy connector` 配对命令（运行后在终端确认，再把打印出的配对码填到聊天页上点“批准”）。
 
-开发用的密钥（`LSP_TENANT_KEY_ACME`、`LSP_SIGNING_SEED`、`LOCALSUBPROXY_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`。
+开发用的密钥（`LSP_TENANT_KEY_ACME`、`LSP_SIGNING_SEED`、`LOCALSUBPROXY_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`，java 网关需要 JDK 21+（`java`/`javac`/`jar`），rust 网关需要 `cargo`。java/rust 网关的状态只在内存里，重启后需要重新配对（签名密钥仍沿用 `.mock/env`）。
 
 ## 分进程运行（可接真实的 LM Studio 或 Ollama）
 

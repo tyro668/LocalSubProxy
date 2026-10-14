@@ -1,0 +1,142 @@
+//! Self-tests: shared JOSE vectors, JS-compatible JSON, origins, parameter
+//! validation and the chat page (CSP headers, disabled mode) over real HTTP.
+use crate::json;
+use crate::lmbp;
+use crate::{gateway, http, params};
+use serde_json::Value;
+use std::io::{Read, Write};
+
+fn jose() -> Value {
+    serde_json::from_str(include_str!("../../../spec/testvectors/jose.json")).unwrap()
+}
+
+fn check(f: &Value, v: &Value) -> lmbp::R<()> {
+    let key = lmbp::unb64(f["keys"][v["verify_with_key"].as_str().unwrap()]["public_b64url"].as_str().unwrap()).unwrap();
+    let now = json::int(&f["now"]);
+    let c = &v["context"];
+    let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
+    let compact = &v["compact"];
+    match v["kind"].as_str().unwrap() {
+        "proof" => lmbp::verify_proof(&key, compact, &s("iss"), &s("aud"), &s("credential"), now).map(|_| ()),
+        "client_assertion" => lmbp::verify_jwt(&key, compact, lmbp::TYP_ASSERTION, &s("aud"), now).map(|_| ()),
+        "access_token" => lmbp::verify_jwt(&key, compact, lmbp::TYP_ACCESS, &s("aud"), now).map(|_| ()),
+        "e2ee_key" => lmbp::verify_e2ee_key(&key, &s("device_id"), compact, now),
+        _ => unreachable!(),
+    }
+}
+
+const KINDS: [&str; 4] = ["proof", "client_assertion", "access_token", "e2ee_key"];
+
+#[test]
+fn jose_vectors() {
+    let f = jose();
+    let mut bad = vec![];
+    let mut n = 0;
+    for v in f["valid"].as_array().unwrap() {
+        if KINDS.contains(&v["kind"].as_str().unwrap()) {
+            if let Err(e) = check(&f, v) {
+                bad.push(format!("valid {} rejected: {}", v["name"], e));
+            }
+        }
+    }
+    for v in f["negative"].as_array().unwrap() {
+        if KINDS.contains(&v["kind"].as_str().unwrap()) {
+            n += 1;
+            if check(&f, v).is_ok() {
+                bad.push(format!("negative {} accepted ({})", v["name"], v["must_reject_because"]));
+            }
+        }
+    }
+    assert!(n > 50, "only {} negative vectors", n);
+    assert!(bad.is_empty(), "{:#?}", bad);
+}
+
+#[test]
+fn jwk_thumbprint_matches_vector() {
+    let f = jose();
+    let d = &f["keys"]["device"];
+    let seed: [u8; 32] = lmbp::unb64(d["seed_b64url"].as_str().unwrap()).unwrap().try_into().unwrap();
+    let pk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    assert_eq!(lmbp::b64(&pk), d["public_b64url"].as_str().unwrap());
+    assert_eq!(lmbp::thumbprint(&pk), d["jkt"].as_str().unwrap());
+    assert_eq!(lmbp::public_jwk(&pk), d["jwk"]);
+}
+
+#[test]
+fn sign_verify_round_trip() {
+    let k = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let pk = k.verifying_key().to_bytes();
+    let kid = lmbp::thumbprint(&pk);
+    let t = lmbp::now();
+    let jws = lmbp::sign_jws(&k, lmbp::TYP_ACCESS, &kid, &crate::obj! {"iss" => "i", "sub" => "s", "aud" => "a", "jti" => "j", "iat" => t, "exp" => t + 60});
+    assert!(lmbp::verify_jwt(&pk, &Value::String(jws.clone()), lmbp::TYP_ACCESS, "a", t).is_ok());
+    assert!(lmbp::verify_jwt(&pk, &Value::String(jws.clone()), lmbp::TYP_ACCESS, "b", t).is_err());
+    assert!(lmbp::verify_jwt(&pk, &Value::String(jws), lmbp::TYP_PROOF, "a", t).is_err());
+}
+
+#[test]
+fn json_like_javascript() {
+    let v: Value = serde_json::from_str(r#"{"b":1,"a":[1.0,0.5,-0.0,1e21,1e-7,"\u2028x"],"c":null}"#).unwrap();
+    assert_eq!(json::stringify(&v), r#"{"b":1,"a":[1,0.5,0,1e+21,1e-7,"\u2028x"],"c":null}"#.replace("\\u2028", "\u{2028}"));
+    assert!(json::truthy(&Value::from(0.5)) && !json::truthy(&Value::from(0)) && !json::truthy(&Value::from("")));
+    assert_eq!(json::js_string(&Value::Null), "null");
+}
+
+#[test]
+fn origins() {
+    assert_eq!(lmbp::origin("HTTPS://GW.Example.com:443/").unwrap(), "https://gw.example.com");
+    assert_eq!(lmbp::origin("http://127.0.0.1:8080").unwrap(), "http://127.0.0.1:8080");
+    assert_eq!(lmbp::origin("http://[::1]:80").unwrap(), "http://[::1]");
+    assert!(lmbp::origin("http://gw.example.com").is_err());
+    assert!(lmbp::origin("https://gw.example.com/path").is_err());
+    assert!(lmbp::origin("https://u@gw.example.com").is_err());
+}
+
+#[test]
+fn chat_params() {
+    let m = |s: &str| serde_json::from_str::<Value>(s).unwrap().as_object().cloned().unwrap();
+    let e = params::validate_chat_params(&m(r#"{"model":"x","messages":[{"role":"user","content":"hi"}],"temperature":3}"#)).err().unwrap();
+    assert_eq!(e.param, "temperature");
+    assert_eq!(e.message, "temperature: must be between 0 and 2, got 3");
+    let p = params::validate_chat_params(&m(r#"{"model":"x","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":5,"stop":"x"}"#)).unwrap();
+    assert_eq!(p.max_tokens, 5);
+    assert_eq!(p.stop.unwrap().len(), 1);
+    let e = params::validate_anthropic_params(&m(r#"{"model":"x","messages":[{"role":"user","content":"hi"}]}"#)).err().unwrap();
+    assert_eq!(e.param, "max_tokens");
+}
+
+fn get(port: u16, path: &str) -> (u16, String) {
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(s, "GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n", path, port).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    let status = out.split(' ').nth(1).unwrap().parse().unwrap();
+    (status, out)
+}
+
+#[test]
+fn chat_page_and_core_endpoints() {
+    let web = concat!(env!("CARGO_MANIFEST_DIR"), "/../web").to_string();
+    gateway::init(gateway::Config { web_dir: web, ..Default::default() }, Some([1u8; 32])).unwrap();
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || http::serve(l));
+    for (path, ct) in [("/", "text/html"), ("/chat", "text/html"), ("/chat/chat.js", "text/javascript"), ("/chat/qrcode.js", "text/javascript")] {
+        let (st, r) = get(port, path);
+        assert_eq!(st, 200, "{}", path);
+        assert!(r.contains(&format!("Content-Type: {}", ct)), "{}", path);
+        assert!(r.contains("Content-Security-Policy: default-src 'self'; script-src 'self';"), "{}", path);
+        assert!(r.contains("X-Content-Type-Options: nosniff"));
+    }
+    let (st, r) = get(port, "/.well-known/jwks.json");
+    assert_eq!(st, 200);
+    assert!(r.contains("\"kty\":\"OKP\""));
+    let (st, r) = get(port, "/.well-known/lmbp");
+    assert_eq!(st, 200);
+    assert!(r.contains(&format!("\"connect_endpoint\":\"ws://127.0.0.1:{}/lmbp/v1/connect\"", port)));
+    let (st, r) = get(port, "/lmbp/v1/connect");
+    assert_eq!(st, 400);
+    assert!(r.contains("application/problem+json") && r.contains("VERSION_UNSUPPORTED"));
+    gateway::lock().cfg.web_dir = String::new();
+    assert_eq!(get(port, "/chat").0, 404);
+}

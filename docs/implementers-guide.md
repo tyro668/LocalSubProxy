@@ -21,8 +21,8 @@
 | Go | 参考实现（`internal/lmbp`）。`go test` 覆盖测试向量、Schema 和一致性测试 |
 | Python | `spec/examples/python`：已在 Python 3.13 + cryptography 上运行，60 项全部通过 |
 | Node.js | `spec/examples/node`：已在 Node 20 上运行，只用 `node:crypto`，Schema 校验用 ajv，59 项全部通过 |
-| Rust | `spec/examples/rust`：已在 rustc 1.85 + ed25519-dalek 2 上运行，`cargo test` 通过 |
-| Java | **仅为示意**，本环境没有 JDK，未编译。下文 Java 片段需要你自行用测试向量验证 |
+| Rust | `spec/examples/rust`：已在 rustc 1.85 + ed25519-dalek 2 上运行，`cargo test` 通过。完整的模拟网关见 `mock/rust`（不是 SDK） |
+| Java | 下文 Java 片段（Jackson/Spring 写法）**仅为示意，未编译**，需要你自行用测试向量验证。另有可运行的 JDK-only 模拟网关 `mock/java`（不是 SDK），它的 `Lmbp.java` 用 JDK 21 自带的 EdDSA 实现了同样的 JOSE 规则，并通过 `spec/testvectors/jose.json` 与 `lmbp-conformance` |
 
 本文中 Go、Python、Node、Rust 的片段摘自上述已运行的文件，或是它们的精简版。
 

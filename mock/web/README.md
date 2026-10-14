@@ -1,6 +1,6 @@
 # mock/web：模拟 SaaS 聊天页
 
-三种网关（Go 参考网关、`mock/node`、`mock/python`）共用的一个静态页面，用来模拟“SaaS 用户通过已配对的本机模型聊天”。纯 HTML + JS，无构建步骤，中文界面。
+各网关（Go 参考网关、`mock/node`、`mock/python`、`mock/java`、`mock/rust`）共用的一个静态页面，用来模拟“SaaS 用户通过已配对的本机模型聊天”。纯 HTML + JS，无构建步骤，中文界面。
 
 | 路径 | 内容 |
 |---|---|
