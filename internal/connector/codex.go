@@ -33,10 +33,36 @@ func resolveCodex(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if info.IsDir() || info.Mode()&0111 == 0 {
+	if !executable(path, info) {
 		return "", errors.New("Codex CLI path is not executable")
 	}
 	return path, nil
+}
+
+// executableFor reports whether path (already stat'ed as info) can be run on
+// goos. It is pure so both platform rules are tested on every host.
+func executableFor(goos, pathext, path string, info os.FileInfo) bool {
+	if info.IsDir() || !info.Mode().IsRegular() {
+		return false
+	}
+	if goos != "windows" {
+		return info.Mode()&0111 != 0
+	}
+	// Windows has no exec bits: runnability is the extension (PATHEXT, with
+	// cmd.exe's default when unset), matched case-insensitively.
+	if strings.TrimSpace(pathext) == "" {
+		pathext = ".COM;.EXE;.BAT;.CMD"
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		return false
+	}
+	for _, e := range strings.Split(pathext, ";") {
+		if strings.ToLower(strings.TrimSpace(e)) == ext {
+			return true
+		}
+	}
+	return false
 }
 
 // CodexModels reads the local CLI's account and model catalog without invoking a model.
