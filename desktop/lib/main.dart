@@ -72,7 +72,6 @@ class _HomePageState extends State<HomePage> {
   Map<String, dynamic>? status;
   List<Map<String, dynamic>> adapters = [];
   bool refreshing = false;
-  DateTime? usageLoadedAt;
   bool busy = false;
   bool awaitingCode = false;
   String? pendingRemoteURL;
@@ -204,14 +203,6 @@ class _HomePageState extends State<HomePage> {
     try {
       final s = api.status();
       final a = api.listAdapters();
-      // Usage was only loaded on "刷新用量"; keep it current (cheap SQLite
-      // query, at most every 15 s while the window is open).
-      final now = DateTime.now();
-      if (usageLoadedAt == null ||
-          now.difference(usageLoadedAt!) > const Duration(seconds: 15)) {
-        usageLoadedAt = now;
-        unawaited(loadUsage());
-      }
       if (mounted) {
         setState(() {
           status = s;
@@ -483,11 +474,6 @@ class _HomePageState extends State<HomePage> {
               '${status?['device_name'] ?? status?['device_id'] ?? ''}',
             ),
             _StatRow('地址', '${status?['remote_url'] ?? ''}'),
-            if (!connected)
-              const Text(
-                '本应用自身与网关的连接尚未建立。若聊天页显示设备在线，'
-                '那可能是另一台设备或命令行 connector，不是本应用。',
-              ).small().muted(),
             _StatRow('传输', _transportLabel(status?['transport'])),
             _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
             const Gap(14),

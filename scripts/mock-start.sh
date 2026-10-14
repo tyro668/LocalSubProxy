@@ -72,13 +72,6 @@ wait_http() { # name url
   exit 1
 }
 
-for p in "$model_port" "$port"; do
-  if curl -s -o /dev/null --max-time 1 "http://127.0.0.1:$p/"; then
-    echo "port $p is already in use (another mock stack? try: scripts/mock-stop.sh, or LMBP_MOCK_DIR=... scripts/mock-stop.sh)" >&2
-    exit 1
-  fi
-done
-
 say "building (go) ..."
 go build -o "$dir/bin/lspmock" ./mock/cmd/lspmock
 go build -o "$dir/bin/localsubproxy" ./cmd/localsubproxy
@@ -114,14 +107,7 @@ say "  login       tenant: acme   user: alice   key: $LSP_TENANT_KEY_ACME"
 say "  fake model  http://127.0.0.1:$model_port  (models: $models)"
 say "  pair link   $link"
 say ""
-say "pair the desktop app (recommended):"
-say "  1. in LocalSubProxy, open 远端服务连接 and paste the pair link above, review the consent and allow"
-say "  2. on the chat page, log in and approve the code the app shows"
-say "  3. add a model scheme: type OpenAI 兼容, address http://127.0.0.1:$model_port/v1, any key, model $models"
-say "  the app's own status then reads 已连接; its tasks and usage are recorded by the app"
-say ""
-say "or, without the app, a CLI connector (a SEPARATE device: its chats and usage do not appear in the app;"
-say "its audit log is $cdir/audit.db). In another terminal, confirm, then approve the printed code on the chat page:"
+say "connect a device (in another terminal; confirm, then approve the printed code on the chat page):"
 say "  LOCALSUBPROXY_DATA_KEY=$LOCALSUBPROXY_DATA_KEY $dir/bin/localsubproxy connector \\"
 say "    -pair-link '$link' \\"
 say "    -adapter-id local -ollama-url http://127.0.0.1:$model_port -models $models -capabilities vision \\"

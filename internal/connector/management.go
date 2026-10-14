@@ -52,11 +52,7 @@ func (x *Connector) Status() map[string]any {
 	st := map[string]any{"protocol": "lmbp", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
 		"issuer": issuer, "saas_name": saasName, "tenant": tenant, "audit": x.cfg.Audit != nil,
 		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
-		// connected is this device's own lmbp gateway session (what serves
-		// the chats). remote_connected only reports the optional legacy SaaS
-		// discovery probe and must not gate it: an lmbp tenant's homepage
-		// usually does not serve /.well-known/localsubproxy.
-		"connected": gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
+		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
 	if recovery != nil {
 		st["adapter_recovery"] = recovery
 	}
