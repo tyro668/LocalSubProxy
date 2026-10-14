@@ -38,7 +38,7 @@ func TestExecutableForWindows(t *testing.T) {
 		{"codex.ps1", pathext, false},
 		{"codex", pathext, false},
 		{"codex.txt", pathext, false},
-		{"codex.exe", "", true},   // empty PATHEXT: default list
+		{"codex.exe", "", true}, // empty PATHEXT: default list
 		{"codex.cmd", " .Cmd ;", true},
 	} {
 		p, info := writeFile(t, dir, c.name, 0o644) // no exec bits, like Windows

@@ -212,13 +212,20 @@ type Model struct {
 
 // ChatRequest is an OpenAI chat-completions request.
 type ChatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []lmbp.Message `json:"messages,omitempty"`
-	Tools       []lmbp.Tool    `json:"tools,omitempty"`
-	ToolChoice  any            `json:"tool_choice,omitempty"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature *float64       `json:"temperature,omitempty"`
-	Stream      bool           `json:"stream"`
+	Model      string         `json:"model"`
+	Messages   []lmbp.Message `json:"messages,omitempty"`
+	Tools      []lmbp.Tool    `json:"tools,omitempty"`
+	ToolChoice any            `json:"tool_choice,omitempty"`
+	MaxTokens  int            `json:"max_tokens,omitempty"`
+	// MaxCompletionTokens is the newer OpenAI alias of MaxTokens.
+	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	TopP                *float64 `json:"top_p,omitempty"`
+	// Stop holds up to 4 stop sequences (the spec also allows one string).
+	Stop []string `json:"stop,omitempty"`
+	// N must be 1 when set (only one choice is supported).
+	N      *int `json:"n,omitempty"`
+	Stream bool `json:"stream"`
 	// E2EE is a sealed request (E2EESealed.JWE); Messages/Tools must be empty.
 	E2EE string `json:"lmbp_e2ee,omitempty"`
 }
@@ -319,14 +326,16 @@ func chatStream(resp *http.Response) *Stream[ChatCompletionChunk] {
 // MessagesRequest is an Anthropic Messages request. Content is a string or
 // a slice of content blocks (maps or ContentBlock values).
 type MessagesRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      any                `json:"system,omitempty"`
-	Messages    []AnthropicMessage `json:"messages"`
-	Tools       []AnthropicTool    `json:"tools,omitempty"`
-	ToolChoice  any                `json:"tool_choice,omitempty"`
-	Temperature *float64           `json:"temperature,omitempty"`
-	Stream      bool               `json:"stream"`
+	Model         string             `json:"model"`
+	MaxTokens     int                `json:"max_tokens"`
+	System        any                `json:"system,omitempty"`
+	Messages      []AnthropicMessage `json:"messages"`
+	Tools         []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice    any                `json:"tool_choice,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Stream        bool               `json:"stream"`
 }
 
 type AnthropicMessage struct {

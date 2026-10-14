@@ -35,7 +35,15 @@ export interface ChatMessage {
 export interface ChatTool { type: 'function'; function: { name: string; description?: string; parameters?: unknown } }
 export interface ChatRequest {
   model: string; messages?: ChatMessage[]; tools?: ChatTool[]; tool_choice?: unknown;
-  max_tokens?: number; temperature?: number; stream?: boolean;
+  max_tokens?: number;
+  /** Newer OpenAI alias of max_tokens. */
+  max_completion_tokens?: number;
+  temperature?: number; top_p?: number;
+  /** Up to 4 stop sequences. */
+  stop?: string | string[];
+  /** Only n=1 is supported. */
+  n?: 1;
+  stream?: boolean;
   /** Sealed request (sealE2EERequest().jwe); messages/tools must then be empty. */
   lmbp_e2ee?: string;
 }
@@ -65,7 +73,10 @@ export interface MessagesRequest {
   system?: string | { type: 'text'; text: string }[];
   tools?: { name: string; description?: string; input_schema: unknown }[];
   tool_choice?: { type: 'auto' | 'any' | 'none' } | { type: 'tool'; name: string };
-  temperature?: number; stream?: boolean;
+  temperature?: number; top_p?: number;
+  /** Up to 4 stop sequences. */
+  stop_sequences?: string[];
+  stream?: boolean;
 }
 export interface Message {
   id: string; type: 'message'; role: 'assistant'; model: string;
