@@ -547,14 +547,17 @@ class _HomePageState extends State<HomePage> {
           ),
           const Gap(16),
         ],
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(width: 180, child: _StepRail(current: step)),
-            const Gap(40),
-            Expanded(child: _connectStepPane(step)),
-          ],
-        ),
+        if (step == 3)
+          _connectStepPane(step)
+        else
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(width: 180, child: _StepRail(current: step)),
+              const Gap(40),
+              Expanded(child: _connectStepPane(step)),
+            ],
+          ),
       ],
     );
   }
