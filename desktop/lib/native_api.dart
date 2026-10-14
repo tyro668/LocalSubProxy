@@ -121,6 +121,50 @@ class NativeApi {
 
   void pairCancel() => _invoke(_call, {'action': 'pair_cancel'});
 
+  void disconnect() => _invoke(_call, {'action': 'disconnect'});
+
+  List<Map<String, dynamic>> listAdapters() {
+    final data = (_invoke(_call, {'action': 'list_adapters'}) as Map)
+        .cast<String, dynamic>();
+    return (data['adapters'] as List)
+        .map((item) => (item as Map).cast<String, dynamic>())
+        .toList();
+  }
+
+  Map<String, dynamic> createAdapter(Map<String, dynamic> adapter) =>
+      (_invoke(_call, {'action': 'create_adapter', 'adapter': adapter}) as Map)
+          .cast<String, dynamic>();
+
+  Map<String, dynamic> updateAdapter(Map<String, dynamic> adapter) =>
+      (_invoke(_call, {'action': 'update_adapter', 'adapter': adapter}) as Map)
+          .cast<String, dynamic>();
+
+  void deleteAdapter(String id) =>
+      _invoke(_call, {'action': 'delete_adapter', 'id': id});
+
+  Map<String, dynamic> testAdapter(Map<String, dynamic> adapter) =>
+      (_invoke(_call, {'action': 'test_adapter', 'adapter': adapter}) as Map)
+          .cast<String, dynamic>();
+
+  List<String> codexModels(String path) =>
+      (_invoke(_call, {'action': 'codex_models', 'path': path}) as List)
+          .cast<String>();
+
+  String startCodexLogin(String path) =>
+      (_invoke(_call, {'action': 'codex_login_start', 'path': path})
+              as Map)['auth_url']
+          as String;
+
+  Map<String, dynamic> checkCodexLogin() =>
+      (_invoke(_call, {'action': 'codex_login_check'}) as Map)
+          .cast<String, dynamic>();
+
+  void cancelCodexLogin() => _invoke(_call, {'action': 'codex_login_cancel'});
+
+  void logoutCodex(String path) =>
+      _invoke(_call, {'action': 'codex_logout', 'path': path});
+
+  void stop() => _invoke(_call, {'action': 'stop'});
 }
 
 // These closures are created outside widget State. Isolate.run otherwise can
