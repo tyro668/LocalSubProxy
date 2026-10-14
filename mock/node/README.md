@@ -4,6 +4,8 @@
 
 ## 运行
 
+> 一键启动（假模型 + 网关 + 聊天页，并打印登录信息和配对命令）：`scripts/mock-start.sh node`，停止用 `scripts/mock-stop.sh`。详见 [mock/README.md](../README.md)。
+
 ```bash
 cd mock/node
 npm ci                      # 通过 file:../../sdk/node 引用 SDK，会自动构建

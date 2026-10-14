@@ -30,7 +30,7 @@ LocalSubProxy 是一个 macOS / Windows 桌面应用，让远端服务使用本�
 
 ## 从源码构建
 
-macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。本机联调见 [mock/README.md](mock/README.md)；服务端接口见 [docs/lmbp-spec.md](docs/lmbp-spec.md)。
+macOS 运行 `./scripts/build-macos.sh`，Windows 运行 `.\scripts\build-windows.ps1`。本机联调见 [mock/README.md](mock/README.md)（一键启动：`scripts/mock-start.sh [go|node|python]`）；服务端接口见 [docs/lmbp-spec.md](docs/lmbp-spec.md)。
 
 ## LMBP 协议与其他语言实现
 

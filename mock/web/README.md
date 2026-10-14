@@ -35,6 +35,8 @@
 
 ## 运行
 
+最快的方式是 `scripts/mock-start.sh [go|node|python]`：它会自动完成下面这几步，并打印登录信息和 Connector 命令。手动步骤如下：
+
 ```bash
 export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)        # 租户 API Key，登录页面时粘贴它
 export LOCALSUBPROXY_DATA_KEY=$(openssl rand -hex 32)     # 连接器加密本机适配器配置用

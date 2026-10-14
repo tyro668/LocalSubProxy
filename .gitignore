@@ -4,3 +4,4 @@
 /.gocache/
 *.test
 /examples/go-nethttp/lmbp-go-nethttp
+/.mock/
