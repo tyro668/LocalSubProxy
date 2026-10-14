@@ -35,9 +35,9 @@ docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LMBP_SIGNING_SEED lmbp-mo
 
 | 能力 | 说明 |
 |---|---|
-| 配对（RFC 8628） | `POST /lmbp/v1/device/authorize`（form 或 JSON）→ `device_code` / `user_code`（`XXXX-XXXX`，字母表 BCDFGHJKLMNPQRSTVWXZ）、`interval`、`Cache-Control: no-store`；轮询 `authorization_pending` / `slow_down`；`device_code` 单次有效；租户后端 `POST /lmbp/v1/tenant/device-approvals`（大小写/分隔符不敏感，`jkt` 钉住设备密钥，`deny: true` 拒绝） |
+| 配对（RFC 8628） | `POST /lmbp/v1/device/authorize`（form 或 JSON）→ `device_code` / `user_code`（`XXXX-XXXX`，字母表 BCDFGHJKLMNPQRSTVWXZ）、`interval`、`Cache-Control: no-store`；轮询 `authorization_pending` / `slow_down`；`device_code` 单次有效；租户后端 `POST /lmbp/v1/tenant/devices/approvals`（大小写/分隔符不敏感，`jkt` 钉住设备密钥，`deny: true` 拒绝） |
 | 令牌 | EdDSA（Ed25519）JWT，`typ: at+jwt`，`iss` = 网关 issuer origin，`aud` = `<issuer>/tenants/<tenant>`，`cnf.jkt` 绑定设备密钥；`/.well-known/jwks.json` |
-| 网关身份（§18/§19） | `GET /.well-known/lmbp-gateway`；`?tenant=` 时附带 SaaS 身份和 `signed_metadata`（`typ: lmbp-metadata+jwt`，1 小时有效） |
+| 网关身份（§18/§19） | `GET /.well-known/lmbp`；`?tenant=` 时附带 SaaS 身份和 `signed_metadata`（`typ: lmbp-metadata+jwt`，1 小时有效） |
 | 刷新（RFC 7523） | `grant_type=jwt-bearer`，设备私钥签名的断言，`aud` = `<issuer>/lmbp/v1/token`，`jti` 防重放，寿命 ≤ 300 s；配对时用 proof JWT（`aud: lmbp:token`，`ath` = hash(device_code)） |
 | WebSocket `lmbp` | 子协议必选、拒绝浏览器 Origin、401/403 Problem Details；`hello` proof 校验；能力协商；`ping/pong`；未知消息不断开；`session.token` 续期；`models.update`；吊销即断开 |
 | seq/ack/resume | 每任务数据帧编号 1..n，`task.ack` 依订阅者消费进度推进；`resume_token` 30 s 窗口，重连后重传未确认帧，重复帧丢弃，跳号即失败 |

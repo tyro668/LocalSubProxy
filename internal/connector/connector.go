@@ -586,7 +586,7 @@ func (x *Connector) notifyModels() {
 }
 
 func (x *Connector) checkRemote(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(x.cfg.RemoteURL, "/")+"/.well-known/lsp-connector", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(x.cfg.RemoteURL, "/")+"/.well-known/localsubproxy", nil)
 	if err != nil {
 		return err
 	}

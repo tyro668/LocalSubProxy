@@ -225,11 +225,11 @@ func (r *runner) run(ctx context.Context) error {
 	_, other, _ := ed25519.GenerateKey(rand.Reader)
 	_, m = tok(lmbp.SignProof(other, "", lmbp.ProofToken, dc, time.Now()))
 	r.check("P5", "token request with a proof from a different key is rejected (invalid_grant)", want(m["error"] == "invalid_grant", "got %v", m))
-	st, _, _, _ = r.tenant(http.MethodPost, "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": "BBBB-BBBB"})
+	st, _, _, _ = r.tenant(http.MethodPost, "/lmbp/v1/tenant/devices/approvals", map[string]any{"user_code": "BBBB-BBBB"})
 	r.check("P6", "approving an unknown user_code fails with 404", want(st == 404, "status %d", st))
-	st, _, _, _ = r.tenant(http.MethodPost, "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": uc, "jkt": lmbp.Thumbprint(other.Public().(ed25519.PublicKey))})
+	st, _, _, _ = r.tenant(http.MethodPost, "/lmbp/v1/tenant/devices/approvals", map[string]any{"user_code": uc, "jkt": lmbp.Thumbprint(other.Public().(ed25519.PublicKey))})
 	r.check("P8", "approval carrying a jkt that does not match the device key is refused with 409 (E2EE pin, §17.2)", want(st == 409, "status %d", st))
-	st, ap, _, err := r.tenant(http.MethodPost, "/lmbp/v1/tenant/device-approvals", map[string]any{"user_code": strings.ToLower(strings.ReplaceAll(uc, "-", "")), "jkt": lmbp.Thumbprint(pub)})
+	st, ap, _, err := r.tenant(http.MethodPost, "/lmbp/v1/tenant/devices/approvals", map[string]any{"user_code": strings.ToLower(strings.ReplaceAll(uc, "-", "")), "jkt": lmbp.Thumbprint(pub)})
 	if !r.check("P7", "tenant back end approves the code (case/separator-insensitive, matching jkt)", want(err == nil && st == 200 && ap["status"] == "approved" && ap["jkt"] == lmbp.Thumbprint(pub), "status %d body %v", st, ap)) {
 		return errStop
 	}
@@ -572,7 +572,7 @@ func (r *runner) metadata() error {
 	st, m, _, err := r.tenant(http.MethodGet, lmbp.MetadataPath, nil)
 	b, _ := json.Marshal(m)
 	_ = json.Unmarshal(b, &base)
-	if !r.check("M1", "GET /.well-known/lmbp-gateway returns metadata whose issuer is the gateway origin", want(err == nil && st == 200 && base.Issuer == r.issuer, "status %d issuer %q want %q", st, base.Issuer, r.issuer)) {
+	if !r.check("M1", "GET /.well-known/lmbp returns metadata whose issuer is the gateway origin", want(err == nil && st == 200 && base.Issuer == r.issuer, "status %d issuer %q want %q", st, base.Issuer, r.issuer)) {
 		return errStop
 	}
 	ok := true

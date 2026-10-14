@@ -22,7 +22,7 @@ tags:
   - name: tenant-admin
   - name: openai
 paths:
-  /.well-known/lsp-connector:
+  /.well-known/localsubproxy:
     get:
       tags: [discovery]
       summary: Discovery document (served by the SaaS / remote service, not the gateway)
@@ -46,7 +46,7 @@ paths:
           content:
             application/jwk-set+json:
               schema: { $ref: '#/components/schemas/JWKSet' }
-  /.well-known/lmbp-gateway:
+  /.well-known/lmbp:
     get:
       tags: [discovery]
       summary: Gateway metadata (§18.2); with ?tenant= adds the signed SaaS identity for the pairing consent screen (§19.1)
@@ -138,7 +138,7 @@ paths:
         '400': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
         '403': { $ref: '#/components/responses/Problem' }
-  /lmbp/v1/tenant/device-approvals:
+  /lmbp/v1/tenant/devices/approvals:
     post:
       tags: [tenant-admin]
       summary: Approve or deny a pending user code on behalf of an authenticated end user (RFC 8628 §3.3 back-channel)
@@ -203,7 +203,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Device' }
         '401': { $ref: '#/components/responses/Problem' }
-  /lmbp/v1/tenant/devices/{device_id}/revoke:
+  /lmbp/v1/tenant/devices/{device}/revoke:
     post:
       tags: [tenant-admin]
       summary: Revoke a device; live sessions are closed immediately
@@ -213,7 +213,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/EndUser'
         - in: path
-          name: device_id
+          name: device
           required: true
           schema: { type: string }
       responses:
@@ -280,7 +280,7 @@ paths:
             `stream=true`: `text/event-stream` (WHATWG HTML §9.2). Each event is
             `id: <seq>` + `data: <chat.completion.chunk JSON>`; the stream ends with `data: [DONE]`.
             The `id` lets a client re-attach after a disconnect (same Idempotency-Key + Last-Event-ID,
-            or GET /lmbp/v1/tenant/tasks/{task_id}/events) and receive exactly the events after that id (§14.4).
+            or GET /lmbp/v1/tenant/tasks/{task}/events) and receive exactly the events after that id (§14.4).
             For lmbp_e2ee requests each chunk carries `lmbp_e2ee: {seq, type, data}` (sealed) instead of
             delta content; `finish_reason` and `usage` remain cleartext (§17.5).
             On a mid-stream failure the server sends `data: {"error":{...}}` and closes without `[DONE]`.
@@ -347,7 +347,7 @@ paths:
         '502': { $ref: '#/components/responses/AnthropicError' }
         '503': { $ref: '#/components/responses/AnthropicError' }
         '504': { $ref: '#/components/responses/AnthropicError' }
-  /lmbp/v1/tenant/tasks/{task_id}/events:
+  /lmbp/v1/tenant/tasks/{task}/events:
     get:
       tags: [openai]
       summary: Re-attach to a task's SSE stream (resume after a client disconnect)
@@ -358,7 +358,7 @@ paths:
         - $ref: '#/components/parameters/EndUser'
         - $ref: '#/components/parameters/LastEventID'
         - in: path
-          name: task_id
+          name: task
           required: true
           schema: { type: string }
       responses:

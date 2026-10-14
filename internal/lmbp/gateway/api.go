@@ -110,8 +110,8 @@ func (g *Gateway) Live(id string) LiveDevice {
 // Owns reports whether the gateway serves path (frameworks fall through otherwise).
 func Owns(path string) bool {
 	switch path {
-	case "/healthz", "/.well-known/jwks.json", "/.well-known/lmbp-gateway", "/lmbp/v1/device/authorize", "/lmbp/v1/token", "/lmbp/v1/connect",
-		"/lmbp/v1/tenant/device-approvals", "/lmbp/v1/tenant/devices", "/v1/models", "/v1/chat/completions", "/v1/messages":
+	case "/healthz", "/.well-known/jwks.json", "/.well-known/lmbp", "/lmbp/v1/device/authorize", "/lmbp/v1/token", "/lmbp/v1/connect",
+		"/lmbp/v1/tenant/devices/approvals", "/lmbp/v1/tenant/devices", "/v1/models", "/v1/chat/completions", "/v1/messages":
 		return true
 	}
 	return strings.HasPrefix(path, "/lmbp/v1/tenant/devices/") || strings.HasPrefix(path, "/lmbp/v1/tenant/tasks/")

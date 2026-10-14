@@ -597,11 +597,11 @@ class Gateway:
         self.tenants[id] = {"id": id, "name": profile.get("display_name") or id, "key_hash": L.sha_hex(api_key), "profile": profile}
 
     ROUTES = [
-        (re.compile(r"^/\.well-known/lmbp-gateway$"), "metadata"),
+        (re.compile(r"^/\.well-known/lmbp$"), "metadata"),
         (re.compile(r"^/lmbp/v1/device/authorize$"), "authorize"),
         (re.compile(r"^/lmbp/v1/token$"), "token"),
         (re.compile(r"^/lmbp/v1/connect$"), "connect"),
-        (re.compile(r"^/lmbp/v1/tenant/device-approvals$"), "approve"),
+        (re.compile(r"^/lmbp/v1/tenant/devices/approvals$"), "approve"),
         (re.compile(r"^/lmbp/v1/tenant/devices$"), "list_devices"),
         (re.compile(r"^/lmbp/v1/tenant/devices/(?P<id>[^/]+)/revoke$"), "revoke"),
         (re.compile(r"^/lmbp/v1/tenant/tasks/(?P<id>[^/]+)/events$"), "task_events"),

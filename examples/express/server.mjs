@@ -58,7 +58,7 @@ app.post('/app/ask', async (req, res, next) => {
     res.json({ answer: r.choices[0].message.content });
   } catch (e) { next(e); }
 });
-app.post('/app/ask-claude', async (req, res, next) => {
+app.post('/app/ask/claude', async (req, res, next) => {
   try {
     const m = await claude.messages.create({ model: req.body.model, max_tokens: 512, messages: [{ role: 'user', content: req.body.prompt }] },
       { headers: { 'X-End-User': user(req) } });
@@ -66,7 +66,7 @@ app.post('/app/ask-claude', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 // ...or without an HTTP hop:
-app.post('/app/ask-inprocess', async (req, res, next) => {
+app.post('/app/ask/inprocess', async (req, res, next) => {
   try {
     const m = await lsp.client(tenant, user(req)).messages.create({ model: req.body.model, max_tokens: 512, messages: [{ role: 'user', content: req.body.prompt }] });
     res.json({ answer: m.content.filter((b) => b.type === 'text').map((b) => b.text).join('') });

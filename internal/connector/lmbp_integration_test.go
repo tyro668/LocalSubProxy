@@ -58,7 +58,7 @@ func TestDesktopCoreEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := tenant("POST", "/lmbp/v1/tenant/device-approvals", map[string]string{"user_code": p.UserCode}); r.StatusCode != 200 {
+	if r := tenant("POST", "/lmbp/v1/tenant/devices/approvals", map[string]string{"user_code": p.UserCode}); r.StatusCode != 200 {
 		t.Fatalf("approve: %d", r.StatusCode)
 	}
 	id, err := p.Wait(ctx)

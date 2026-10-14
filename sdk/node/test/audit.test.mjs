@@ -68,7 +68,7 @@ test('in-process pairing is rate limited and shares the HTTP lockout', async () 
   }
   assert.deepEqual(codes.slice(10), ['RATE_LIMITED', 'RATE_LIMITED'], codes.join(','));
   assert.throws(() => s.lsp.pairing.deny(T, 'u1', 'WRONG-0000'), (e) => e.code === 'RATE_LIMITED');
-  const r = await fetch(s.base + '/lmbp/v1/tenant/device-approvals', { method: 'POST',
+  const r = await fetch(s.base + '/lmbp/v1/tenant/devices/approvals', { method: 'POST',
     headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' }, body: JSON.stringify({ user_code: 'WRONG-0000' }) });
   assert.equal(r.status, 429);
   } finally { await s.close(); }

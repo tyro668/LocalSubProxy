@@ -17,7 +17,7 @@ servers:
     host: gateway.example.com
     pathname: /lmbp/v1/connect
     protocol: wss
-    description: TLS is REQUIRED except on loopback in development. Use the connect_endpoint from /.well-known/lmbp-gateway (§18.2).
+    description: TLS is REQUIRED except on loopback in development. Use the connect_endpoint from /.well-known/lmbp (§18.2).
     security:
       - $ref: '#/components/securitySchemes/accessToken'
 channels:

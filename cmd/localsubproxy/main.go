@@ -64,7 +64,7 @@ func main() {
 		f := flag.NewFlagSet("connector", flag.ExitOnError)
 		configDir, _ := os.UserConfigDir()
 		localDir := filepath.Join(configDir, "localsubproxy")
-		remoteURL := f.String("remote-url", "", "remote service origin that serves /.well-known/lsp-connector (first run)")
+		remoteURL := f.String("remote-url", "", "remote service origin that serves /.well-known/localsubproxy (first run)")
 		pairLink := f.String("pair-link", "", "lmbp://pair?v=1&gateway=...&tenant=... deep link (first run, alternative to -remote-url)")
 		yes := f.Bool("yes", false, "approve the pairing consent without prompting (automation only)")
 		identity := f.String("identity", filepath.Join(localDir, "lmbp-identity.json"), "device identity file (0600; holds the device private keys)")

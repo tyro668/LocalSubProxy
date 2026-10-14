@@ -112,7 +112,7 @@
    - `tasks(id, tenant, owner, device_id, state, request_enc, …)`
 2. **密钥**：从环境变量或 KMS 加载 32 字节的网关 Ed25519 种子，计算 `kid = RFC7638(pub)`。实现 `GET /.well-known/jwks.json`。
 3. **`POST /lmbp/v1/device/authorize`**：解析表单参数，检查公钥是否为 32 字节，生成 `device_code`（只存哈希）和 `user_code`，返回结果并带上 `Cache-Control: no-store`。
-4. **`POST /lmbp/v1/tenant/device-approvals`**：用租户 Key 的哈希查出租户。在租户内按 `user_code` 查找待确认记录。确认后创建设备记录，归属 `X-End-User`。失败要计数限速。
+4. **`POST /lmbp/v1/tenant/devices/approvals`**：用租户 Key 的哈希查出租户。在租户内按 `user_code` 查找待确认记录。确认后创建设备记录，归属 `X-End-User`。失败要计数限速。
 5. **`POST /lmbp/v1/token`**：
    - device_code 授权：先验证证明，再看状态，最后标记为已使用（规范 §6.3 的顺序）；
    - jwt-bearer 授权：用设备公钥验证断言，并对 `jti` 去重。
@@ -347,11 +347,11 @@ Go 设备端参考实现见 `internal/lmbp/client`。
 **网关（任何语言）**
 1. 配置 issuer = 对外 https origin（例如 `https://gw.example.com`），不要用主机名推导。
 2. 访问令牌：`iss = issuer`，`aud = issuer + "/tenants/" + tenant`；验证时两项都要比对。设备断言的 `aud = issuer + "/lmbp/v1/token"`。
-3. 提供 `GET /.well-known/lmbp-gateway`；带 `?tenant=` 时用 JWKS 中的 Ed25519 密钥签 `signed_metadata`（`typ: lmbp-metadata+jwt`，`kid` = RFC 7638 指纹），载荷是除 `signed_metadata` 外的全部字段，`exp - iat ≤ 24h`。结构见 `spec/schemas/gateway-metadata.json`。
+3. 提供 `GET /.well-known/lmbp`；带 `?tenant=` 时用 JWKS 中的 Ed25519 密钥签 `signed_metadata`（`typ: lmbp-metadata+jwt`，`kid` = RFC 7638 指纹），载荷是除 `signed_metadata` 外的全部字段，`exp - iat ≤ 24h`。结构见 `spec/schemas/gateway-metadata.json`。
 4. 令牌响应带 `issuer`。
 
 **设备（桌面端）**
-1. 入口是深链接 `lmbp://pair?v=1&gateway=…&tenant=…`，或 SaaS 地址 → `/.well-known/lsp-connector`。
+1. 入口是深链接 `lmbp://pair?v=1&gateway=…&tenant=…`，或 SaaS 地址 → `/.well-known/localsubproxy`。
 2. 拉取元数据和 JWKS（必须同源），校验签名、issuer、tenant、audience、有效期；失败就不显示同意页。
 3. 同意页显示 `saas.*`、网关 origin、请求的模型和作用域、密钥指纹。用户拒绝时不发任何请求，返回 `CONSENT_DENIED`。
 4. 用户同意后才调用 `device_authorize`。令牌响应的 `gateway_key` 必须等于签名元数据的密钥。
