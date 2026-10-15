@@ -7,3 +7,5 @@
 /.mock/
 /mock/java/build/
 /mock/rust/target/
+/sdk/java/*/target/
+/examples/spring-boot-demo/target/

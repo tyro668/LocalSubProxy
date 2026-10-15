@@ -8,6 +8,7 @@ from the runner's machine-readable output, never from filtered text.
   scripts/strict-test.py unittest PYTHON MODULE...        # unittest result object inspected
   scripts/strict-test.py cargo   [cargo test args...]     # "test result" lines; ignored > 0 fails
   scripts/strict-test.py selftest CMD [args...]           # framework-free suites (mock/java): "selftest: N passed, M failed"
+  scripts/strict-test.py maven   DIR MODULE... -- [mvn args]  # surefire XML of every listed module; skipped > 0 fails
 
 The full raw output is echoed so logs stay readable. A Go package without
 test files (go test reports it as a package-level skip with "[no test
@@ -163,9 +164,42 @@ def run_selftest(cmd):
     ok(f"selftest: {passed} passed, 0 skipped")
 
 
+def run_maven(rest):
+    if "--" not in rest or rest.index("--") < 2:
+        die("maven: usage DIR MODULE... -- [mvn args]")
+    i = rest.index("--")
+    d, modules, args = rest[0], rest[1:i], rest[i + 1:]
+    import glob
+    import shutil
+    for m in modules:
+        shutil.rmtree(os.path.join(d, m, "target", "surefire-reports"), ignore_errors=True)
+    p = subprocess.run(["mvn", "-B"] + args, cwd=d, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    sys.stdout.write(p.stdout)
+    total = 0
+    for m in modules:
+        files = glob.glob(os.path.join(d, m, "target", "surefire-reports", "TEST-*.xml"))
+        if not files:
+            die(f"maven: module {m} produced no surefire report")
+        n = 0
+        for f in files:
+            r = ET.parse(f).getroot()
+            t, fl, er, sk = (int(r.get(k, "0")) for k in ("tests", "failures", "errors", "skipped"))
+            if fl or er:
+                die(f"maven: {os.path.basename(f)}: {fl} failures, {er} errors")
+            if sk:
+                die(f"maven: {os.path.basename(f)}: {sk} skipped")
+            n += t
+        if n == 0:
+            die(f"maven: module {m} ran no tests")
+        total += n
+    if p.returncode:
+        die(f"maven: exit {p.returncode}")
+    ok(f"maven: {total} passed, 0 skipped ({', '.join(modules)})")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         die(__doc__)
     kind, rest = sys.argv[1], sys.argv[2:]
-    {"go": lambda: run_go(rest), "node": lambda: run_node(rest), "cargo": lambda: run_cargo(rest), "selftest": lambda: run_selftest(rest),
+    {"go": lambda: run_go(rest), "node": lambda: run_node(rest), "cargo": lambda: run_cargo(rest), "selftest": lambda: run_selftest(rest), "maven": lambda: run_maven(rest),
      "pytest": lambda: run_pytest(rest[0], rest[1:]), "unittest": lambda: run_unittest(rest[0], rest[1:])}.get(kind, lambda: die("unknown kind " + kind))()
