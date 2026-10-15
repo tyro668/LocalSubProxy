@@ -675,11 +675,30 @@ class _HomePageState extends State<HomePage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _StepHeader(
-              icon: LucideIcons.circleCheck,
-              iconColor: theme.colorScheme.chart2,
-              title: '已成功连接',
-              desc: '远端服务已连接，可以开始使用。',
+            Row(
+              children: [
+                Expanded(
+                  child: _StepHeader(
+                    icon: LucideIcons.circleCheck,
+                    iconColor: theme.colorScheme.chart2,
+                    title: '已成功连接',
+                  ),
+                ),
+                Tooltip(
+                  tooltip: (context) =>
+                      const TooltipContainer(child: Text('刷新')),
+                  child: IconButton.ghost(
+                    density: ButtonDensity.icon,
+                    icon: const Icon(LucideIcons.refreshCw),
+                    onPressed: busy ? null : () => refresh(),
+                  ),
+                ),
+                OutlineButton(
+                  size: ButtonSize.small,
+                  onPressed: busy ? null : disconnect,
+                  child: const Text('断开'),
+                ),
+              ],
             ),
             const Gap(16),
             Container(
@@ -691,25 +710,6 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Row(
-                    children: [
-                      const Spacer(),
-                      Tooltip(
-                        tooltip: (context) =>
-                            const TooltipContainer(child: Text('刷新')),
-                        child: IconButton.ghost(
-                          density: ButtonDensity.icon,
-                          icon: const Icon(LucideIcons.refreshCw),
-                          onPressed: busy ? null : () => refresh(),
-                        ),
-                      ),
-                      OutlineButton(
-                        size: ButtonSize.small,
-                        onPressed: busy ? null : disconnect,
-                        child: const Text('断开'),
-                      ),
-                    ],
-                  ),
                   if ((status?['saas_name'] ?? '') != '')
                     _StatRow('服务', '${status?['saas_name']}'),
                   if ((status?['issuer'] ?? '') != '')
@@ -913,13 +913,13 @@ class _StepHeader extends StatelessWidget {
   const _StepHeader({
     required this.icon,
     required this.title,
-    required this.desc,
+    this.desc,
     this.iconColor,
   });
 
   final IconData icon;
   final String title;
-  final String desc;
+  final String? desc;
   final Color? iconColor;
 
   @override
@@ -944,8 +944,10 @@ class _StepHeader extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(title).medium(),
-              const Gap(3),
-              Text(desc).xSmall().muted(),
+              if (desc != null) ...[
+                const Gap(3),
+                Text(desc!).xSmall().muted(),
+              ],
             ],
           ),
         ),
