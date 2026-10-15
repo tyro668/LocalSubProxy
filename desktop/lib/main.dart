@@ -553,8 +553,8 @@ class _HomePageState extends State<HomePage> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(width: 180, child: _StepRail(current: step)),
-              const Gap(40),
+              SizedBox(width: 140, child: _StepRail(current: step)),
+              const Gap(24),
               Expanded(child: _connectStepPane(step)),
             ],
           ),
@@ -566,15 +566,19 @@ class _HomePageState extends State<HomePage> {
     final theme = Theme.of(context);
     switch (step) {
       case 1: // 身份验证：consent — the SaaS identity was verified by signature
+        final saas =
+            (consent?['saas'] as Map?)?.cast<String, dynamic>() ?? const {};
+        final saasName = '${saas['name'] ?? ''}'.trim();
+        final verified = consent?['verified'] == true;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _StepHeader(
+            _StepHeader(
               icon: LucideIcons.shieldCheck,
-              title: '身份验证',
-              desc: '远端服务身份已通过网关签名校验，请确认授权信息。',
+              title: saasName.isEmpty ? '确认服务授权' : '「$saasName」请求使用本机模型',
+              desc: verified ? '身份已通过网关签名校验' : '身份未校验',
             ),
-            const Gap(16),
+            const Gap(14),
             _ConsentView(consent: consent!, localModels: _localModels()),
             const Gap(16),
             Row(
@@ -600,11 +604,17 @@ class _HomePageState extends State<HomePage> {
           children: [
             const _StepHeader(
               icon: LucideIcons.keyRound,
-              title: '确认授权',
-              desc: '请在远端服务页面输入以下配对码完成设备验证。',
+              title: '输入配对码',
+              desc: '在远端服务页面输入此配对码即可完成连接',
             ),
-            const Gap(20),
-            Center(
+            const Gap(16),
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.muted.withValues(alpha: 0.55),
+                border: Border.all(color: theme.colorScheme.border),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
               child: Column(
                 children: [
                   Row(
@@ -614,11 +624,12 @@ class _HomePageState extends State<HomePage> {
                         pairUserCode ?? '',
                         style: const TextStyle(
                           fontSize: 28,
+                          fontWeight: FontWeight.w600,
                           letterSpacing: 4,
                           fontFamily: 'monospace',
                         ),
                       ),
-                      const Gap(4),
+                      const Gap(6),
                       Tooltip(
                         tooltip: (context) =>
                             const TooltipContainer(child: Text('复制配对码')),
@@ -640,28 +651,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-            const Gap(16),
-            Container(
-              decoration: BoxDecoration(
-                color: theme.colorScheme.muted,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              padding: const EdgeInsets.all(10),
-              child: Row(
-                children: [
-                  Icon(
-                    LucideIcons.info,
-                    size: 15,
-                    color: theme.colorScheme.mutedForeground,
-                  ),
-                  const Gap(8),
-                  const Expanded(
-                    child: Text('请在已登录的远端服务页面输入此配对码，完成后将自动进入下一步。'),
-                  ),
-                ],
-              ).small().muted(),
-            ),
-            const Gap(16),
+            const Gap(14),
             Align(
               alignment: Alignment.centerRight,
               child: GhostButton(
@@ -672,6 +662,8 @@ class _HomePageState extends State<HomePage> {
           ],
         );
       case 3: // 完成连接：paired
+        final issuer = '${status?['issuer'] ?? ''}';
+        final remote = '${status?['remote_url'] ?? ''}';
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -693,6 +685,7 @@ class _HomePageState extends State<HomePage> {
                     onPressed: busy ? null : () => refresh(),
                   ),
                 ),
+                const Gap(4),
                 OutlineButton(
                   size: ButtonSize.small,
                   onPressed: busy ? null : disconnect,
@@ -700,36 +693,28 @@ class _HomePageState extends State<HomePage> {
                 ),
               ],
             ),
-            const Gap(16),
+            const Gap(14),
             Container(
               decoration: BoxDecoration(
                 border: Border.all(color: theme.colorScheme.border),
                 borderRadius: BorderRadius.circular(10),
               ),
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   if ((status?['saas_name'] ?? '') != '')
                     _StatRow('服务', '${status?['saas_name']}'),
-                  if ((status?['issuer'] ?? '') != '')
-                    _StatRow('网关', '${status?['issuer']}'),
+                  if (issuer.isNotEmpty) _StatRow('网关', issuer),
+                  if (remote.isNotEmpty && remote != issuer)
+                    _StatRow('地址', remote),
                   _StatRow(
                     '设备',
                     '${status?['device_name'] ?? status?['device_id'] ?? ''}',
                   ),
-                  _StatRow('地址', '${status?['remote_url'] ?? ''}'),
                   _StatRow('传输', _transportLabel(status?['transport'])),
                   _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
                 ],
-              ),
-            ),
-            const Gap(16),
-            Align(
-              alignment: Alignment.centerRight,
-              child: PrimaryButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('完成'),
               ),
             ),
           ],
@@ -741,23 +726,25 @@ class _HomePageState extends State<HomePage> {
             const _StepHeader(
               icon: LucideIcons.link,
               title: '连接远端服务',
-              desc: '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
+            ),
+            const Gap(14),
+            TextField(
+              controller: remoteUrl,
+              placeholder: const Text(
+                '输入服务地址（https://…）或配对链接（lmbp://pair?…）',
+              ),
+              features: const [InputFeature.clear()],
+              onSubmitted: (_) {
+                if (!busy) prepareConnection();
+              },
             ),
             if ((status?['pairing_error'] ?? '') != '') ...[
               const Gap(8),
-              Text('${status?['pairing_error']}').small(),
+              Text(
+                '${status?['pairing_error']}',
+                style: TextStyle(color: theme.colorScheme.destructive),
+              ).xSmall(),
             ],
-            const Gap(16),
-            LabeledField(
-              label: '远端服务地址',
-              child: TextField(
-                controller: remoteUrl,
-                placeholder: const Text(
-                  'https://remote.example.com 或 lmbp://pair?… 链接',
-                ),
-                features: const [InputFeature.clear()],
-              ),
-            ),
             const Gap(16),
             Align(
               alignment: Alignment.centerRight,
@@ -901,7 +888,20 @@ class _StepRail extends StatelessWidget {
               ),
             ],
           ),
-          if (i < _labels.length - 1) const Gap(18),
+          if (i < _labels.length - 1)
+            Padding(
+              padding: const EdgeInsets.only(left: 10.5, top: 4, bottom: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  width: 1,
+                  height: 14,
+                  color: i < current
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.border,
+                ),
+              ),
+            ),
         ],
       ],
     );
@@ -1381,43 +1381,33 @@ class _ConsentView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
     final models = localModels.join(', ');
     final scopes = ((consent['requested_scopes'] as List?) ?? []).join(', ');
-    final logo = '${saas['logo_uri'] ?? ''}';
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            if (logo.startsWith('https://'))
-              Padding(
-                padding: const EdgeInsets.only(right: 10),
-                child: Image.network(logo, width: 32, height: 32,
-                    errorBuilder: (_, _, _) => const SizedBox.shrink()),
-              ),
-            Expanded(
-              child: Text('「${saas['name'] ?? ''}」请求使用本机模型').medium(),
-            ),
-          ],
-        ),
-        const Gap(4),
-        Text(consent['verified'] == true
-                ? '身份已通过网关签名校验'
-                : '身份未校验')
-            .small()
-            .muted(),
-        const Gap(10),
-        _StatRow('网关', '${consent['gateway'] ?? ''}'),
-        _StatRow('租户', '${consent['tenant'] ?? ''}'),
-        if ('${saas['homepage_uri'] ?? ''}' != '')
-          _StatRow('主页', '${saas['homepage_uri']}'),
-        if ('${saas['policy_uri'] ?? ''}' != '')
-          _StatRow('隐私政策', '${saas['policy_uri']}'),
-        _StatRow('本机模型', models.isEmpty ? '未添加方案' : models),
-        _StatRow('请求权限', scopes),
-        _StatRow('网关密钥', '${consent['gateway_key_id'] ?? ''}'),
-      ],
+    final gateway = '${consent['gateway'] ?? ''}';
+    final homepage = '${saas['homepage_uri'] ?? ''}';
+    final policy = '${saas['policy_uri'] ?? ''}';
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.muted.withValues(alpha: 0.4),
+        border: Border.all(color: theme.colorScheme.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _StatRow('网关', gateway),
+          _StatRow('租户', '${consent['tenant'] ?? ''}'),
+          if (homepage.isNotEmpty && homepage != gateway)
+            _StatRow('主页', homepage),
+          if (policy.isNotEmpty) _StatRow('隐私政策', policy),
+          _StatRow('本机模型', models.isEmpty ? '未添加方案' : models),
+          if (scopes.isNotEmpty) _StatRow('请求权限', scopes),
+          _StatRow('网关密钥', '${consent['gateway_key_id'] ?? ''}'),
+        ],
+      ),
     );
   }
 }
