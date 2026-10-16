@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,7 +36,9 @@ type fakeExec struct {
 	delay   time.Duration
 }
 
-func (f *fakeExec) Models() []string { return []string{"echo", "tool", "slow", "textonly", "temp"} }
+func (f *fakeExec) Models() []string {
+	return []string{"echo", "tool", "slow", "textonly", "temp", "badidx", "huge"}
+}
 func (f *fakeExec) ModelCapabilities() map[string][]string {
 	// "textonly" declares that it honours no request parameter (like the
 	// Codex adapter); "temp" honours only temperature (fourth audit A2).
@@ -82,6 +85,33 @@ func (f *fakeExec) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp
 			}
 		}
 		return &lmbp.TaskDone{FinishReason: "stop", Usage: &lmbp.Usage{PromptTokens: 3, CompletionTokens: 4}}, nil
+	case "huge": // review7 #13: deltas far over max_frame_bytes
+		switch last.Content.PlainText() {
+		case "text":
+			if e := send(lmbp.TaskDelta{Text: hugeText}); e != nil {
+				return nil, e
+			}
+			return &lmbp.TaskDone{FinishReason: "stop"}, nil
+		case "args":
+			i0, i1 := 0, 1
+			if e := send(lmbp.TaskDelta{Text: "calling", ToolCalls: []lmbp.ToolCall{
+				{Index: &i0, ID: "a", Type: "function", Function: lmbp.FunctionCall{Name: "f", Arguments: hugeArgs("a")}},
+				{Index: &i1, ID: "b", Type: "function", Function: lmbp.FunctionCall{Name: "g", Arguments: hugeArgs("b")}}}}); e != nil {
+				return nil, e
+			}
+			return &lmbp.TaskDone{FinishReason: "tool_calls"}, nil
+		default: // unsplittable: tool call without an index
+			if e := send(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{ID: "c", Type: "function", Function: lmbp.FunctionCall{Name: "f", Arguments: hugeArgs("c")}}}}); e != nil {
+				return nil, e
+			}
+			return &lmbp.TaskDone{FinishReason: "tool_calls"}, nil
+		}
+	case "badidx": // tool-call index taken from the prompt (review7 #4)
+		idx, _ := strconv.Atoi(last.Content.PlainText())
+		if e := send(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &idx, ID: "c", Type: "function", Function: lmbp.FunctionCall{Name: "f", Arguments: "{}"}}}}); e != nil {
+			return nil, e
+		}
+		return &lmbp.TaskDone{FinishReason: "tool_calls"}, nil
 	case "tool":
 		if last.Role == "tool" {
 			if e := send(lmbp.TaskDelta{Text: "It is " + last.Content.PlainText()}); e != nil {
@@ -293,4 +323,10 @@ func textOf(evs []sse) (string, string) {
 		}
 	}
 	return b.String(), finish
+}
+
+var hugeText = strings.Repeat("héllo wörld 你好 ", 40000) // ~800 KB, multibyte
+
+func hugeArgs(tag string) string {
+	return `{"k":"` + tag + strings.Repeat("z", 400<<10) + `"}`
 }

@@ -1,6 +1,8 @@
 package dev.localsubproxy.lmbp;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -41,9 +43,18 @@ class StoreContractTest {
     s.putDevice(d);
     assertEquals("revoked", s.getDevice("dev_1").status);
     assertEquals("", s.getDevice("dev_1").e2eeKey);
+    assertFalse(s.setDeviceE2EEKey("dev_1", "k1"), "E2EE key written to a revoked device");
+    assertEquals("revoked", s.getDevice("dev_1").status);
+    assertFalse(s.setDeviceE2EEKey("missing", "k1"));
+    Store.Device d2 = new Store.Device();
+    d2.id = "dev_2"; d2.tenant = "acme"; d2.owner = "u9"; d2.name = "pc2"; d2.status = "active"; d2.pub = new byte[32]; d2.created = Instant.ofEpochSecond(1000);
+    s.putDevice(d2);
+    assertTrue(s.setDeviceE2EEKey("dev_2", "k2"));
+    assertEquals("k2", s.getDevice("dev_2").e2eeKey);
+    assertEquals("active", s.getDevice("dev_2").status);
     assertEquals(1, s.listDevices("acme", "u1").size());
     assertEquals(0, s.listDevices("acme", "u2").size());
-    assertEquals(1, s.listDevices("acme", null).size());
+    assertEquals(2, s.listDevices("acme", null).size());
 
     Store.DeviceAuth a = new Store.DeviceAuth();
     a.codeHash = "h"; a.userCode = "BCDFGHJK"; a.tenant = "acme"; a.name = "pc"; a.status = "pending"; a.pub = new byte[32]; a.expires = 5; a.interval = 2;
@@ -51,6 +62,11 @@ class StoreContractTest {
     assertEquals("pending", s.deviceAuthByUserCode("acme", "BCDFGHJK").status);
     assertNull(s.deviceAuthByUserCode("other", "BCDFGHJK"));
 
+    Store.TaskRecord sealed = task("t_e2ee");
+    sealed.e2ee = true;
+    s.createTask(sealed, null, null);
+    assertTrue(s.getTask("t_e2ee").e2ee, "E2EE mode must survive a restart (review7 #6)");
+    assertFalse(s.getTask("t_e2ee") == null);
     s.createTask(task("t1"), "key", new Store.Idempotency("acme", "u1", "t1", "hash"));
     assertThrows(Store.Conflict.class, () -> s.createTask(task("t1"), null, null));
     assertThrows(Store.Conflict.class, () -> s.createTask(task("t2"), "key", new Store.Idempotency("acme", "u1", "t2", "hash")));

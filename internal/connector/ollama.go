@@ -59,14 +59,44 @@ func ollamaMessages(msgs []lmbp.Message) ([]map[string]any, error) {
 	return out, nil
 }
 
+// ollamaTools applies tool_choice with only the semantics Ollama can
+// guarantee (it has no tool_choice): "auto"/absent pass the tools, "none"
+// withholds them so no call can happen; "required" and a named function
+// cannot be enforced and are rejected rather than silently ignored.
+func ollamaTools(run lmbp.TaskRun) (any, error) {
+	if len(run.ToolChoice) == 0 || string(run.ToolChoice) == "null" {
+		if len(run.Tools) == 0 {
+			return nil, nil
+		}
+		return run.Tools, nil
+	}
+	var choice string
+	if json.Unmarshal(run.ToolChoice, &choice) == nil {
+		switch choice {
+		case "auto":
+			if len(run.Tools) == 0 {
+				return nil, nil
+			}
+			return run.Tools, nil
+		case "none":
+			return nil, nil
+		}
+	}
+	return nil, knownFailure("CAPABILITY_UNSUPPORTED: Ollama cannot enforce tool_choice " + string(run.ToolChoice) + " (only \"auto\" and \"none\")")
+}
+
 func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
 	msgs, err := ollamaMessages(run.Messages)
 	if err != nil {
 		return nil, err
 	}
 	body := map[string]any{"model": model, "messages": msgs, "stream": true}
-	if len(run.Tools) > 0 {
-		body["tools"] = run.Tools
+	tools, err := ollamaTools(run)
+	if err != nil {
+		return nil, err
+	}
+	if tools != nil {
+		body["tools"] = tools
 	}
 	opts := map[string]any{}
 	if mt := maxTokens(run, a); mt > 0 {

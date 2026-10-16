@@ -50,6 +50,8 @@ final class FakeDevice implements AutoCloseable {
   }
 
   String dc;
+  /** Runs after the WebSocket upgrade, before the hello (e.g. a revoke). */
+  volatile Runnable beforeHello;
 
   void token() throws Exception {
     Map<String, Object> t = post("/lmbp/v1/token", "grant_type=" + enc("urn:ietf:params:oauth:grant-type:device_code") + "&device_code=" + enc(dc) + "&proof=" + enc(proof("", Lmbp.PROOF_TOKEN, dc)));
@@ -76,6 +78,7 @@ final class FakeDevice implements AutoCloseable {
             return null;
           }
         }).get(5, TimeUnit.SECONDS);
+    if (beforeHello != null) beforeHello.run();
     send(Json.obj("v", 1L, "type", "hello", "id", "h1", "data", Json.obj("device_id", deviceId, "proof", proof(deviceId, Lmbp.PROOF_HELLO, token),
         "capabilities", List.of("tools"), "models", List.of(model), "model_capabilities", Json.obj(model, List.of("tools")), "max_concurrency", 4L)));
     welcome.get(5, TimeUnit.SECONDS);

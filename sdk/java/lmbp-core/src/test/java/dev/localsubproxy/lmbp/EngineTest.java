@@ -186,4 +186,53 @@ class EngineTest {
     assertEquals("revoked", lsp.pairing().listDevices("acme", "alice").get(0).status());
     assertNotNull(lsp.jwks().get("keys"));
   }
+
+  // Review7 #2: a revoke while the gateway awaits the hello must not be
+  // undone by activation (memory and JDBC stores).
+  @org.junit.jupiter.params.ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings = {"memory", "sqlite"})
+  void revokeDuringHandshakeCannotResurrect(String kind, @org.junit.jupiter.api.io.TempDir java.nio.file.Path tmp) throws Exception {
+    Store st = kind.equals("memory") ? new MemoryStore() : JdbcStore.open("jdbc:sqlite:" + tmp.resolve("g.db"));
+    String base = start(st);
+    dev = new FakeDevice(base, "acme");
+    String code = dev.authorize();
+    lsp.pairing().approve("acme", "alice", code);
+    dev.token();
+    dev.beforeHello = () -> assertTrue(lsp.pairing().revokeDevice("acme", "alice", dev.deviceId));
+    assertThrows(Exception.class, () -> dev.connect(MODEL), "session activated for a revoked device");
+    assertEquals("revoked", st.getDevice(dev.deviceId).status);
+    FakeDevice.waitFor(() -> lsp.pairing().listDevices("acme", "alice").stream().noneMatch(Pairing.Device::online), 2000);
+    assertTrue(lsp.pairing().listDevices("acme", "alice").stream().noneMatch(Pairing.Device::online));
+  }
+
+  // Review7 #10: a caller that disconnects while queued records CANCELLED (the
+  // decided outcome), and an idempotent replay reports exactly that.
+  @Test void queuedDisconnectRecordsCancelled() throws Exception {
+    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).maxConcurrency(1).logger(s -> { }).build();
+    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    dev = new FakeDevice("http://127.0.0.1:" + srv.port(), "acme");
+    String code = dev.authorize();
+    lsp.pairing().approve("acme", "alice", code);
+    dev.token();
+    dev.connect(MODEL);
+    dev.mode = FakeDevice.Mode.HANG;
+    InProcessClient c = lsp.client("acme", "alice");
+    LmbpStream hog = c.stream(req(model())); // holds the only slot
+    Thread.sleep(200);
+    HttpRequest q = new HttpRequest("POST", "/v1/chat/completions", "", Map.of("content-type", "application/json", "idempotency-key", "k-gone"),
+        Json.bytes(Json.obj("model", model(), "messages", List.of(Json.obj("role", "user", "content", "hi")), "stream", false)));
+    q.trustedTenant = "acme";
+    q.trustedUser = "alice";
+    int[] st = {0};
+    Thread t = Thread.ofVirtual().start(() -> lsp.handle(q, new HttpSink() {
+      @Override public void start(int status, Map<String, String> h) { st[0] = status; }
+      @Override public void write(byte[] b) { }
+    }));
+    Thread.sleep(300);
+    q.abort();
+    t.join(5000);
+    assertFalse(t.isAlive(), "queued request did not exit on disconnect");
+    LmbpApiException e = assertThrows(LmbpApiException.class, () -> c.call(req(model()), new InProcessClient.Options("k-gone", null)));
+    assertEquals("CANCELLED", e.code(), "replay must report the decided outcome, not DEVICE_BUSY");
+    hog.close();
+  }
 }

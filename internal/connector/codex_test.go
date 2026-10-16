@@ -138,7 +138,7 @@ func fakeMessages() []lmbp.Message {
 
 func TestCodexProbeAndStreaming(t *testing.T) {
 	t.Setenv("CODEX_HOME", "normal")
-	x := &Connector{running: map[string]string{}}
+	x := &Connector{running: map[string]runSlot{}}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	models, err := CodexModels(ctx, os.Args[0])

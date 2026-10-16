@@ -409,18 +409,29 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			ds.release()
 		}
 		w.Header().Set("X-Task-Id", taskID)
-		if !ds.connected() {
-			task.failLocal(lmbp.ErrDeviceOffline, "device disconnected", true)
-			apiError(w, 503, lmbp.ErrDeviceOffline, "device disconnected")
-			return
+		// Decide our local outcome; if another path already ended the task
+		// (timeout, cancel, ...) the caller gets that recorded outcome, never
+		// a made-up one. Review7 #10.
+		hook(task, "queue-exit")
+		switch {
+		case task.isDone():
+		case r.Context().Err() != nil: // caller went away while queued
+			if task.failLocal(lmbp.ErrCancelled, "client disconnected while queued", false) {
+				return // nobody is listening; replays see CANCELLED
+			}
+		case !ds.connected():
+			if task.failLocal(lmbp.ErrDeviceOffline, "device disconnected", true) {
+				apiError(w, 503, lmbp.ErrDeviceOffline, "device disconnected")
+				return
+			}
+		default:
+			if task.failLocal(lmbp.ErrDeviceBusy, "device is at max concurrency", true) {
+				w.Header().Set("Retry-After", "2")
+				apiError(w, 429, lmbp.ErrDeviceBusy, "device is at max concurrency")
+				return
+			}
 		}
-		if task.isDone() { // ended while queued (e.g. timeout): report what was recorded
-			g.serve(w, r, task, 0, req.Stream)
-			return
-		}
-		task.failLocal(lmbp.ErrDeviceBusy, "device is at max concurrency", true)
-		w.Header().Set("Retry-After", "2")
-		apiError(w, 429, lmbp.ErrDeviceBusy, "device is at max concurrency")
+		g.serve(w, r, task, 0, req.Stream) // report what was recorded
 		return
 	}
 	task.mu.Lock()
@@ -628,6 +639,9 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after 
 				idx := 0
 				if c.Index != nil {
 					idx = *c.Index
+				}
+				if idx < 0 || idx >= maxToolCalls {
+					continue // rejected on ingress; never index with it
 				}
 				for len(calls) <= idx {
 					calls = append(calls, lmbp.ToolCall{Type: "function"})

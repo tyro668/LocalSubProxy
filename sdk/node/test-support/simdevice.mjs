@@ -28,9 +28,11 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
   const ws = new WebSocket(base.replace(/^http/, 'ws') + '/lmbp/v1/connect', L.SUBPROTOCOL, { headers: { Authorization: 'Bearer ' + tok.access_token } });
   await new Promise((ok, bad) => { ws.once('open', ok); ws.once('error', bad); });
   const caps = Object.fromEntries(models.map((m) => [m, ['tools']]));
-  ws.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', data: { device_id: tok.device_id, client: 'sdk-test', models, model_capabilities: caps,
-    max_concurrency: opts.maxConcurrency ?? 4, capabilities: [...(x ? ['tools', 'e2ee'] : ['tools']), ...(opts.flood ? ['flow'] : [])],
-    ...(x ? { e2ee_key: E.signKeyStatement(p.priv, p.pub, tok.device_id, x.pub) } : {}), proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token) } }));
+  if (opts.beforeHello) await opts.beforeHello(); // e.g. revoke while the gateway awaits the hello
+  const hello = { device_id: tok.device_id, client: 'sdk-test', models, model_capabilities: caps,
+    max_concurrency: opts.maxConcurrency ?? 4, capabilities: [...(x ? ['tools', 'e2ee'] : ['tools']), ...(opts.flood ? ['flow'] : []), ...(opts.extraCaps || [])],
+    ...(x ? { e2ee_key: E.signKeyStatement(p.priv, p.pub, tok.device_id, x.pub) } : {}), proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token), ...(opts.helloPatch || {}) };
+  ws.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', data: hello }));
   const welcome = await new Promise((ok, bad) => ws.once('message', (m) => { const w = JSON.parse(m); w.type === 'welcome' ? ok(w) : bad(new Error(String(m))); }));
   // opts.flood {n, size, stats}: answer every task with n deltas of size
   // bytes, honouring the gateway's flow window (§15.3); stats.sent counts
@@ -107,5 +109,5 @@ export async function pairAndConnect(lsp, base, tenant, user, opts = {}) {
   const tok = await finishPairing(base, p);
   const ws = await connect(base, p, tok, ['m1'], opts);
   for (let i = 0; i < 50 && !lsp.pairing.listDevices(tenant, user).find((d) => d.online); i++) await new Promise((r) => setTimeout(r, 20));
-  return { ws, deviceId: ok.deviceId, jkt: ok.jkt, pairing: p };
+  return { ws, deviceId: ok.deviceId, jkt: ok.jkt, pairing: p, tok };
 }

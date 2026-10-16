@@ -68,17 +68,38 @@ func (o *OpenAIExecutor) Execute(ctx context.Context, run lmbp.TaskRun, emit fun
 
 // RelayOpenAIStream converts an OpenAI chat.completion.chunk SSE stream into
 // task.delta emissions and the final task.done.
+//
+// Completion policy (Review7 #12): the stream is complete only after
+// "data: [DONE]" or a chunk carrying a finish_reason. EOF (or a read error)
+// before that is an incomplete upstream (UPSTREAM_ERROR), never a success.
+// Parse policy: a data line that is not valid JSON, or an in-stream
+// {"error":...} object, fails the task with UPSTREAM_ERROR; non-data SSE
+// lines (comments, event:, id:) are ignored.
 func RelayOpenAIStream(ctx context.Context, r io.Reader, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
 	done := &lmbp.TaskDone{FinishReason: "stop"}
+	complete := false
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
 	for sc.Scan() {
-		p, ok := strings.CutPrefix(sc.Text(), "data: ")
+		p, ok := strings.CutPrefix(sc.Text(), "data:")
 		if !ok {
 			continue
 		}
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
 		if p == "[DONE]" {
+			complete = true
 			break
+		}
+		var upErr struct {
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(p), &upErr) == nil && upErr.Error != nil {
+			return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: "local model error: " + upErr.Error.Message}
 		}
 		var ch struct {
 			Choices []struct {
@@ -91,7 +112,10 @@ func RelayOpenAIStream(ctx context.Context, r io.Reader, emit func(lmbp.TaskDelt
 			Usage *lmbp.Usage `json:"usage"`
 		}
 		if json.Unmarshal([]byte(p), &ch) != nil {
-			continue
+			if ctx.Err() != nil {
+				break
+			}
+			return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: "malformed upstream stream chunk"}
 		}
 		if ch.Usage != nil {
 			done.Usage = ch.Usage
@@ -104,6 +128,7 @@ func RelayOpenAIStream(ctx context.Context, r io.Reader, emit func(lmbp.TaskDelt
 			}
 			if x.FinishReason != nil && *x.FinishReason != "" {
 				done.FinishReason = *x.FinishReason
+				complete = true
 			}
 		}
 	}
@@ -111,7 +136,10 @@ func RelayOpenAIStream(ctx context.Context, r io.Reader, emit func(lmbp.TaskDelt
 		return nil, &lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}
 	}
 	if sc.Err() != nil {
-		return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: "stream interrupted"}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: "stream interrupted", Retryable: true}
+	}
+	if !complete {
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: "upstream stream ended before completion", Retryable: true}
 	}
 	return done, nil
 }

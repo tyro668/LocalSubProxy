@@ -81,20 +81,31 @@ type AdapterHealth struct {
 }
 
 type Connector struct {
-	recovery    map[string]any // set when the adapter file was unreadable and backed up
-	cfg         Config
-	client      *http.Client
-	modelClient *http.Client
-	cipher      *durable.Cipher
-	mu          sync.Mutex
-	adapters    map[string]AdapterConfig
-	health      map[string]AdapterHealth
-	running     map[string]string // task → adapter
-	remoteOK    bool
-	gatewayOK   bool
-	cl          *client.Client
-	lastErr     string
+	cfgVer          uint64         // bumped by every adapter-list change
+	closed          bool           // Shutdown started: adapter changes refused
+	muts            sync.WaitGroup // adapter changes in progress (Shutdown waits)
+	reqs            sync.WaitGroup // task handling incl. early rejects and audit (Shutdown waits)
+	lastSaved       []byte         // last adapters.enc content known on disk
+	adaptersBlocked error          // set when adapters.enc may differ from memory
+	storageWarning  string         // adapters.enc committed but not synced
+	recovery        map[string]any // set when the adapter file was unreadable and backed up
+	cfg             Config
+	client          *http.Client
+	modelClient     *http.Client
+	cipher          *durable.Cipher
+	mu              sync.Mutex
+	adapters        map[string]AdapterConfig
+	health          map[string]AdapterHealth
+	running         map[string]runSlot // linkID+"\x00"+taskID → slot
+	// links are the per-SaaS lmbp sessions sharing this adapter pool.
+	links    map[string]*link
+	order    []string
+	base     context.Context
+	probing  bool
+	stopProb context.CancelFunc
 }
+
+type runSlot struct{ adapter, link string }
 
 func New(cfg Config) (*Connector, error) {
 	if cfg.Identity != nil && !cfg.Identity.Valid() {
@@ -115,7 +126,7 @@ func New(cfg Config) (*Connector, error) {
 			return nil, err
 		}
 	}
-	x := &Connector{cfg: cfg, cipher: c, adapters: map[string]AdapterConfig{}, health: map[string]AdapterHealth{}, running: map[string]string{}, remoteOK: cfg.RemoteURL == "",
+	x := &Connector{cfg: cfg, cipher: c, adapters: map[string]AdapterConfig{}, health: map[string]AdapterHealth{}, running: map[string]runSlot{}, links: map[string]*link{},
 		client:      &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		modelClient: &http.Client{Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	for _, a := range cfg.Adapters {
@@ -341,26 +352,49 @@ func (x *Connector) ModelCapabilities() map[string][]string {
 // Execute runs one verified (and, for E2EE tasks, already decrypted) task and
 // records it in the local audit log.
 func (x *Connector) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
+	return x.serve(ctx, nil, run, emit)
+}
+
+// serve runs one task for link l (nil: no connection, e.g. tests) and
+// records it in the audit log attributed to that connection.
+func (x *Connector) serve(ctx context.Context, l *link, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
+	// Every request, also one rejected before admission, is tracked until
+	// its audit row is written; once Shutdown began none starts untracked.
+	x.mu.Lock()
+	if x.closed {
+		x.mu.Unlock()
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "LocalSubProxy is shutting down", Retryable: true}
+	}
+	x.reqs.Add(1)
+	x.mu.Unlock()
+	defer x.reqs.Done()
 	if x.cfg.Audit == nil {
-		return x.execute(ctx, run, emit)
+		return x.execute(ctx, l, run, emit, nil)
 	}
 	start := time.Now()
 	var first time.Time
-	done, fail := x.execute(ctx, run, func(d lmbp.TaskDelta) error {
+	// The audit row is written inside execute, before the task leaves the
+	// link's inflight group, so Shutdown (and stop closing the audit DB)
+	// waits for it.
+	return x.execute(ctx, l, run, func(d lmbp.TaskDelta) error {
 		if first.IsZero() {
 			first = time.Now()
 		}
 		return emit(d)
+	}, func(done *lmbp.TaskDone, fail *lmbp.ErrorBody) {
+		x.recordAudit(l, run, start, first, done, fail)
 	})
-	x.recordAudit(run, start, first, done, fail)
-	return done, fail
 }
 
-func (x *Connector) recordAudit(run lmbp.TaskRun, start, first time.Time, done *lmbp.TaskDone, fail *lmbp.ErrorBody) {
+// auditHook runs before an audit row is written (tests).
+var auditHook func()
+
+func (x *Connector) recordAudit(l *link, run lmbp.TaskRun, start, first time.Time, done *lmbp.TaskDone, fail *lmbp.ErrorBody) {
 	r := audit.Record{At: start, TaskID: run.TaskID, Model: run.Model, Status: audit.StatusOK, LatencyMS: time.Since(start).Milliseconds(),
-		E2EE: run.E2EE != nil, Tools: len(run.Tools) > 0}
+		E2EE: run.E2EE != nil || run.Sealed, Tools: len(run.Tools) > 0}
 	r.Adapter, _, _ = strings.Cut(run.Model, "/")
-	if id := x.cfg.Identity; id != nil {
+	if l != nil {
+		id := l.cfg.Identity
 		r.ConnectionID, r.Gateway, r.Tenant, r.SaaSName = id.DeviceID, id.Issuer, id.Tenant, id.SaaSName
 	}
 	if !first.IsZero() {
@@ -381,6 +415,9 @@ func (x *Connector) recordAudit(run lmbp.TaskRun, start, first time.Time, done *
 	} else if done != nil && done.Usage != nil {
 		r.PromptTokens, r.CompletionTokens, r.UsageReported = done.Usage.PromptTokens, done.Usage.CompletionTokens, true
 	}
+	if auditHook != nil {
+		auditHook()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := x.cfg.Audit.Record(ctx, r); err != nil {
@@ -388,7 +425,15 @@ func (x *Connector) recordAudit(run lmbp.TaskRun, start, first time.Time, done *
 	}
 }
 
-func (x *Connector) execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
+func (x *Connector) execute(ctx context.Context, l *link, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error, after func(*lmbp.TaskDone, *lmbp.ErrorBody)) (rdone *lmbp.TaskDone, rfail *lmbp.ErrorBody) {
+	recorded := false
+	record := func() {
+		if after != nil && !recorded {
+			recorded = true
+			after(rdone, rfail)
+		}
+	}
+	defer record() // tasks refused before admission
 	adapterID, modelID, ok := strings.Cut(run.Model, "/")
 	x.mu.Lock()
 	a, exists := x.adapters[adapterID]
@@ -396,19 +441,35 @@ func (x *Connector) execute(ctx context.Context, run lmbp.TaskRun, emit func(lmb
 		x.mu.Unlock()
 		return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: "model not allowed by local adapter policy"}
 	}
-	busy := 0
-	for _, id := range x.running {
-		if id == adapterID {
-			busy++
+	lid := ""
+	if l != nil {
+		lid = l.cfg.ID
+		if l.closing || l.revoked || l.cfg.Paused {
+			x.mu.Unlock()
+			return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: "connection is closing"}
+		}
+		if !l.cfg.Policy.allows(run.Model) {
+			x.mu.Unlock()
+			return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: "model not allowed for this connection"}
 		}
 	}
-	if busy >= adapterSlots(a) {
+	key := lid + "\x00" + run.TaskID
+	if _, dup := x.running[key]; dup {
 		x.mu.Unlock()
-		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "adapter is at its concurrency limit", Retryable: true}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrBadRequest, Message: "duplicate task id"}
 	}
-	x.running[run.TaskID] = adapterID
+	if fail := x.admitLocked(l, a); fail != nil {
+		x.mu.Unlock()
+		return nil, fail
+	}
+	x.running[key] = runSlot{adapter: adapterID, link: lid}
+	if l != nil {
+		l.inflight.Add(1)
+		defer l.inflight.Done()
+	}
+	defer record() // admitted: before leaving inflight
 	x.mu.Unlock()
-	defer func() { x.mu.Lock(); delete(x.running, run.TaskID); x.mu.Unlock() }()
+	defer func() { x.mu.Lock(); delete(x.running, key); x.mu.Unlock() }()
 	if fail := checkCaps(a, run); fail != nil {
 		return nil, fail
 	}
@@ -520,68 +581,41 @@ func (l *limitedEmitter) text(s string) error { return l.delta(lmbp.TaskDelta{Te
 
 // ---------- session ----------
 
-// Run serves the adapters over lmbp until ctx ends or the device is revoked.
+// Run serves the adapters over lmbp for the single Config.Identity until
+// ctx ends or the device is revoked (CLI mode). The desktop kernel instead
+// calls Start and AddLink once per paired SaaS.
 func (x *Connector) Run(ctx context.Context) error {
 	if x.cfg.Identity == nil {
 		return errors.New("device is not paired")
 	}
-	cl, err := client.New(client.Config{Executor: x, MaxConcurrency: x.cfg.MaxConcurrency, Client: "localsubproxy-desktop/lmbp",
-		OnState: func(ok bool) { x.mu.Lock(); x.gatewayOK = ok; x.mu.Unlock() }}, *x.cfg.Identity)
-	if err != nil {
+	if err := x.AddLink(LinkConfig{ID: "default", Identity: *x.cfg.Identity, RemoteURL: x.cfg.RemoteURL}); err != nil {
 		return err
 	}
+	x.Start(ctx)
 	x.mu.Lock()
-	x.cl = cl
+	l := x.links["default"]
 	x.mu.Unlock()
-	if x.cfg.RemoteURL != "" {
-		go x.watchRemote(ctx)
-	}
-	go func() { // keep adapter health fresh and re-announce when the model list changes
-		last := ""
-		t := time.NewTicker(25 * time.Second)
-		defer t.Stop()
-		for {
-			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			x.probeAll(pctx)
-			cancel()
-			if now := strings.Join(x.Models(), ","); now != last {
-				if last != "" {
-					cl.ModelsChanged()
-				}
-				last = now
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
-	err = cl.Run(ctx, nil)
-	x.mu.Lock()
-	x.gatewayOK = false
-	if err != nil && ctx.Err() == nil {
-		x.lastErr = err.Error()
-	}
-	x.mu.Unlock()
-	if err != nil && ctx.Err() == nil {
-		log.Printf("lmbp session stopped: %v", err)
-	}
-	return err
+	<-l.done
+	return l.err
 }
 
 // notifyModels re-announces models after adapter edits or health changes.
 func (x *Connector) notifyModels() {
 	x.mu.Lock()
-	cl := x.cl
+	var cls []*client.Client
+	for _, l := range x.links {
+		if l.cl != nil {
+			cls = append(cls, l.cl)
+		}
+	}
 	x.mu.Unlock()
-	if cl != nil {
+	for _, cl := range cls {
 		cl.ModelsChanged()
 	}
 }
 
-func (x *Connector) checkRemote(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(x.cfg.RemoteURL, "/")+"/.well-known/localsubproxy", nil)
+func (x *Connector) checkRemote(ctx context.Context, remote string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+"/.well-known/localsubproxy", nil)
 	if err != nil {
 		return err
 	}
@@ -597,15 +631,15 @@ func (x *Connector) checkRemote(ctx context.Context) error {
 	return nil
 }
 
-func (x *Connector) watchRemote(ctx context.Context) {
+func (x *Connector) watchRemote(ctx context.Context, l *link) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		probe, cancel := context.WithTimeout(ctx, 3*time.Second)
-		err := x.checkRemote(probe)
+		err := x.checkRemote(probe, l.cfg.RemoteURL)
 		cancel()
 		x.mu.Lock()
-		x.remoteOK = err == nil
+		l.remoteOK = err == nil
 		x.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -703,8 +737,8 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHe
 func (x *Connector) withSlots(h AdapterHealth) AdapterHealth {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	for _, id := range x.running {
-		if id == h.AdapterID && h.FreeSlots > 0 {
+	for _, r := range x.running {
+		if r.adapter == h.AdapterID && h.FreeSlots > 0 {
 			h.FreeSlots--
 		}
 	}
@@ -750,6 +784,9 @@ func (x *Connector) loadAdapterFile() error {
 		return err
 	}
 	saved, migrated, openErr := openAdapters(b, x.cipher, x.cfg.LegacyDataKeys)
+	if openErr == nil {
+		x.lastSaved = b
+	}
 	if openErr != nil {
 		bak := fmt.Sprintf("%s.bak-%s", f, time.Now().UTC().Format("20060102T150405Z"))
 		if err := os.Rename(f, bak); err != nil {

@@ -41,6 +41,9 @@ public final class JdbcStore implements Store {
         "CREATE TABLE IF NOT EXISTS lmbp_tasks (id VARCHAR(64) PRIMARY KEY, tenant VARCHAR(64) NOT NULL, owner VARCHAR(128) NOT NULL, device VARCHAR(64) NOT NULL, model VARCHAR(512) NOT NULL, state VARCHAR(16) NOT NULL)",
         "CREATE TABLE IF NOT EXISTS lmbp_task_events (task_id VARCHAR(64) NOT NULL, seq BIGINT NOT NULL, type VARCHAR(32) NOT NULL, data " + tx + " NOT NULL, PRIMARY KEY (task_id, seq))"};
     tx(c -> { try (Statement s = c.createStatement()) { for (String d : ddl) s.executeUpdate(d); } return null; });
+    // added later: whether a task was end-to-end encrypted (replays stay sealed)
+    try { tx(c -> { try (Statement s = c.createStatement()) { s.executeUpdate("ALTER TABLE lmbp_tasks ADD COLUMN e2ee INTEGER DEFAULT 0 NOT NULL"); } return null; }); }
+    catch (RuntimeException e) { /* column exists */ }
   }
 
   public JdbcStore(DataSource ds) { this(ds, "TEXT"); }
@@ -149,6 +152,24 @@ public final class JdbcStore implements Store {
         "INSERT INTO lmbp_devices (id, tenant, owner, created, doc) VALUES (?, ?, ?, ?, ?)", new Object[] {d.id, d.tenant, d.owner, created, doc}); return null; });
   }
 
+  @Override public boolean setDeviceE2EEKey(String id, String key) {
+    // optimistic compare-and-swap on the whole doc: only the key changes, and
+    // only if nobody (e.g. a revoke) wrote the record since we read it
+    for (int i = 0; i < 5; i++) {
+      Boolean done = tx(c -> {
+        String doc = one(c, "SELECT doc FROM lmbp_devices WHERE id = ?", id);
+        Device d = devOf(doc);
+        if (d == null || !"active".equals(d.status)) return Boolean.FALSE;
+        d.e2eeKey = key;
+        try (PreparedStatement p = ps(c, "UPDATE lmbp_devices SET doc = ? WHERE id = ? AND doc = ?", devDoc(d), id, doc)) {
+          return p.executeUpdate() == 1 ? Boolean.TRUE : null;
+        }
+      });
+      if (done != null) return done;
+    }
+    return false;
+  }
+
   @Override public Device getDevice(String id) { return id == null ? null : devOf(tx(c -> one(c, "SELECT doc FROM lmbp_devices WHERE id = ?", id))); }
 
   @Override public List<Device> listDevices(String tenant, String owner) {
@@ -176,7 +197,7 @@ public final class JdbcStore implements Store {
       if (one(c, "SELECT id FROM lmbp_tasks WHERE id = ?", t.id) != null) throw new Conflict("task " + t.id + " exists");
       if (idemKey != null && one(c, "SELECT task_id FROM lmbp_idempotency WHERE tenant = ? AND owner = ? AND ikey = ?", rec.tenant(), rec.owner(), idemKey) != null)
         throw new Conflict("idempotency key taken");
-      exec(c, "INSERT INTO lmbp_tasks (id, tenant, owner, device, model, state) VALUES (?, ?, ?, ?, ?, ?)", t.id, t.tenant, t.owner, t.device, t.model, t.state);
+      exec(c, "INSERT INTO lmbp_tasks (id, tenant, owner, device, model, state, e2ee) VALUES (?, ?, ?, ?, ?, ?, ?)", t.id, t.tenant, t.owner, t.device, t.model, t.state, t.e2ee ? 1 : 0);
       if (idemKey != null) exec(c, "INSERT INTO lmbp_idempotency (tenant, owner, ikey, task_id, body_hash) VALUES (?, ?, ?, ?, ?)", rec.tenant(), rec.owner(), idemKey, rec.taskID(), rec.bodyHash());
       for (Event e : t.events) insertEvent(c, t.id, e);
       return null;
@@ -191,10 +212,11 @@ public final class JdbcStore implements Store {
   @Override public TaskRecord getTask(String id) {
     return tx(c -> {
       TaskRecord t;
-      try (PreparedStatement p = ps(c, "SELECT tenant, owner, device, model, state FROM lmbp_tasks WHERE id = ?", id); ResultSet r = p.executeQuery()) {
+      try (PreparedStatement p = ps(c, "SELECT tenant, owner, device, model, state, e2ee FROM lmbp_tasks WHERE id = ?", id); ResultSet r = p.executeQuery()) {
         if (!r.next()) return null;
         t = new TaskRecord();
         t.id = id; t.tenant = r.getString(1); t.owner = r.getString(2); t.device = r.getString(3); t.model = r.getString(4); t.state = r.getString(5);
+        t.e2ee = r.getInt(6) != 0;
       }
       try (PreparedStatement p = ps(c, "SELECT seq, type, data FROM lmbp_task_events WHERE task_id = ? ORDER BY seq", id); ResultSet r = p.executeQuery()) {
         while (r.next()) t.events.add(new Event(r.getLong(1), r.getString(2), Json.asObj(Json.parse(r.getString(3)))));

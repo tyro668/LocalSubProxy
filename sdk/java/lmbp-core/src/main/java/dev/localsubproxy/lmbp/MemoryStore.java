@@ -28,6 +28,12 @@ public final class MemoryStore implements Store {
     return null;
   }
   @Override public synchronized void putDevice(Device d) { devices.put(d.id, d); }
+  @Override public synchronized boolean setDeviceE2EEKey(String id, String key) {
+    Device d = devices.get(id);
+    if (d == null || !"active".equals(d.status)) return false;
+    d.e2eeKey = key;
+    return true;
+  }
   @Override public synchronized Device getDevice(String id) { return id == null ? null : devices.get(id); }
   @Override public synchronized List<Device> listDevices(String tenant, String owner) {
     List<Device> out = new ArrayList<>();

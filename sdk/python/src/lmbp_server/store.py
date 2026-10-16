@@ -220,6 +220,12 @@ class SQLiteStore:
     def get_device(self, id):
         return self._one("SELECT doc FROM lmbp_devices WHERE id = ?", id)
 
+    def set_device_e2ee_key(self, id, key):
+        # field-only and conditional: a revoked record is never rewritten
+        with self._lock:
+            c = self.db.execute("UPDATE lmbp_devices SET doc = json_set(doc, '$.e2ee_key', ?) WHERE id = ? AND json_extract(doc, '$.status') = 'active'", (key, id))
+            return c.rowcount > 0
+
     def list_devices(self, tenant, owner=None):
         if owner is None:
             rows = self._x("SELECT doc FROM lmbp_devices WHERE tenant = ? ORDER BY rowid", tenant)

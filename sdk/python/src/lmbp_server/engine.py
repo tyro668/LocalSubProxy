@@ -336,7 +336,7 @@ class Task:
 
     @classmethod
     def finished(cls, g, rec, req_model):
-        t = cls(g, None, rec["id"], rec["tenant"], rec["owner"], req_model, False, False, done=True, events=list(rec["events"]))
+        t = cls(g, None, rec["id"], rec["tenant"], rec["owner"], req_model, bool(rec.get("e2ee")), False, done=True, events=list(rec["events"]))
         t.replayed = True
         # Recovery decides from a consistent terminal state: the last event is
         # terminal AND the stored state agrees (finish_task writes both
@@ -469,9 +469,11 @@ class Task:
             self.ds.control(envelope("task.cancel", task_id=self.id, data={"reason": reason}))
 
     def fail_local(self, code, msg, retryable=False):
+        """Returns whether this call decided the terminal outcome."""
         if not self.decide():
-            return
+            return False
         self.commit_local(code, msg, retryable)
+        return True
 
     def commit_local(self, code, msg, retryable=False):
         """The caller holds the decision. The seq follows every device seq seen."""
@@ -979,19 +981,40 @@ class Gateway:
         caps = intersect(hello.get("capabilities") or [], L.CAPABILITIES)
         if hello.get("flow") is not None and "flow" in caps and not valid_flow(hello["flow"]):
             return await early("BAD_REQUEST", f"flow windows must be >= max_frame_bytes ({L.MAX_FRAME_BYTES}) and conn_window >= task_window")
+        # The device may have been revoked while we awaited the hello: the
+        # upgrade-time snapshot is stale. Re-check before activating (no await
+        # until the session is registered, so no revoke can slip in).
+        cur = self.store.get_device(dev["id"])
+        if cur is None or cur.get("status") != "active":
+            return await early("UNAUTHENTICATED", "device revoked")
+        dev = cur
         if hello.get("e2ee_key") and "e2ee" in caps:
             try:
                 L.verify_e2ee_key(dev["pub"], dev["id"], hello["e2ee_key"])
             except (ValueError, TypeError, KeyError):
                 return await early("BAD_REQUEST", "invalid e2ee key statement")
+            if not self.save_e2ee_key(dev["id"], hello["e2ee_key"]):
+                return await early("UNAUTHENTICATED", "device revoked")
             dev["e2ee_key"] = hello["e2ee_key"]
-            self.store.put_device(dev)
         else:
             caps = [c for c in caps if c != "e2ee"]
         mc = hello.get("max_concurrency")
         conc = min(max(mc if L.is_int(mc) else 1, 1), self.cfg["max_conc"])
         await self.run_session(ws, dev, claims, iss, env, hello, caps, conc)
         return ws
+
+    def save_e2ee_key(self, device_id, key):
+        """Field-only, status-conditional E2EE key update; False when the
+        device is gone or revoked (a revoked record is never rewritten)."""
+        f = getattr(self.store, "set_device_e2ee_key", None)
+        if f is not None:
+            return bool(f(device_id, key))
+        cur = self.store.get_device(device_id)  # synchronous: atomic in-process
+        if cur is None or cur.get("status") != "active":
+            return False
+        cur["e2ee_key"] = key
+        self.store.put_device(cur)
+        return True
 
     async def run_session(self, ws, dev, claims, iss, env, hello, caps, conc):
         old = self.devs.get(dev["id"])
@@ -1147,8 +1170,8 @@ class Gateway:
         if mu.get("e2ee_key") and "e2ee" in ds.caps:
             try:
                 L.verify_e2ee_key(dev["pub"], dev["id"], mu["e2ee_key"])
-                dev["e2ee_key"] = mu["e2ee_key"]
-                self.store.put_device(dev)
+                if self.save_e2ee_key(dev["id"], mu["e2ee_key"]):
+                    dev["e2ee_key"] = mu["e2ee_key"]
             except (ValueError, TypeError, KeyError):
                 pass
 
@@ -1384,7 +1407,8 @@ class Gateway:
         try:
             # One atomic write: a key never exists without its task.
             idem = {"tenant": t["id"], "owner": user, "key": idem_key, "rec": {"tenant": t["id"], "owner": user, "task_id": task_id, "body_hash": body_hash}} if idem_key else None
-            self.store.create_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": []}, idem)
+            self.store.create_task({"id": task_id, "tenant": t["id"], "owner": user, "device": ds.device_id, "model": model, "state": "QUEUED", "events": [],
+                                    "e2ee": "e2ee" in run}, idem)
         except StoreConflict:
             won = self.store.get_idempotency(t["id"], user, idem_key) if idem_key else None
             if won is not None and won.get("body_hash") == body_hash:  # a concurrent request took the key first
@@ -1396,20 +1420,31 @@ class Gateway:
             self.log(f"lmbp: task {task_id}: storage error: {e}")
             return err(500, "INTERNAL", "storage error")
         task = Task(self, ds, task_id, t["id"], user, r["model"], "e2ee" in run, bool(idem_key))
-        got = await ds.acquire(self.cfg["queue_timeout"])  # fair FIFO wait for a negotiated concurrency slot
+        try:
+            got = await ds.acquire(self.cfg["queue_timeout"])  # fair FIFO wait for a negotiated concurrency slot
+        except asyncio.CancelledError:
+            # Review7 #15: the HTTP caller went away while queued (aiohttp
+            # cancels the handler): record an explicit terminal so the task
+            # never stays QUEUED and a replay sees CANCELLED.
+            task.fail_local("CANCELLED", "client disconnected while queued", False)
+            raise
         if not got or not ds.connected() or task.done:
             if got:
                 ds.release()
             hdr = {"X-Task-Id": task_id}
-            if not ds.connected():
-                task.fail_local("DEVICE_OFFLINE", "device disconnected", True)
-                resp = err(503, "DEVICE_OFFLINE", "device disconnected")
-            elif task.done:  # ended while queued (e.g. timeout): report what was recorded
-                return await self.serve(req, task, 0, bool(r.get("stream")), hdr)
-            else:
-                task.fail_local("DEVICE_BUSY", "device is at max concurrency", True)
+            resp = None
+            # Review7 #10: only a decided local outcome is reported as such;
+            # otherwise the caller gets the recorded winner.
+            if task.done:
+                pass
+            elif not ds.connected():
+                if task.fail_local("DEVICE_OFFLINE", "device disconnected", True):
+                    resp = err(503, "DEVICE_OFFLINE", "device disconnected")
+            elif task.fail_local("DEVICE_BUSY", "device is at max concurrency", True):
                 resp = err(429, "DEVICE_BUSY", "device is at max concurrency")
                 hdr["Retry-After"] = "2"
+            if resp is None:
+                return await self.serve(req, task, 0, bool(r.get("stream")), hdr)
             resp.headers.update(hdr)
             return resp
         task.slot = True

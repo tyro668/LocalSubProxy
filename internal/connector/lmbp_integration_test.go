@@ -16,6 +16,7 @@ import (
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
@@ -135,6 +136,49 @@ func TestDesktopCoreEndToEnd(t *testing.T) {
 	}
 	if st, err := c.UsageStats(ctx, audit.Filter{}, []string{audit.BySaaS, audit.ByModel}, false); err != nil || len(st) != 1 || st[0].Requests != 1 {
 		t.Fatalf("stats %+v %v", st, err)
+	}
+
+	// Review4 H: an E2EE task is recorded with e2ee=true (the decrypted run
+	// no longer carries the E2EE ref, so the origin is kept separately).
+	{
+		dr := tenant("GET", "/lmbp/v1/tenant/devices", nil)
+		var dl struct {
+			Devices []struct {
+				PublicKey lmbp.JWK `json:"public_key"`
+				JKT       string   `json:"jkt"`
+				E2EEKey   string   `json:"e2ee_key"`
+			} `json:"devices"`
+		}
+		_ = json.NewDecoder(dr.Body).Decode(&dl)
+		dr.Body.Close()
+		d := dl.Devices[0]
+		devPub, _ := lmbp.UnB64(d.PublicKey.X)
+		xpub, kid, err := lmbp.VerifyE2EEKey(devPub, d.JKT, id.DeviceID, d.E2EEKey, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pt, _ := json.Marshal(lmbp.E2EERequest{RID: "r_audit", Iat: time.Now().Unix(), Model: "lm/m1", Messages: []lmbp.Message{{Role: "user", Content: lmbp.Text("sealed ping")}}, ResponseKey: lmbp.B64(make([]byte, 32))})
+		jwe, err := lmbp.SealJWE(xpub, kid, pt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		er := tenant("POST", "/v1/chat/completions", map[string]any{"model": id.DeviceID + "/lm/m1", "stream": true, "lmbp_e2ee": jwe})
+		_, _ = io.ReadAll(er.Body)
+		er.Body.Close()
+		var recs2 []audit.Record
+		for i := 0; i < 100 && len(recs2) < 2; i++ {
+			recs2, _ = c.AuditList(ctx, audit.Filter{})
+			time.Sleep(20 * time.Millisecond)
+		}
+		e2ee := 0
+		for _, r := range recs2 {
+			if r.E2EE {
+				e2ee++
+			}
+		}
+		if len(recs2) != 2 || e2ee != 1 {
+			t.Fatalf("e2ee audit flag: %d records, %d e2ee: %+v", len(recs2), e2ee, recs2)
+		}
 	}
 
 	// Adapter edits are re-announced on the live session (models.update).

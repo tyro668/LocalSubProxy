@@ -143,6 +143,7 @@ func prepare(ctx context.Context, hc *http.Client, gatewayURL, tenant, remote, l
 	if signed.SaaS.PairingURI != "" {
 		linkURL = signed.SaaS.PairingURI
 	}
+	explicit := remote // the SaaS origin the user gave; the fallback below is display-only
 	if linkURL != "" {
 		u, err := url.Parse(linkURL)
 		if err != nil || (u.Scheme != "https" && !(u.Scheme == "http" && lmbp.IsLoopbackHost(u.Hostname()))) {
@@ -152,7 +153,7 @@ func prepare(ctx context.Context, hc *http.Client, gatewayURL, tenant, remote, l
 			remote = u.Scheme + "://" + u.Host
 		}
 	}
-	return &PairRequest{hc: hc, meta: signed, gwKey: key, remoteURL: remote, linkURL: linkURL, Consent: Consent{
+	return &PairRequest{hc: hc, meta: signed, gwKey: key, remoteURL: explicit, linkURL: linkURL, Consent: Consent{
 		SaaS: *signed.SaaS, Gateway: iss, Tenant: tenant, Audience: signed.Audience, RequestedModels: append([]string{}, signed.RequestedModels...),
 		RequestedScopes: append([]string{}, signed.RequestedScopes...), GatewayKeyID: lmbp.Thumbprint(key), Remote: remote, Verified: true}}, nil
 }
@@ -181,7 +182,9 @@ func (r *PairRequest) Approve(ctx context.Context, deviceName string) (*Pairing,
 	if r.decided {
 		return nil, errors.New("pairing request already decided")
 	}
-	r.decided = true
+	// decided is set only once the gateway issued a device code: a failed
+	// or timed-out authorization request can be retried (it creates a new
+	// key and code; nothing from the failed attempt is reused).
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -196,6 +199,7 @@ func (r *PairRequest) Approve(ctx context.Context, deviceName string) (*Pairing,
 	if err != nil || st != 200 || auth.DeviceCode == "" {
 		return nil, fmt.Errorf("device authorization failed: %v (HTTP %d)", err, st)
 	}
+	r.decided = true
 	if auth.Interval < 1 {
 		auth.Interval = 5
 	}

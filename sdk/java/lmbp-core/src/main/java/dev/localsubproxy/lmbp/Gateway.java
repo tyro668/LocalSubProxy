@@ -538,13 +538,20 @@ final class Gateway {
         early.accept(new String[] {"BAD_REQUEST", "flow windows must be >= max_frame_bytes (" + Lmbp.MAX_FRAME_BYTES + ") and conn_window >= task_window"});
         return;
       }
+      // The device may have been revoked while we awaited the hello: the
+      // upgrade-time snapshot is stale. Re-check before activating.
+      Store.Device cur = store.getDevice(dev.id);
+      if (cur == null || !"active".equals(cur.status)) { early.accept(new String[] {"UNAUTHENTICATED", "device revoked"}); return; }
       if (Json.truthy(hello.get("e2ee_key")) && caps.contains("e2ee")) {
         try { Lmbp.verifyE2EEKey(dev.pub, dev.id, hello.get("e2ee_key")); } catch (RuntimeException e) { early.accept(new String[] {"BAD_REQUEST", "invalid e2ee key statement"}); return; }
+        if (!store.setDeviceE2EEKey(dev.id, (String) hello.get("e2ee_key"))) { early.accept(new String[] {"UNAUTHENTICATED", "device revoked"}); return; }
         dev.e2eeKey = (String) hello.get("e2ee_key");
-        store.putDevice(dev);
       } else caps.remove("e2ee");
       int conc = (int) Math.min(Math.max(toInt32(hello.get("max_concurrency")), 1), cfg.maxConc);
       attachSession(ws, dev, claims, iss, envID, hello, caps, conc);
+      // a revoke that raced the activation (its drop ran before we attached)
+      Store.Device after = store.getDevice(dev.id);
+      if (after == null || !"active".equals(after.status)) dropDevice(dev.id, "UNAUTHENTICATED", "device revoked");
     };
   }
 
@@ -651,7 +658,7 @@ final class Gateway {
             Object mx = mu.get("max_concurrency");
             if (Json.isNumber(mx) && ((Number) mx).doubleValue() >= 1) { ds.maxConc = (int) Math.min(((Number) mx).doubleValue(), cfg.maxConc); ds.wakeSlots(); }
             if (Json.truthy(mu.get("e2ee_key")) && ds.caps.contains("e2ee")) {
-              try { Lmbp.verifyE2EEKey(dev.pub, dev.id, mu.get("e2ee_key")); dev.e2eeKey = (String) mu.get("e2ee_key"); store.putDevice(dev); } catch (RuntimeException e) { /* ignore */ }
+              try { Lmbp.verifyE2EEKey(dev.pub, dev.id, mu.get("e2ee_key")); if (store.setDeviceE2EEKey(dev.id, (String) mu.get("e2ee_key"))) dev.e2eeKey = (String) mu.get("e2ee_key"); } catch (RuntimeException e) { /* ignore */ }
             }
           }
         }
@@ -870,7 +877,7 @@ final class Gateway {
       try { Params.validateTaskRun(payload); } catch (Params.ParamError e) { json(res, 400, Params.paramErrorBody(e, anthropic)); return; }
     }
     Store.TaskRecord rec = new Store.TaskRecord();
-    rec.id = taskID; rec.tenant = tenant; rec.owner = user; rec.device = ds.deviceID; rec.model = model; rec.state = "QUEUED";
+    rec.id = taskID; rec.tenant = tenant; rec.owner = user; rec.device = ds.deviceID; rec.model = model; rec.state = "QUEUED"; rec.e2ee = e2ee;
     try { // one atomic write: a key never exists without its task
       store.createTask(rec, idemKey.isEmpty() ? null : idemKey, idemKey.isEmpty() ? null : new Store.Idempotency(tenant, user, taskID, bodyHash));
     } catch (Store.Conflict e) {
@@ -889,12 +896,20 @@ final class Gateway {
     if (!got || !ds.connected() || task.done) {
       if (got) ds.release();
       res.setHeader("X-Task-Id", taskID);
-      if (!ds.connected()) { task.failLocal("DEVICE_OFFLINE", "device disconnected", true); err.send(503, "DEVICE_OFFLINE", "device disconnected"); return; }
-      if (task.done) { serve(res, task, 0, stream, abort, anthropic); return; }
-      task.failLocal("DEVICE_BUSY", "device is at max concurrency", true);
-      if (abort.aborted) return;
-      res.setHeader("Retry-After", "2");
-      err.send(429, "DEVICE_BUSY", "device is at max concurrency");
+      // Review7 #10: if another path already ended the task the caller gets
+      // that recorded outcome; a caller gone while queued records CANCELLED.
+      if (!task.done) {
+        if (abort.aborted) {
+          if (task.failLocal("CANCELLED", "client disconnected while queued", false)) return;
+        } else if (!ds.connected()) {
+          if (task.failLocal("DEVICE_OFFLINE", "device disconnected", true)) { err.send(503, "DEVICE_OFFLINE", "device disconnected"); return; }
+        } else if (task.failLocal("DEVICE_BUSY", "device is at max concurrency", true)) {
+          res.setHeader("Retry-After", "2");
+          err.send(429, "DEVICE_BUSY", "device is at max concurrency");
+          return;
+        }
+      }
+      serve(res, task, 0, stream, abort, anthropic);
       return;
     }
     task.slot = true;
@@ -1315,7 +1330,7 @@ final class Gateway {
 
     /** A finished task rebuilt from the store; an inconsistent or missing terminal yields OUTCOME_UNKNOWN (served, never stored). */
     static Task finished(Gateway g, Store.TaskRecord rec, String reqModel) {
-      Task t = new Task(g, null, rec.id, rec.tenant, rec.owner, reqModel, false, false);
+      Task t = new Task(g, null, rec.id, rec.tenant, rec.owner, reqModel, rec.e2ee, false);
       t.replayed = true;
       t.done = true;
       t.events.addAll(rec.events);
@@ -1408,9 +1423,11 @@ final class Gateway {
 
     void sendCancel(String reason) { if (ds != null && sentRun) ds.control(envelope("task.cancel", null, id, Json.obj("reason", reason))); }
 
-    void failLocal(String code, String msg, boolean retryable) {
-      if (!decide()) return;
+    /** @return whether this call decided the terminal outcome. */
+    boolean failLocal(String code, String msg, boolean retryable) {
+      if (!decide()) return false;
       commitLocal(code, msg, retryable);
+      return true;
     }
 
     /** The caller holds the decision. The seq follows every device seq seen. */

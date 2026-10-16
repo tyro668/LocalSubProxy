@@ -35,9 +35,15 @@ type dstate struct {
 	issuer      string // issuer the current session's token was verified against
 	resumeToken string
 	tasks       map[string]*gtask
-	slots       int
-	slotWait    []chan struct{}
-	dropped     bool
+	// reclaimed: tasks the gateway ended locally (cancel, timeout, slow
+	// consumer...) whose device may still send frames. Those late frames
+	// are ACKed so the device frees its resume buffer and flow credit;
+	// the entry goes when the device's terminal frame arrives (bounded).
+	reclaimed  map[string]int64 // task id → highest seq ACKed
+	reclaimedQ []string
+	slots      int
+	slotWait   []chan struct{}
+	dropped    bool
 }
 
 func (ds *dstate) connected() bool {
@@ -252,6 +258,16 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		conc = g.cfg.MaxConc
 	}
 
+	// The device may have been revoked while we awaited the hello: the
+	// upgrade-time read is stale. Re-check before activating.
+	if cur, err := g.cfg.Store.GetDevice(r.Context(), dev.ID); err != nil || cur.Status != "active" {
+		early(lmbp.ErrUnauthenticated, "device revoked")
+		return
+	}
+	if activateHook != nil {
+		activateHook(dev.ID)
+	}
+
 	// Resume or start fresh.
 	g.mu.Lock()
 	old := g.devs[dev.ID]
@@ -265,6 +281,10 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		g.devs[dev.ID] = ds
 	}
 	g.mu.Unlock()
+	// A revoke that raced the activation (its drop ran before we registered).
+	if cur, err := g.cfg.Store.GetDevice(r.Context(), dev.ID); err != nil || cur.Status != "active" {
+		g.dropDevice(dev.ID, lmbp.ErrUnauthenticated, "device revoked")
+	}
 	if old != nil && !resumed {
 		old.drop(lmbp.ErrOutcomeUnknown, "device reconnected without resuming")
 	}
@@ -346,7 +366,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteMessage(websocket.TextMessage, b)
 	}
-	ds.out.Attach(write)
+	wgen := ds.out.AttachOwned(write)
 	if resumed {
 		g.resumes.Add(1)
 		for _, rt := range resumeTasks {
@@ -359,7 +379,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	closed := make(chan struct{})
 	defer func() {
 		close(closed)
-		ds.out.Attach(nil)
+		ds.out.Detach(wgen) // never clears a newer connection's sender
 		ds.mu.Lock()
 		current := ds.gen == gen
 		if current {
@@ -465,6 +485,37 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// activateHook runs after the hello re-check, before the session is
+// registered (tests).
+var activateHook func(deviceID string)
+
+// maxReclaimed bounds the late-frame state kept per device.
+const maxReclaimed = 1024
+
+// reclaimLocked remembers a locally ended task (ds.mu held).
+func (ds *dstate) reclaimLocked(id string, acked int64) {
+	if ds.reclaimed == nil {
+		ds.reclaimed = map[string]int64{}
+	}
+	if _, ok := ds.reclaimed[id]; !ok {
+		ds.reclaimedQ = append(ds.reclaimedQ, id)
+	}
+	ds.reclaimed[id] = acked
+	if len(ds.reclaimedQ) > 2*maxReclaimed { // drop ids already finished
+		q := ds.reclaimedQ[:0]
+		for _, x := range ds.reclaimedQ {
+			if _, ok := ds.reclaimed[x]; ok {
+				q = append(q, x)
+			}
+		}
+		ds.reclaimedQ = q
+	}
+	for len(ds.reclaimed) > maxReclaimed && len(ds.reclaimedQ) > 0 {
+		delete(ds.reclaimed, ds.reclaimedQ[0]) // oldest first
+		ds.reclaimedQ = ds.reclaimedQ[1:]
+	}
+}
+
 func (ds *dstate) resumeTokenGet() string { ds.mu.Lock(); defer ds.mu.Unlock(); return ds.resumeToken }
 
 // onDeviceData handles task.delta/done/error. It returns false when the
@@ -475,6 +526,24 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 	inb := ds.in
 	ds.mu.Unlock()
 	if t == nil {
+		ds.mu.Lock()
+		acked, late := ds.reclaimed[in.TaskID]
+		if late {
+			if in.Seq > acked {
+				ds.reclaimed[in.TaskID] = in.Seq
+			}
+			if in.Type == lmbp.TypeTaskDone || in.Type == lmbp.TypeTaskError {
+				delete(ds.reclaimed, in.TaskID)
+			}
+		}
+		ds.mu.Unlock()
+		if late { // ended here, still running there: release its credit
+			if in.Seq > acked {
+				b, _ := json.Marshal(lmbp.TaskAck{Seq: in.Seq})
+				_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: in.TaskID, Data: b})
+			}
+			return true
+		}
 		b, _ := json.Marshal(lmbp.TaskCancel{Reason: "unknown_task"})
 		_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskCancel, TaskID: in.TaskID, Data: b})
 		return true

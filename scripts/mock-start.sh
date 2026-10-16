@@ -5,6 +5,8 @@
 #
 #   scripts/mock-start.sh [go|node|python|java|rust] [port]    # default: go 8080
 #   (java/rust keep gateway state in memory: no --db, pairings end at a restart)
+#   LMBP_MOCK_GATEWAYS=2 scripts/mock-start.sh ...    # plus a second Go gateway
+#                       (tenant beta, port+1) to test multi-SaaS connections
 #   scripts/mock-stop.sh                              # stop everything
 #
 # State lives in .mock/ (gitignored, override with LMBP_MOCK_DIR): dev keys
@@ -19,6 +21,8 @@ port=${2:-8080}
 model_port=${LMBP_MOCK_MODEL_PORT:-11500}
 models=${LMBP_MOCK_MODELS:-qwen3-8b}
 dir=${LMBP_MOCK_DIR:-$repo/.mock}
+gateways=${LMBP_MOCK_GATEWAYS:-1}
+case $gateways in 1|2) ;; *) echo "LMBP_MOCK_GATEWAYS must be 1 or 2" >&2; exit 2 ;; esac
 case $impl in go|node|python|java|rust) ;; *) echo "usage: $0 [go|node|python|java|rust] [port]" >&2; exit 2 ;; esac
 for t in go curl openssl; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
 
@@ -37,6 +41,9 @@ if [ ! -f "$dir/env" ]; then
     echo "LOCALSUBPROXY_DATA_KEY=$(openssl rand -hex 32)"
   } >"$dir/env"
   umask 022
+fi
+if ! grep -q '^LSP_TENANT_KEY_BETA=' "$dir/env"; then
+  (umask 077; echo "LSP_TENANT_KEY_BETA=$(openssl rand -hex 24)" >>"$dir/env")
 fi
 set -a; . "$dir/env"; set +a
 export LMBP_SIGNING_SEED=$LSP_SIGNING_SEED   # node/python/java/rust read this name
@@ -108,6 +115,26 @@ case $impl in
 esac
 wait_http gateway "$gw/healthz"
 
+if [ "$gateways" = 2 ]; then # second SaaS: its own issuer, tenant, db and profile
+  port2=$((port + 1))
+  gw2="http://127.0.0.1:$port2"
+  cat >"$dir/tenant-profiles-beta.json" <<JSON
+{
+  "beta": {
+    "api_key_env": "LSP_TENANT_KEY_BETA",
+    "display_name": "Beta Notes (mock)",
+    "homepage_uri": "$gw2",
+    "pairing_uri": "$gw2/chat",
+    "requested_models": ["$(echo "$models" | cut -d, -f1)"],
+    "requested_scopes": ["lmbp.chat"]
+  }
+}
+JSON
+  bg gateway2 "$dir/bin/localsubproxy" server -listen "127.0.0.1:$port2" -db "$dir/gateway2.db" -tenants beta:LSP_TENANT_KEY_BETA \
+    -tenant-profiles "$dir/tenant-profiles-beta.json" -issuer "$gw2" -chat-ui
+  wait_http gateway2 "$gw2/healthz"
+fi
+
 enc=$(printf '%s' "$gw" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's#/#%2F#g')
 link="lmbp://pair?v=1&gateway=$enc&tenant=acme"
 cdir="$dir/connector"
@@ -123,5 +150,14 @@ say "  LOCALSUBPROXY_DATA_KEY=$LOCALSUBPROXY_DATA_KEY $dir/bin/localsubproxy con
 say "    -pair-link '$link' \\"
 say "    -adapter-id local -ollama-url http://127.0.0.1:$model_port -models $models -capabilities vision \\"
 say "    -identity $cdir/identity.json -adapter-file $cdir/adapters.enc -audit-db $cdir/audit.db"
+say ""
+if [ "$gateways" = 2 ]; then
+  enc2=$(printf '%s' "$gw2" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's#/#%2F#g')
+  say ""
+  say "second SaaS (multi-SaaS testing; add it as another connection in the desktop app)"
+  say "  chat page   $gw2/chat"
+  say "  login       tenant: beta   user: alice   key: $LSP_TENANT_KEY_BETA"
+  say "  pair link   lmbp://pair?v=1&gateway=$enc2&tenant=beta"
+fi
 say ""
 say "logs: $dir/logs/   stop: scripts/mock-stop.sh"

@@ -313,8 +313,11 @@ type TaskRun struct {
 	Stop        []string        `json:"stop,omitempty"`
 	Blobs       []BlobRef       `json:"blobs,omitempty"`
 	E2EE        *E2EERef        `json:"e2ee,omitempty"`
-	Exp         int64           `json:"exp"`
-	Nonce       string          `json:"nonce"`
+	// Sealed is set locally once an E2EE request was decrypted (E2EE is
+	// cleared then); it is never sent.
+	Sealed bool   `json:"-"`
+	Exp    int64  `json:"exp"`
+	Nonce  string `json:"nonce"`
 }
 
 // BlobChunk (gateway→device data frame).

@@ -49,6 +49,8 @@ public interface Store {
 
   final class TaskRecord {
     public String id, tenant, owner, device, model, state;
+    /** The task was end-to-end encrypted: replays render its frames sealed. */
+    public boolean e2ee;
     public final List<Event> events = new ArrayList<>();
   }
 
@@ -61,6 +63,19 @@ public interface Store {
 
   void putDevice(Device d);
   Device getDevice(String id);
+  /**
+   * Sets only the device's E2EE key, and only while it is active; returns
+   * false when it is gone or revoked (a revoked record is never rewritten).
+   * The default re-reads and writes back (not atomic against a concurrent
+   * revoke); stores should override it with a conditional update.
+   */
+  default boolean setDeviceE2EEKey(String id, String key) {
+    Device d = getDevice(id);
+    if (d == null || !"active".equals(d.status)) return false;
+    d.e2eeKey = key;
+    putDevice(d);
+    return true;
+  }
   /** Devices of a tenant; {@code owner == null} lists every owner. */
   List<Device> listDevices(String tenant, String owner);
 

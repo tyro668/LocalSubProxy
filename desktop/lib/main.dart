@@ -5,6 +5,7 @@ import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'native_api.dart';
+import 'status_contract.dart';
 import 'profile_workspace.dart';
 import 'tray.dart';
 
@@ -82,6 +83,13 @@ class _HomePageState extends State<HomePage> {
   String? pairLinkUrl;
   // Verified SaaS identity awaiting the user's explicit approve/deny.
   Map<String, dynamic>? consent;
+  // Pairing session id (pair_id) and the models chosen on the consent page
+  // (default deny: nothing is checked until the user picks).
+  String? pairId;
+  List<String> consentModels = [];
+  final Set<String> consentAllow = {};
+  // Showing the "add connection" form while other SaaS are already paired.
+  bool adding = false;
   // Local token usage (last 7 days, by SaaS and model).
   List<Map<String, dynamic>> usage = [];
   final Set<VoidCallback> _overlayRelays = {};
@@ -204,8 +212,8 @@ class _HomePageState extends State<HomePage> {
     if (!kernelReady || refreshing || (busy && !force)) return;
     refreshing = true;
     try {
-      final s = api.status();
-      final a = api.listAdapters();
+      // In an isolate: a native call must never block the UI thread.
+      final (s, a) = await statusSnapshotAsync();
       if (mounted) {
         setState(() {
           status = s;
@@ -214,7 +222,11 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (_) {
       if (mounted) {
-        setState(() => status = {...?status, 'connected': false});
+        // Keep the last known list but mark it stale: no connection is
+        // shown as online while the kernel cannot be reached.
+        setState(
+          () => status = {...?status, 'connected': false, 'stale': true},
+        );
       }
     } finally {
       refreshing = false;
@@ -233,7 +245,11 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           pendingRemoteURL = url;
+          pairId = p['pair_id'] as String?;
           consent = (p['consent'] as Map?)?.cast<String, dynamic>();
+          consentModels = ((p['available_models'] as List?) ?? const [])
+              .cast<String>();
+          consentAllow.clear();
         });
       }
     } catch (e) {
@@ -246,7 +262,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> approveConsent() async {
     setState(() => busy = true);
     try {
-      final p = await pairApproveAsync();
+      final p = await pairApproveAsync(pairId, consentAllow.toList()..sort());
       if (mounted) {
         setState(() {
           consent = null;
@@ -256,7 +272,22 @@ class _HomePageState extends State<HomePage> {
         });
       }
     } catch (e) {
-      if (mounted) show('配对失败：$e', error: true);
+      // Ask the kernel whether this consent request can still be approved.
+      Map<String, dynamic>? st;
+      try {
+        st = await pairStatusAsync(pairId);
+      } catch (_) {}
+      if (!mounted) return;
+      if (approveRetryable(st)) {
+        show('授权请求失败，可直接重试：$e', error: true);
+      } else {
+        // the request is gone: back to the address step to start over
+        setState(() {
+          consent = null;
+          pairId = null;
+        });
+        show('配对请求已失效，请重新开始配对：$e', error: true);
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -264,12 +295,13 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> denyConsent() async {
     try {
-      await pairDenyAsync();
+      await pairDenyAsync(pairId);
     } catch (_) {}
     if (mounted) {
       setState(() {
         consent = null;
         pendingRemoteURL = null;
+        pairId = null;
       });
       show('已拒绝该服务的配对请求（CONSENT_DENIED）');
     }
@@ -277,17 +309,9 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> loadUsage() async {
     try {
-      final u = await usageStatsAsync(['adapter'], 7);
+      final u = await usageStatsAsync(['saas', 'adapter'], 7);
       if (mounted) setState(() => usage = u);
     } catch (_) {}
-  }
-
-  List<String> _localModels() {
-    final s = <String>{};
-    for (final a in adapters) {
-      s.addAll((a['models'] as List?)?.cast<String>() ?? const <String>[]);
-    }
-    return s.toList();
   }
 
   String _schemeName(String id) {
@@ -314,11 +338,13 @@ class _HomePageState extends State<HomePage> {
   Future<void> pollPairing() async {
     if (pairUserCode == null || !awaitingCode) return;
     try {
-      final st = await pairStatusAsync();
+      final st = await pairStatusAsync(pairId);
       if (!mounted) return;
       if (st['state'] == 'paired') {
         setState(() {
           awaitingCode = false;
+          adding = false;
+          pairId = null;
           pendingRemoteURL = null;
           pairUserCode = null;
           pairLinkUrl = null;
@@ -338,11 +364,12 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> cancelPairing() async {
     try {
-      await pairCancelAsync();
+      await pairCancelAsync(pairId);
     } catch (_) {}
     if (mounted) {
       setState(() {
         awaitingCode = false;
+        pairId = null;
         pendingRemoteURL = null;
         pairUserCode = null;
         pairLinkUrl = null;
@@ -350,23 +377,81 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> disconnect() async {
-    final yes = await confirm(
-      title: '断开连接',
-      message: '将清除本机连接信息和设备私钥。模型配置会保留；再次连接需要重新配对。',
-      action: '断开',
-      destructive: true,
-    );
-    if (!yes || !mounted) return;
+  Future<void> connectionAction(ConnectionInfo c, String action) async {
+    if (action == 'connection_revoke') {
+      final yes = await confirm(
+        title: '撤销连接',
+        message: '将断开「${c.title}」并删除本机为它保存的设备私钥，其他服务不受影响。模型配置会保留；再次连接需要重新配对。',
+        action: '撤销',
+        destructive: true,
+      );
+      if (!yes || !mounted) return;
+    }
     setState(() => busy = true);
     try {
-      await disconnectAsync();
+      final r = await connectionActionAsync(action, c.id);
       await refresh(force: true);
-      show('已断开');
+      if (action == 'connection_revoke') {
+        for (final line in revokeOutcome(r, c.title)) {
+          show(line.text, error: line.error);
+        }
+      } else {
+        show(switch (action) {
+          'connection_disconnect' => '已断开「${c.title}」',
+          _ => '正在重新连接「${c.title}」',
+        });
+      }
     } catch (e) {
-      if (mounted) show('断开失败：$e', error: true);
+      if (mounted) show('操作失败：$e', error: true);
     } finally {
       if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> editPolicy(ConnectionInfo c) async {
+    // Every model (incl. disabled adapters), wildcards and unknown entries
+    // are listed so that saving keeps authorizations the user did not touch.
+    final entries = policyEntries(adapters, c.allow);
+    final selected = <String>{...c.allow};
+    final ok = await showOverlay<bool>(
+      context,
+      DialogConfiguration<bool>(
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setLocal) => AlertDialog(
+            title: Text('「${c.title}」可用模型'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 460),
+              child: ModelChecklist(
+                models: [for (final e in entries) e.id],
+                notes: {for (final e in entries) e.id: e.note},
+                selected: selected,
+                lockedBy: (m) => coveredByWildcard(m, selected),
+                onChanged: (m, v) =>
+                    setLocal(() => v ? selected.add(m) : selected.remove(m)),
+              ),
+            ),
+            actions: [
+              OutlineButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消'),
+              ),
+              PrimaryButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ).future;
+    if (ok != true || !mounted) return;
+    try {
+      // allow only: the connection's max_concurrency is left unchanged
+      await setConnectionPolicyAsync(c.id, selected.toList()..sort());
+      await refresh(force: true);
+      show('已更新「${c.title}」的可用模型');
+    } catch (e) {
+      if (mounted) show('保存失败：$e', error: true);
     }
   }
 
@@ -397,14 +482,19 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget usageCard() {
-    final rows = [...usage]..sort(
+    final rows = [...usage]
+      ..sort(
         (a, b) => (b['total_tokens'] ?? 0).compareTo(a['total_tokens'] ?? 0),
       );
     Widget cell(String v, {bool head = false, bool right = false}) {
       final t = Text(v, textAlign: right ? TextAlign.right : null);
       return right
           ? SizedBox(width: 72, child: head ? t.xSmall().muted() : t.small())
-          : Expanded(child: head ? t.xSmall().muted() : t.small().medium().singleLine().ellipsis);
+          : Expanded(
+              child: head
+                  ? t.xSmall().muted()
+                  : t.small().medium().singleLine().ellipsis,
+            );
     }
 
     return Column(
@@ -413,7 +503,7 @@ class _HomePageState extends State<HomePage> {
       children: [
         Row(
           children: [
-            Expanded(child: const Text('近 7 天用量').small().medium()),
+            Expanded(child: const Text('近 7 天用量（按服务）').small().medium()),
             GhostButton(
               size: ButtonSize.small,
               onPressed: loadUsage,
@@ -427,6 +517,7 @@ class _HomePageState extends State<HomePage> {
         else ...[
           Row(
             children: [
+              cell('服务', head: true),
               cell('方案名', head: true),
               cell('输入', head: true, right: true),
               cell('输出', head: true, right: true),
@@ -439,6 +530,13 @@ class _HomePageState extends State<HomePage> {
             const Gap(2),
             Row(
               children: [
+                cell(
+                  '${b['saas_name'] ?? ''}'.isNotEmpty
+                      ? '${b['saas_name']}'
+                      : '${b['saas'] ?? ''}'.isNotEmpty
+                      ? '${b['saas']}'
+                      : '未知服务',
+                ),
                 cell(_schemeName('${b['adapter'] ?? ''}')),
                 cell(_fmtTokens(b['prompt_tokens'] ?? 0), right: true),
                 cell(_fmtTokens(b['completion_tokens'] ?? 0), right: true),
@@ -519,7 +617,7 @@ class _HomePageState extends State<HomePage> {
 
     final paired = status?['paired'] == true;
     final recovery = status?['adapter_recovery'] as Map?;
-    final step = paired
+    final step = paired && !adding && consent == null && !awaitingCode
         ? 3
         : awaitingCode
         ? 2
@@ -575,7 +673,23 @@ class _HomePageState extends State<HomePage> {
               desc: '远端服务身份已通过网关签名校验，请确认授权信息。',
             ),
             const Gap(16),
-            _ConsentView(consent: consent!, localModels: _localModels()),
+            _ConsentView(consent: consent!),
+            const Gap(12),
+            const Text('允许该服务使用的本机模型（默认不允许任何模型）').small().medium(),
+            const Gap(6),
+            ModelChecklist(
+              models: consentModels,
+              selected: consentAllow,
+              onChanged: (m, v) => setState(
+                () => v ? consentAllow.add(m) : consentAllow.remove(m),
+              ),
+            ),
+            if (consentAllow.isEmpty) ...[
+              const Gap(6),
+              const Text(
+                '未勾选模型：配对后该服务看不到也无法调用任何本机模型，可稍后在连接列表中修改。',
+              ).xSmall().muted(),
+            ],
             const Gap(16),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -671,66 +785,66 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         );
-      case 3: // 完成连接：paired
+      case 3: // 连接列表：every paired SaaS
+        final ds = DesktopStatus.parse(status);
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _StepHeader(
               icon: LucideIcons.circleCheck,
               iconColor: theme.colorScheme.chart2,
-              title: '已成功连接',
-              desc: '远端服务已连接，可以开始使用。',
+              title: '已连接的服务（${ds.online}/${ds.total} 在线）',
+              desc: '本机可以同时连接多个远端服务，每个服务使用独立的设备密钥和可用模型列表。',
             ),
             const Gap(16),
-            Container(
-              decoration: BoxDecoration(
-                border: Border.all(color: theme.colorScheme.border),
-                borderRadius: BorderRadius.circular(10),
+            for (final c in ds.connections) ...[
+              _ConnectionTile(
+                c: c,
+                busy: busy,
+                onToggle: () => connectionAction(
+                  c,
+                  c.paused ? 'connection_connect' : 'connection_disconnect',
+                ),
+                onRevoke: () => connectionAction(c, 'connection_revoke'),
+                onModels: () => editPolicy(c),
               ),
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      const Spacer(),
-                      Tooltip(
-                        tooltip: (context) =>
-                            const TooltipContainer(child: Text('刷新')),
-                        child: IconButton.ghost(
-                          density: ButtonDensity.icon,
-                          icon: const Icon(LucideIcons.refreshCw),
-                          onPressed: busy ? null : () => refresh(),
-                        ),
-                      ),
-                      OutlineButton(
-                        size: ButtonSize.small,
-                        onPressed: busy ? null : disconnect,
-                        child: const Text('断开'),
-                      ),
-                    ],
-                  ),
-                  if ((status?['saas_name'] ?? '') != '')
-                    _StatRow('服务', '${status?['saas_name']}'),
-                  if ((status?['issuer'] ?? '') != '')
-                    _StatRow('网关', '${status?['issuer']}'),
-                  _StatRow(
-                    '设备',
-                    '${status?['device_name'] ?? status?['device_id'] ?? ''}',
-                  ),
-                  _StatRow('地址', '${status?['remote_url'] ?? ''}'),
-                  _StatRow('传输', _transportLabel(status?['transport'])),
-                  _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
-                ],
-              ),
+              const Gap(10),
+            ],
+            _StatRow(
+              '设备',
+              '${status?['device_name'] ?? status?['device_id'] ?? ''}',
             ),
+            _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
             const Gap(16),
-            Align(
-              alignment: Alignment.centerRight,
-              child: PrimaryButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('完成'),
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Tooltip(
+                  tooltip: (context) =>
+                      const TooltipContainer(child: Text('刷新')),
+                  child: IconButton.ghost(
+                    density: ButtonDensity.icon,
+                    icon: const Icon(LucideIcons.refreshCw),
+                    onPressed: busy ? null : () => refresh(),
+                  ),
+                ),
+                const Gap(8),
+                OutlineButton(
+                  onPressed: busy
+                      ? null
+                      : () => setState(() {
+                          adding = true;
+                          remoteUrl.clear();
+                        }),
+                  leading: const Icon(LucideIcons.plus),
+                  child: const Text('添加连接'),
+                ),
+                const Gap(8),
+                PrimaryButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('完成'),
+                ),
+              ],
             ),
           ],
         );
@@ -741,7 +855,7 @@ class _HomePageState extends State<HomePage> {
             const _StepHeader(
               icon: LucideIcons.link,
               title: '连接远端服务',
-              desc: '输入远端服务地址并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
+              desc: '输入远端服务地址或粘贴 lmbp:// 配对链接并点击连接，然后在已登录的远端服务页面输入本机显示的配对码。',
             ),
             if ((status?['pairing_error'] ?? '') != '') ...[
               const Gap(8),
@@ -759,13 +873,24 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             const Gap(16),
-            Align(
-              alignment: Alignment.centerRight,
-              child: PrimaryButton(
-                onPressed: busy ? null : prepareConnection,
-                leading: const Icon(LucideIcons.link),
-                child: Text(busy ? '处理中…' : '连接'),
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (adding) ...[
+                  GhostButton(
+                    onPressed: busy
+                        ? null
+                        : () => setState(() => adding = false),
+                    child: const Text('返回连接列表'),
+                  ),
+                  const Gap(8),
+                ],
+                PrimaryButton(
+                  onPressed: busy ? null : prepareConnection,
+                  leading: const Icon(LucideIcons.link),
+                  child: Text(busy ? '处理中…' : '连接'),
+                ),
+              ],
             ),
           ],
         );
@@ -832,21 +957,59 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       backgroundColor: const Color(0xFFFFFFFF),
       loadingProgressIndeterminate: busy,
-      child: kernelReady
-          ? ProfileWorkspace(
-              api: api,
-              adapters: adapters,
-              status: status,
-              onConnectionTap: openConnection,
-              onUsageTap: openUsage,
-              onChanged: () => refresh(force: true),
-            )
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 560),
-                child: connectionCard(),
+      child: AppShell(
+        status: status,
+        child: kernelReady
+            ? ProfileWorkspace(
+                api: api,
+                adapters: adapters,
+                status: status,
+                onConnectionTap: openConnection,
+                onUsageTap: openUsage,
+                onChanged: () => refresh(force: true),
+              )
+            : Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: connectionCard(),
+                ),
               ),
-            ),
+      ),
+    );
+  }
+}
+
+/// Shared outer layout: kernel-wide warnings stay visible on every page
+/// (e.g. after the last connection is revoked and the pairing page shows).
+class AppShell extends StatelessWidget {
+  const AppShell({super.key, required this.status, required this.child});
+
+  final Map<String, dynamic>? status;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // The tree shape never changes (only the bar's content does), so the
+    // page below keeps its state (e.g. unsaved drafts) when a warning shows.
+    final warning = DesktopStatus.parse(status).cleanupWarning;
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (warning == null)
+          const SizedBox.shrink(key: ValueKey('cleanup-warning-slot'))
+        else
+          Container(
+            key: const ValueKey('cleanup-warning'),
+            color: theme.colorScheme.destructive.withValues(alpha: 0.08),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              '本机私钥清理未完成（将在每次启动时重试）：$warning',
+              style: TextStyle(color: theme.colorScheme.destructive),
+            ).small,
+          ),
+        Expanded(key: const ValueKey('app-shell-body'), child: child),
+      ],
     );
   }
 }
@@ -1164,7 +1327,8 @@ class _AdapterDialogState extends State<AdapterDialog> {
             .map((item) => item.trim())
             .where((item) => item.isNotEmpty)
             .toList(),
-        'enabled': true,
+        // edit is a partial update: keep the stored enabled state
+        'enabled': widget.existing?['enabled'] ?? true,
         'skip_model_probe':
             (type == 'openai_compatible' || type == 'anthropic_compatible') &&
             skipModelProbe,
@@ -1177,10 +1341,11 @@ class _AdapterDialogState extends State<AdapterDialog> {
       if (type == 'openai_compatible' || type == 'anthropic_compatible') {
         body['api_key'] = apiKey.text.trim();
       }
+      // off the UI thread: saving may probe the provider over the network
       if (widget.existing == null) {
-        widget.api.createAdapter(body);
+        await createAdapterAsync(body);
       } else {
-        widget.api.updateAdapter(body);
+        await updateAdapterAsync(body);
       }
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -1373,14 +1538,12 @@ class _ToggleRow extends StatelessWidget {
 /// Consent screen: the SaaS identity verified from the gateway's signed
 /// metadata (docs/lmbp-spec.md §19). Nothing here comes from the link.
 class _ConsentView extends StatelessWidget {
-  const _ConsentView({required this.consent, required this.localModels});
+  const _ConsentView({required this.consent});
   final Map<String, dynamic> consent;
-  final List<String> localModels;
 
   @override
   Widget build(BuildContext context) {
     final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
-    final models = localModels.join(', ');
     final scopes = ((consent['requested_scopes'] as List?) ?? []).join(', ');
     final logo = '${saas['logo_uri'] ?? ''}';
     return Column(
@@ -1391,20 +1554,20 @@ class _ConsentView extends StatelessWidget {
             if (logo.startsWith('https://'))
               Padding(
                 padding: const EdgeInsets.only(right: 10),
-                child: Image.network(logo, width: 32, height: 32,
-                    errorBuilder: (_, _, _) => const SizedBox.shrink()),
+                child: Image.network(
+                  logo,
+                  width: 32,
+                  height: 32,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
               ),
-            Expanded(
-              child: Text('「${saas['name'] ?? ''}」请求使用本机模型').medium(),
-            ),
+            Expanded(child: Text('「${saas['name'] ?? ''}」请求使用本机模型').medium()),
           ],
         ),
         const Gap(4),
-        Text(consent['verified'] == true
-                ? '身份已通过网关签名校验'
-                : '身份未校验')
-            .small()
-            .muted(),
+        Text(
+          consent['verified'] == true ? '身份已通过网关签名校验' : '身份未校验',
+        ).small().muted(),
         const Gap(10),
         _StatRow('网关', '${consent['gateway'] ?? ''}'),
         _StatRow('租户', '${consent['tenant'] ?? ''}'),
@@ -1412,10 +1575,148 @@ class _ConsentView extends StatelessWidget {
           _StatRow('主页', '${saas['homepage_uri']}'),
         if ('${saas['policy_uri'] ?? ''}' != '')
           _StatRow('隐私政策', '${saas['policy_uri']}'),
-        _StatRow('本机模型', models.isEmpty ? '未添加方案' : models),
+        if (((consent['requested_models'] as List?) ?? []).isNotEmpty)
+          _StatRow(
+            '请求模型',
+            ((consent['requested_models'] as List?) ?? []).join(', '),
+          ),
         _StatRow('请求权限', scopes),
         _StatRow('网关密钥', '${consent['gateway_key_id'] ?? ''}'),
       ],
+    );
+  }
+}
+
+/// Checkbox list of local models ("adapter/model") for one SaaS.
+class ModelChecklist extends StatelessWidget {
+  const ModelChecklist({
+    super.key,
+    required this.models,
+    required this.selected,
+    required this.onChanged,
+    this.notes = const {},
+    this.lockedBy,
+  });
+
+  final List<String> models;
+  final Set<String> selected;
+  final void Function(String model, bool value) onChanged;
+
+  /// Optional hint per model (e.g. 方案已停用).
+  final Map<String, String> notes;
+
+  /// Models already granted by a selected wildcard: shown checked, read-only.
+  final bool Function(String model)? lockedBy;
+
+  @override
+  Widget build(BuildContext context) {
+    if (models.isEmpty) {
+      return const Text('还没有启用的模型方案，可稍后添加方案后在连接列表中授权。').small().muted();
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final m in models)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Builder(
+              builder: (context) {
+                final locked = lockedBy?.call(m) ?? false;
+                final note = locked ? '已由通配授权' : (notes[m] ?? '');
+                return Checkbox(
+                  state: locked || selected.contains(m)
+                      ? CheckboxState.checked
+                      : CheckboxState.unchecked,
+                  onChanged: locked
+                      ? null
+                      : (v) => onChanged(m, v == CheckboxState.checked),
+                  trailing: Text(note.isEmpty ? m : '$m  · $note').small(),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// One paired SaaS in the connections list.
+class _ConnectionTile extends StatelessWidget {
+  const _ConnectionTile({
+    required this.c,
+    required this.busy,
+    required this.onToggle,
+    required this.onRevoke,
+    required this.onModels,
+  });
+
+  final ConnectionInfo c;
+  final bool busy;
+  final VoidCallback onToggle;
+  final VoidCallback onRevoke;
+  final VoidCallback onModels;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = c.connected
+        ? theme.colorScheme.chart2
+        : (c.state == 'revoked' || c.state == 'error')
+        ? theme.colorScheme.destructive
+        : theme.colorScheme.mutedForeground;
+    final allow = c.allow.isEmpty
+        ? '未授权任何模型'
+        : c.allow.contains('*')
+        ? '全部本机模型'
+        : c.allow.join(', ');
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: theme.colorScheme.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const Gap(8),
+              Expanded(child: Text(c.title).medium().singleLine().ellipsis),
+              Text(c.stateLabel).xSmall().muted(),
+              const Gap(10),
+              GhostButton(
+                size: ButtonSize.small,
+                onPressed: busy ? null : onModels,
+                child: const Text('模型'),
+              ),
+              if (c.state != 'revoked' && c.state != 'error')
+                OutlineButton(
+                  size: ButtonSize.small,
+                  onPressed: busy ? null : onToggle,
+                  child: Text(c.paused ? '连接' : '断开'),
+                ),
+              const Gap(6),
+              DestructiveButton(
+                size: ButtonSize.small,
+                onPressed: busy ? null : onRevoke,
+                child: const Text('撤销'),
+              ),
+            ],
+          ),
+          _StatRow('网关', c.issuer),
+          _StatRow('租户', c.tenant),
+          if (c.displayUrl.isNotEmpty) _StatRow('地址', c.displayUrl),
+          _StatRow('传输', _transportLabel(c.transport)),
+          _StatRow('模型', allow),
+          _StatRow('任务', '${c.runningTasks} 个（上限 ${c.maxConcurrency}）'),
+          if (c.lastError.isNotEmpty) _StatRow('错误', c.lastError),
+        ],
+      ),
     );
   }
 }

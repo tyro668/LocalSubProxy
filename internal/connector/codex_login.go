@@ -17,6 +17,9 @@ type CodexLogin struct {
 	rpc     *codexRPC
 	closeFn func()
 	cancel  context.CancelFunc
+	busy    bool
+	done    chan struct{} // closed by Close: in-flight Check returns at once
+	probe   func() ([]string, error)
 	LoginID string `json:"login_id"`
 	AuthURL string `json:"auth_url"`
 }
@@ -57,25 +60,71 @@ func BeginCodexLogin(bin string) (*CodexLogin, error) {
 		cancel()
 		return nil, errors.New("invalid Codex login response")
 	}
-	return &CodexLogin{rpc: s, closeFn: closeFn, cancel: cancel, LoginID: result.LoginID, AuthURL: result.AuthURL}, nil
+	return &CodexLogin{rpc: s, closeFn: closeFn, cancel: cancel, done: make(chan struct{}), probe: s.accountAndModels, LoginID: result.LoginID, AuthURL: result.AuthURL}, nil
 }
 
+// codexCheckTimeout bounds one login status probe.
+var codexCheckTimeout = 10 * time.Second
+
+// Check probes the login without holding l.mu across the RPC, so Close
+// (cancel) never waits on it. One probe runs at a time; a concurrent call
+// reports "not complete yet". A probe past the deadline ends the session,
+// because the RPC stream can no longer be trusted.
 func (l *CodexLogin) Check() ([]string, bool, error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.rpc == nil {
+	if l.closeFn == nil {
+		l.mu.Unlock()
 		return nil, false, errors.New("login session closed")
 	}
-	models, err := l.rpc.accountAndModels()
-	if err != nil {
+	if l.busy {
+		l.mu.Unlock()
+		return nil, false, nil
+	}
+	l.busy = true
+	probe, done := l.probe, l.done
+	l.mu.Unlock()
+	type res struct {
+		models []string
+		err    error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		m, err := probe()
+		ch <- res{m, err}
+	}()
+	timer := time.NewTimer(codexCheckTimeout)
+	defer timer.Stop()
+	var r res
+	select {
+	case r = <-ch:
+	case <-done:
+		return nil, false, errors.New("login session closed")
+	case <-timer.C:
+		l.Close()
+		return nil, false, errors.New("codex login check timed out; start the login again")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.busy = false
+	if l.closeFn == nil {
+		return nil, false, errors.New("login session closed")
+	}
+	if r.err != nil {
 		var known knownFailure
-		if errors.As(err, &known) && strings.HasPrefix(string(known), "AUTH_REQUIRED") {
+		if errors.As(r.err, &known) && strings.HasPrefix(string(known), "AUTH_REQUIRED") {
 			return nil, false, nil
 		}
-		return nil, false, err
+		return nil, false, r.err
 	}
 	l.closeLocked()
-	return models, true, nil
+	return r.models, true, nil
+}
+
+// Closed reports whether the session has ended (cancelled or timed out).
+func (l *CodexLogin) Closed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closeFn == nil
 }
 
 func (l *CodexLogin) Close() {
@@ -86,10 +135,14 @@ func (l *CodexLogin) Close() {
 
 func (l *CodexLogin) closeLocked() {
 	if l.closeFn != nil {
-		l.closeFn()
+		// never wait for the App Server to exit: cancel, then reap async
 		l.cancel()
+		go l.closeFn()
 		l.closeFn = nil
 		l.rpc = nil
+		if l.done != nil {
+			close(l.done)
+		}
 	}
 }
 

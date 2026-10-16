@@ -71,3 +71,25 @@ func TestRecordStatsPurge(t *testing.T) {
 		t.Fatalf("after purge %d", len(rows))
 	}
 }
+
+// Review4 F: the same device id on two gateways must not merge stats.
+func TestStatsByConnectionSeparatesGateways(t *testing.T) {
+	ctx := context.Background()
+	l, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for _, gw := range []string{"https://gw.a", "https://gw.b", "https://gw.b"} {
+		if err := l.Record(ctx, Record{At: time.Now(), ConnectionID: "dev_same", Gateway: gw, Tenant: "t", TaskID: "x", Model: "m", Status: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bs, err := l.Stats(ctx, Filter{}, []string{ByConn}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bs) != 2 || bs[0].ConnectionGateway != "https://gw.a" || bs[0].Requests != 1 || bs[1].ConnectionGateway != "https://gw.b" || bs[1].Requests != 2 {
+		t.Fatalf("buckets %+v", bs)
+	}
+}
