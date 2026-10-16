@@ -99,6 +99,12 @@ void main() {
     );
     expect(cleanError(Exception('boom')), 'boom');
     expect(kernelErrorHint('open x: database is locked')!.title, '本机数据库被占用');
+    expect(
+      kernelErrorHint(
+        'data directory in use: /d is used by another LocalSubProxy process',
+      )!.title,
+      contains('另一个 LocalSubProxy'),
+    );
     expect(kernelErrorHint('mkdir: permission denied')!.title, contains('权限'));
     expect(kernelErrorHint('write: no space left on device')!.title, '磁盘空间不足');
     expect(kernelErrorHint('something else'), isNull);

@@ -1,4 +1,4 @@
-package main
+package native
 
 import (
 	"context"
@@ -34,12 +34,16 @@ func TestStatusPromptWhileSlowCallsRun(t *testing.T) {
 		return nil, ctx.Err()
 	}
 	defer func() { close(release); wg.Wait(); codexModels = oc }()
-	b, _ := json.Marshal(map[string]any{"action": "test_adapter", "adapter": map[string]any{
-		"id": "t", "type": "openai_compatible", "name": "t", "base_url": slow.URL + "/v1", "api_key": "k", "models": []string{"m"}}})
-	wg.Add(2)
+	request := map[string]any{"action": "test_adapter", "adapter": map[string]any{
+		"id": "t", "type": "openai_compatible", "name": "t", "base_url": slow.URL + "/v1", "api_key": "k", "models": []string{"m"}}}
+	b, _ := json.Marshal(request)
+	request["action"] = "provider_models"
+	models, _ := json.Marshal(request)
+	wg.Add(3)
 	go func() { defer wg.Done(); call(string(b)) }()
+	go func() { defer wg.Done(); call(string(models)) }()
 	go func() { defer wg.Done(); call(`{"action":"codex_models","path":"/bin/false"}`) }()
-	time.Sleep(200 * time.Millisecond) // both are now waiting
+	time.Sleep(200 * time.Millisecond) // the slow calls are now waiting
 	start := time.Now()
 	for i := 0; i < 5; i++ {
 		must(t, map[string]any{"action": "status"})

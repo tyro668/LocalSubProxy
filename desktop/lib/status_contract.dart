@@ -245,6 +245,12 @@ String cleanError(Object e) {
 /// Plain-language hint for well-known kernel start failures, or null.
 ({String title, String message})? kernelErrorHint(String error) {
   final e = error.toLowerCase();
+  if (e.contains('data directory in use')) {
+    return (
+      title: '数据目录正被另一个 LocalSubProxy 使用',
+      message: '桌面应用和无界面模式（localsubproxy serve）不能同时使用同一个数据目录。请先退出另一个实例后重试。',
+    );
+  }
   if (e.contains('database is locked') ||
       e.contains('resource temporarily unavailable')) {
     return (

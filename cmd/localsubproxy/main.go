@@ -106,9 +106,20 @@ func main() {
 		}
 	case "usage", "audit":
 		err = auditCmd(os.Args[1], os.Args[2:])
-	default:
+	case "-h", "-help", "--help", "help":
 		usage()
-		os.Exit(2)
+		return
+	default:
+		cmd, ok := headlessCommands[os.Args[1]]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
+			usage()
+			os.Exit(2)
+		}
+		err = cmd(os.Args[2:])
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -127,7 +138,25 @@ func split(s string) []string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: localsubproxy server [flags] | connector [flags] | codex-models [flags] | usage [flags] | audit [flags]")
+	fmt.Fprint(os.Stderr, `usage: localsubproxy <command> [flags]
+
+Headless device (same data directory as the desktop app; --data-dir overrides):
+  serve                              run the kernel in the foreground
+  pair <url|lmbp://pair?...>         pair a SaaS [--allow m,..|*] [--yes] [--max-concurrency n]
+  scheme add --type ollama|openai|anthropic|codex [--id] [--name] [--base-url] [--models]
+             [--api-key-env VAR | --api-key-stdin] [--codex-bin] [--capabilities]
+  scheme list | update <id> [flags] | rm <id> | test <id>
+  status | connections
+  revoke <connection-id>
+  models set <connection-id> <scheme/model,...|*|none>
+  usage | audit                      local usage statistics and audit log
+  (all client commands accept --json and --data-dir)
+
+Other:
+  server [flags]                     LMBP gateway (SaaS side)
+  codex-models [flags]               list models of the local Codex CLI
+  connector [flags]                  legacy single-connection device (own identity file; use serve)
+`)
 }
 
 // runConnector pairs (first run) and then serves tasks over lmbp using the same core as the desktop app.

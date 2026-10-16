@@ -11,6 +11,7 @@ on:
       - 'cmd/**'
       - 'internal/**'
       - 'scripts/build-*'
+      - 'mock/**'
       - 'packaging/**'
       - '.github/workflows/desktop-release.yml'
   workflow_dispatch:
@@ -91,7 +92,7 @@ jobs:
       - name: Quick tests
         if: needs.version.outputs.run_tests == 'true'
         run: |
-          go test -short ./internal/...
+          go test -short ./internal/... ./cmd/localsubproxy
           (cd desktop && flutter test)
       - name: Import signing certificate
         id: cert
@@ -211,9 +212,35 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+  cli:
+    # headless CLI (localsubproxy serve/pair/scheme/...): pure Go, cross-built
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Tests (including the headless end-to-end run)
+        if: needs.version.outputs.run_tests == 'true'
+        run: go test ./cmd/localsubproxy ./internal/control ./internal/native
+      - name: Vet all targets
+        run: for os in linux darwin windows; do GOOS=$os go vet ./cmd/localsubproxy ./internal/control ./internal/native; done
+      - name: Build
+        run: ./scripts/build-cli.sh '${{ needs.version.outputs.name }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalSubProxy-${{ needs.version.outputs.name }}-cli
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
   release:
     if: github.ref_type == 'tag'
-    needs: [version, macos, windows]
+    needs: [version, macos, windows, cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write

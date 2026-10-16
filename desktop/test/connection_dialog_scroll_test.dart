@@ -47,15 +47,28 @@ Future<void> loadFonts() async {
     await l.load();
   }
 
-  final pub =
+  // shadcn_flutter's own icon font, wherever pub resolved the package
+  var pub =
       '${Platform.environment['HOME']}/.pub-cache/hosted/pub.dev/shadcn_flutter-0.0.53/lib';
+  final cfg = File('.dart_tool/package_config.json');
+  if (cfg.existsSync()) {
+    final m = RegExp(
+      r'"rootUri":\s*"file://([^"]*shadcn_flutter[^"]*)"',
+    ).firstMatch(cfg.readAsStringSync());
+    if (m != null) pub = '${m.group(1)}/lib';
+  }
   await load('packages/shadcn_flutter/LucideIcons', [
     '$pub/icons/LucideIcons.ttf',
   ]);
+  // The bundled GeistMono .otf (CFF) files render as boxes in
+  // flutter_tester: use the same typeface as TTF when installed, else a
+  // static TTF monospace stand-in.
+  const geistMono =
+      '/usr/share/fonts/truetype/sand-box/google/Geist Mono/GeistMono-VariableFont_wght.ttf';
   await load('packages/shadcn_flutter/GeistMono', [
-    // the bundled GeistMono .otf (CFF) files render as boxes in
-    // flutter_tester; a static TTF monospace stands in for screenshots
-    '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+    File(geistMono).existsSync()
+        ? geistMono
+        : '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
   ]);
   // CJK-capable font as the UI family so screenshots are legible.
   await load('packages/shadcn_flutter/GeistSans', [

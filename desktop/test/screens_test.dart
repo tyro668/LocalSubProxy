@@ -368,7 +368,10 @@ void main() {
     expect(find.textContaining('deepseek-reasoner'), findsWidgets);
     expect(find.byKey(const ValueKey('editor-action-bar')), findsOneWidget);
     // models returned by the test feed the designed model dropdown
-    expect(find.widgetWithText(Select<String>, 'deepseek-chat'), findsOneWidget);
+    expect(
+      find.widgetWithText(Select<String>, 'deepseek-chat'),
+      findsOneWidget,
+    );
     expect(find.byKey(const ValueKey('unsaved-badge')), findsOneWidget);
     await shot(t, '08_edit_openai_tested');
     await unmount(t);
@@ -433,6 +436,29 @@ void main() {
     expect(Theme.of(ctx).brightness, Brightness.dark);
     expect(AppTokens.of(ctx).bg, AppTokens.dark.bg);
     await shot(t, '14_dark_main');
+    await unmount(t);
+  }, variant: desktop);
+
+  testWidgets('15 add scheme: choose the service', (t) async {
+    kernel
+      ..adapters = []
+      ..status = emptyStatus();
+    await pumpApp(t);
+    await tap(t, find.byKey(const ValueKey('empty-add-scheme')));
+    await shot(t, '15_add_scheme_new');
+    await tapMenu(t, find.byType(Select<String>).first);
+    expect(find.text('Anthropic 兼容协议'), findsWidgets);
+    expect(find.text('OpenAI Codex（订阅）'), findsWidgets);
+    await shot(t, '15b_add_scheme_service');
+    await unmount(t);
+  }, variant: desktop);
+
+  testWidgets('16 data directory in use', (t) async {
+    kernel.startError =
+        'data directory in use: ~/.config/localsubproxy is used by another LocalSubProxy process (the desktop app or "localsubproxy serve"); stop it first';
+    await pumpApp(t);
+    expect(find.text('数据目录正被另一个 LocalSubProxy 使用'), findsOneWidget);
+    await shot(t, '16_data_dir_in_use');
     await unmount(t);
   }, variant: desktop);
 }
