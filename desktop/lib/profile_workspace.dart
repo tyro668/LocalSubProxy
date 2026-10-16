@@ -753,9 +753,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   Widget _leftFooter() {
     final paired = widget.status?['paired'] == true;
     final connected = widget.status?['connected'] == true;
+    final saasName = '${widget.status?['saas_name'] ?? ''}'.trim();
     final device =
         '${widget.status?['device_name'] ?? widget.status?['device_id'] ?? '本机设备'}';
     final count = widget.status?['running_tasks'] ?? 0;
+    final statusLabel = connected
+        ? (saasName.isEmpty ? '已连接' : '已连接 · $saasName')
+        : (paired ? '连接中断' : '未连接远端服务');
     return Container(
       height: 70,
       padding: const EdgeInsets.symmetric(horizontal: 22),
@@ -765,22 +769,87 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       ),
       child: Row(
         children: [
-          _statusDot(connected),
-          const SizedBox(width: 9),
-          Text(
-            connected ? '已连接' : '未连接',
-            style: const TextStyle(
-              color: _ink,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onConnectionTap,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: connected
+                      ? const Color(0xFFECFDF5)
+                      : const Color(0xFFF6F5FF),
+                  border: Border.all(
+                    color: connected
+                        ? const Color(0xFFA7F3D0)
+                        : const Color(0xFFD8CEFF),
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _statusDot(connected),
+                    const SizedBox(width: 8),
+                    Text(
+                      statusLabel,
+                      style: TextStyle(
+                        color: connected ? _green : _ink,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: paired ? const Color(0xFFFFFFFF) : _purple,
+                        borderRadius: BorderRadius.circular(6),
+                        border: paired
+                            ? Border.all(color: const Color(0xFFD8CEFF))
+                            : null,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            LucideIcons.link,
+                            size: 13,
+                            color: paired ? _purple : const Color(0xFFFFFFFF),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            paired ? '连接详情' : '立即连接',
+                            style: TextStyle(
+                              color: paired
+                                  ? _purple
+                                  : const Color(0xFFFFFFFF),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-          const SizedBox(width: 15),
+          const SizedBox(width: 16),
           Container(width: 1, height: 22, color: _border),
-          const SizedBox(width: 15),
+          const SizedBox(width: 16),
           const Icon(LucideIcons.monitor, size: 16, color: _muted),
           const SizedBox(width: 8),
-          Expanded(
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 240),
             child: Text(
               device,
               maxLines: 1,
@@ -788,21 +857,18 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               style: const TextStyle(color: _ink, fontSize: 13),
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 14),
           Container(width: 1, height: 22, color: _border),
           const SizedBox(width: 14),
           const Icon(LucideIcons.list, size: 16, color: _muted),
           const SizedBox(width: 7),
           Text('$count 个任务', style: const TextStyle(color: _ink, fontSize: 13)),
-          const SizedBox(width: 10),
-          GhostButton(
-            onPressed: widget.onConnectionTap,
-            child: Text(paired ? '连接详情  ›' : '连接远端服务  ›'),
-          ),
-          const SizedBox(width: 4),
-          GhostButton(
+          const Spacer(),
+          OutlineButton(
+            size: ButtonSize.small,
             onPressed: widget.onUsageTap,
-            child: const Text('用量统计  ›'),
+            leading: const Icon(LucideIcons.chartColumn, size: 14),
+            child: const Text('用量统计'),
           ),
         ],
       ),
@@ -1138,28 +1204,6 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         ),
         if (provider != 'anthropic' && provider != 'legacy_ollama')
           _formField('思考强度', _reasoningSelect()),
-        if (provider == 'openai' || provider == 'anthropic')
-          _formField(
-            '跳过模型列表探测',
-            Row(
-              children: [
-                Switch(
-                  value: skipModelProbe,
-                  onChanged: (v) => setState(() {
-                    skipModelProbe = v;
-                    dirty = true;
-                  }),
-                ),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Text(
-                    '提供商不支持 /models 时开启',
-                    style: TextStyle(color: _muted, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-          ),
         if (error != null)
           Text(
             error!,

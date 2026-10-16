@@ -1291,14 +1291,6 @@ class _AdapterDialogState extends State<AdapterDialog> {
                       features: const [InputFeature.passwordToggle()],
                     ),
                   ),
-                  const Gap(14),
-                  _ToggleRow(
-                    title: '跳过模型列表探测',
-                    subtitle: '提供方不支持 GET /models 时使用；按已配置的模型开放任务。',
-                    value: skipModelProbe,
-                    onChanged: (value) =>
-                        setState(() => skipModelProbe = value),
-                  ),
                 ],
                 const Gap(14),
                 LabeledField(
@@ -1330,43 +1322,6 @@ class _AdapterDialogState extends State<AdapterDialog> {
           onPressed: saving ? null : save,
           child: Text(saving ? '保存中…' : '保存'),
         ),
-      ],
-    );
-  }
-}
-
-class _ToggleRow extends StatelessWidget {
-  const _ToggleRow({
-    required this.title,
-    required this.value,
-    required this.onChanged,
-    this.subtitle,
-  });
-
-  final String title;
-  final String? subtitle;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title).small().medium(),
-              if (subtitle != null) ...[
-                const Gap(2),
-                Text(subtitle!).xSmall().muted(),
-              ],
-            ],
-          ),
-        ),
-        const Gap(12),
-        Switch(value: value, onChanged: onChanged),
       ],
     );
   }
