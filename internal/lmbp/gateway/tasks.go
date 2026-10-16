@@ -427,28 +427,38 @@ func (t *gtask) finishWith(state string, fromDevice, _ bool) {
 	t.mu.Unlock()
 	if ds := t.ds; ds != nil {
 		var late, ackNow int64 // late: seq ACKed so far; ackNow: ACK to send now
-		reclaim := false
+		var in *lmbp.Inbound
 		if fromDevice {
 			t.maybeAck() // release the device's resume buffer
-		} else if !t.storeFailed.Load() {
+			ds.mu.Lock()
+			delete(ds.tasks, t.id)
+			in = ds.in
+			ds.mu.Unlock()
+		} else {
+			hook(t, "finish-transition")
 			// Ended here (cancel, timeout, slow consumer, ...): the device
-			// may still be sending. ACK what arrived so far and remember the
-			// task so later frames are ACKed too (credit is not leaked).
-			reclaim = true
-			late = t.recvSeq()
+			// may still be sending. Reading the received seq, removing the
+			// task and registering late-frame cleanup happen under ds.mu,
+			// which onDeviceData also holds from task lookup through
+			// Accept. So every device frame is either counted in late (and
+			// ACKed below) or meets the cleanup record (and is ACKed
+			// there); none falls in between. Review8 P2-a.
+			ds.mu.Lock()
+			in = ds.in
+			if in != nil && !t.storeFailed.Load() {
+				late = in.Recv(t.id)
+			}
+			delete(ds.tasks, t.id)
+			if !t.storeFailed.Load() && !t.devTerminal.Load() {
+				ds.reclaimLocked(t.id, late)
+			}
+			ds.mu.Unlock()
 			t.mu.Lock()
 			if late > t.acked {
 				t.acked, ackNow = late, late
 			}
 			t.mu.Unlock()
 		}
-		ds.mu.Lock()
-		delete(ds.tasks, t.id)
-		if reclaim && !t.devTerminal.Load() {
-			ds.reclaimLocked(t.id, late)
-		}
-		in := ds.in
-		ds.mu.Unlock()
 		ds.out.Forget(t.id)
 		if in != nil {
 			in.Forget(t.id)

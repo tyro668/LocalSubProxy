@@ -499,8 +499,24 @@ export class Gateway {
 
   onDeviceData(ds, inp, size) {
     const t = ds.tasks.get(inp.task_id);
-    if (!t) { ds.control(envelope('task.cancel', { task_id: inp.task_id, data: { reason: 'unknown_task' } })); return true; }
-    switch (ds.inb.accept(inp.task_id, Number(inp.seq) || 0, size)) {
+    if (!t) {
+      // Ended here (cancel, timeout, slow consumer, ...) while the device
+      // was still running: ACK its late frames so its reliable buffer and
+      // flow credit come back. The decided outcome is not touched.
+      const acked = ds.reclaimed.get(inp.task_id);
+      if (acked !== undefined) {
+        const seq = Number(inp.seq) || 0;
+        if (seq > acked) ds.reclaimed.set(inp.task_id, seq);
+        if (isTerminal(inp.type)) ds.reclaimed.delete(inp.task_id);
+        if (seq > acked) ds.control(envelope('task.ack', { task_id: inp.task_id, data: { seq } }));
+        return true;
+      }
+      ds.control(envelope('task.cancel', { task_id: inp.task_id, data: { reason: 'unknown_task' } }));
+      return true;
+    }
+    const verdict = ds.inb.accept(inp.task_id, Number(inp.seq) || 0, size);
+    if (verdict === L.ACCEPTED && isTerminal(inp.type)) t.devTerminal = true;
+    switch (verdict) {
       case L.DUPLICATE: t.maybeAck(); return true;
       case L.GAP: t.cancel('protocol_error'); t.failLocal('INTERNAL', 'sequence gap from device'); return true;
       case L.OVERFLOW:
@@ -844,10 +860,12 @@ export class Gateway {
 }
 
 // DState is one device's protocol state; it outlives a socket for the resume window.
+const MAX_RECLAIMED = 1024;
+
 class DState {
   constructor(g, dev) {
     Object.assign(this, { g, deviceID: dev.id, tenant: dev.tenant, owner: dev.owner, out: new L.Outbox(), inb: null, ws: null, gen: 0,
-      models: [], modelCaps: {}, caps: [], maxConc: 1, tokenExp: 0, issuer: '', resumeToken: '', tasks: new Map(), slots: 0, slotWait: [], dropped: false, lastSeen: Date.now() });
+      models: [], modelCaps: {}, caps: [], maxConc: 1, tokenExp: 0, issuer: '', resumeToken: '', tasks: new Map(), reclaimed: new Map(), slots: 0, slotWait: [], dropped: false, lastSeen: Date.now() });
   }
   connected() { return !!this.ws && !this.dropped; }
   control(e) {
@@ -865,6 +883,13 @@ class DState {
       signal?.addEventListener('abort', give, { once: true });
       this.slotWait.push(w);
     });
+  }
+  // reclaim remembers a locally ended task (task id → highest seq ACKed) so
+  // its late frames are ACKed; bounded, oldest dropped first (Map order).
+  reclaim(id, acked) {
+    this.reclaimed.delete(id);
+    this.reclaimed.set(id, acked);
+    while (this.reclaimed.size > MAX_RECLAIMED) this.reclaimed.delete(this.reclaimed.keys().next().value);
   }
   release() { this.slots--; this.wakeSlots(); }
   wakeSlots() { while (this.slotWait.length && this.slots < this.maxConc) { this.slots++; this.slotWait.shift().resolve(true); } }
@@ -955,6 +980,7 @@ class Task {
       if (!this.decide()) return this.maybeAck(); // another terminal path already decided
       try { this.g.store.finishTask(this.id, ev, state); } catch (e) {
         this.g.cfg.log(`lmbp: task ${this.id}: persisting terminal event and state for seq ${inp.seq} failed: ${e?.message ?? e} (not acknowledged)`);
+        this.storeFailed = true; // never ACK frames that were not persisted
         this.sendCancel('internal_error');
         return this.commitLocal('INTERNAL', 'gateway could not persist task output');
       }
@@ -970,6 +996,7 @@ class Task {
     this.maybeAck();
   }
   persistFailed(seq, what, e) {
+    this.storeFailed = true; // never ACK frames that were not persisted
     this.g.cfg.log(`lmbp: task ${this.id}: persisting ${what} for seq ${seq} failed: ${e?.message ?? e} (not acknowledged)`);
     this.cancel('internal_error');
     this.failLocal('INTERNAL', 'gateway could not persist task output');
@@ -1017,6 +1044,18 @@ class Task {
     const ds = this.ds;
     if (ds) {
       if (fromDevice) this.maybeAck();
+      else if (!this.storeFailed) {
+        // Ended here while the device may still be sending: ACK what
+        // arrived so far and remember the task (bounded) so later frames,
+        // including its terminal frame, are ACKed too. Same rule as the Go
+        // gateway (finishWith / reclaimLocked). Review8 P1-a.
+        const late = this.recvSeq();
+        if (late > this.acked) {
+          this.acked = late;
+          ds.control(envelope('task.ack', { task_id: this.id, data: { seq: late } }));
+        }
+        if (!this.devTerminal) ds.reclaim(this.id, late);
+      }
       ds.tasks.delete(this.id);
       ds.out.forget(this.id);
       ds.inb?.forget(this.id);

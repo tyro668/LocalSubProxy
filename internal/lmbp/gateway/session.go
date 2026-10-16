@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -520,10 +521,30 @@ func (ds *dstate) resumeTokenGet() string { ds.mu.Lock(); defer ds.mu.Unlock(); 
 
 // onDeviceData handles task.delta/done/error. It returns false when the
 // connection must be closed (flow-control violation).
+// deviceDataHook, when set by a test, sees each device data frame as the
+// read loop hands it over, before any gateway state is touched. Nil in
+// production.
+// The returned func, if any, runs once the frame is fully handled.
+var deviceDataHook atomic.Pointer[func(in lmbp.Envelope) func()]
+
 func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
+	if h := deviceDataHook.Load(); h != nil {
+		if after := (*h)(in); after != nil {
+			defer after()
+		}
+	}
+	// Lookup and Accept are one step under ds.mu, serialized with the local
+	// finish transition in finishWith (Review8 P2-a).
 	ds.mu.Lock()
 	t := ds.tasks[in.TaskID]
 	inb := ds.in
+	var res int
+	if t != nil {
+		res = inb.Accept(in.TaskID, in.Seq, size)
+		if res == lmbp.Accepted && isTerminal(in.Type) {
+			t.devTerminal.Store(true) // seen by finishWith under the same lock
+		}
+	}
 	ds.mu.Unlock()
 	if t == nil {
 		ds.mu.Lock()
@@ -548,7 +569,7 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 		_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskCancel, TaskID: in.TaskID, Data: b})
 		return true
 	}
-	switch inb.Accept(in.TaskID, in.Seq, size) {
+	switch res {
 	case lmbp.Duplicate:
 		t.maybeAck() // the device may have missed our ack
 		return true

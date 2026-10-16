@@ -287,6 +287,15 @@ func MergeAdapterPatch(old AdapterConfig, patch json.RawMessage) (AdapterConfig,
 		return AdapterConfig{}, err
 	}
 	out.ID = old.ID
+	// A stored key belongs to its endpoint: inherit it only while provider
+	// type and base URL stay the same. Otherwise drop it so validation asks
+	// for a new key and the health probe can never send the old one to a
+	// different service. Review8 P1-b.
+	if !sameCredentialEndpoint(out, old) && out.APIKey == old.APIKey {
+		if raw, ok := p["api_key"]; !ok || string(raw) == "null" || string(raw) == `""` || out.APIKey == "" {
+			out.APIKey = ""
+		}
+	}
 	return out, nil
 }
 

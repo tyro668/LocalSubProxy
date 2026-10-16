@@ -53,6 +53,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     if (e.type !== 'task.run') return;
     const run = JSON.parse(Buffer.from(e.jws.split('.')[1], 'base64url'));
     opts.onRun?.(run); // tests inspect the signed task.run payload
+    if (opts.manual) return void opts.manual(run, ws); // test drives the frames itself
     if (run.e2ee) return void pending.set(run.task_id, { run, chunks: [] });
     if (fl) return void flood(run);
     let seq = 0;

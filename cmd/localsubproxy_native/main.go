@@ -138,6 +138,7 @@ var runtime struct {
 	keepClosed  map[string]bool   // links closed by an uncertain revoke
 	landed      map[string]bool   // revokes confirmed by reconcile
 	login       *connector.CodexLogin
+	loginGen    uint64     // bumped by codex login start/cancel/logout and stop; a start that returns under an older generation is stale
 	audit       *audit.Log // per-connection request log (audit.db)
 	auditStop   context.CancelFunc
 	// lmbp pairings (one SaaS each); lastPair is the most recent
@@ -686,6 +687,7 @@ func call(raw string) string {
 	defer runtime.Unlock()
 	if request.Action == "stop" {
 		cancelAllPairingsLocked()
+		runtime.loginGen++
 		if runtime.login != nil {
 			runtime.login.Close()
 			runtime.login = nil
@@ -1030,8 +1032,14 @@ func codexLoginCall(action, path string) string {
 	runtime.Lock()
 	core := runtime.core
 	login := runtime.login
+	var gen uint64
 	if action != "codex_login_check" {
+		// start/cancel/logout each open a new generation: a start still
+		// running in BeginCodexLogin (runtime.login is nil meanwhile) is
+		// thereby superseded and must discard its session. Review8 P2-b.
 		runtime.login = nil
+		runtime.loginGen++
+		gen = runtime.loginGen
 	}
 	runtime.Unlock()
 	if action != "codex_login_check" && login != nil {
@@ -1047,7 +1055,7 @@ func codexLoginCall(action, path string) string {
 			return result(nil, err)
 		}
 		runtime.Lock()
-		if runtime.core != core || runtime.login != nil {
+		if runtime.core != core || runtime.loginGen != gen || runtime.login != nil {
 			runtime.Unlock()
 			next.Close()
 			return result(nil, errors.New("codex login superseded; start again"))
