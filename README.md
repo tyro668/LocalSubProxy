@@ -4,10 +4,7 @@ LocalSubProxy 是 macOS / Windows 桌面应用：让你授权的远端服务（S
 
 ## 工作原理
 
-```
-SaaS 后端 ──OpenAI/Anthropic 兼容请求──▶ LMBP 网关 ◀──WebSocket（lmbp）── LocalSubProxy 桌面端 ──▶ Codex / OpenAI / Anthropic 兼容 API
-（用官方 SDK 调用）                     （SaaS 内嵌 SDK）                     （本机，出站连接）
-```
+![LocalSubProxy 架构图](docs/images/architecture.svg)
 
 桌面端主动连出到网关，本机无需开放端口。设备与网关之间使用开放协议 **LMBP 1.0**（正式版），见 [规范](docs/lmbp-spec.md)。
 
