@@ -672,7 +672,7 @@ func call(raw string) string {
 	// the global lock (the connector has its own), so status polling and
 	// other calls are never stuck behind a slow model test.
 	switch request.Action {
-	case "test_adapter", "codex_models", "create_adapter", "update_adapter":
+	case "test_adapter", "provider_models", "codex_models", "create_adapter", "update_adapter":
 		runtime.Lock()
 		core := runtime.core
 		runtime.Unlock()
@@ -1000,6 +1000,11 @@ func unlockedCall(core *connector.Connector, action string, a connector.AdapterC
 		defer cancel()
 		health, err := core.TestAdapter(ctx, a)
 		return result(health, err)
+	case "provider_models":
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		models, err := core.ProviderModels(ctx, a)
+		return result(models, err)
 	default: // codex_models
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()

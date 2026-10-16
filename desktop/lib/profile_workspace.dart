@@ -64,6 +64,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   bool editorOpen = false;
   String? error;
   List<String> codexModels = [];
+  // Models fetched from an API provider (GET /models) for the picker.
+  List<String> providerModels = [];
+  bool fetchingModels = false;
   List<String> originalModels = [];
   String originalModel = '';
   Timer? loginPoll;
@@ -214,6 +217,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     dirty = false;
     testStatus = null;
     error = null;
+    providerModels = [];
     codexConnected = a['auth_state'] != 'required' && a['health'] == 'ready';
     if (mounted) setState(() {});
     if (provider == 'codex') refreshCodex();
@@ -452,9 +456,48 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       skipModelProbe = false;
       apiKey.clear();
       testStatus = null;
+      providerModels = [];
       dirty = true;
     });
     if (provider == 'codex') refreshCodex();
+  }
+
+  /// 获取模型: Codex refreshes the subscription list; API providers are asked
+  /// for GET /models with the address and key typed in the form.
+  Future<void> fetchModels() async {
+    if (provider == 'codex') return refreshCodex();
+    if (baseURL.text.trim().isEmpty) {
+      setState(() => error = '请先填写 API 地址。');
+      return;
+    }
+    if (provider != 'legacy_ollama' &&
+        apiKey.text.trim().isEmpty &&
+        !hasReusableKey) {
+      setState(() => error = '请先填写 API 密钥。');
+      return;
+    }
+    setState(() {
+      fetchingModels = true;
+      error = null;
+    });
+    try {
+      final list = await providerModelsAsync({
+        'id': selectedID ?? '',
+        'type': type,
+        'base_url': baseURL.text.trim(),
+        'api_key': apiKey.text.trim(),
+      });
+      if (!mounted) return;
+      setState(() {
+        providerModels = list;
+        if (list.isEmpty) error = '服务商没有返回模型，请使用自定义模型。';
+      });
+      if (model.text.isEmpty && list.isNotEmpty) model.text = list.first;
+    } catch (e) {
+      if (mounted) setState(() => error = '获取模型失败：$e');
+    } finally {
+      if (mounted) setState(() => fetchingModels = false);
+    }
   }
 
   Future<void> refreshCodex() async {
@@ -1024,19 +1067,17 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   );
 
   Widget _modelSelect() {
-    if (provider != 'codex') {
+    final fetched = provider == 'codex' ? codexModels : providerModels;
+    if (fetched.isEmpty) {
       return TextField(
         controller: model,
-        placeholder: const Text('输入供应商提供的模型 ID'),
+        placeholder: Text(provider == 'codex' ? '输入模型 ID' : '输入供应商提供的模型 ID'),
       );
     }
     final choices = <String>{
       if (model.text.isNotEmpty) model.text,
-      ...codexModels,
+      ...fetched,
     }.toList();
-    if (choices.isEmpty) {
-      return TextField(controller: model, placeholder: const Text('输入模型 ID'));
-    }
     return Select<String>(
       value: model.text.isEmpty ? null : model.text,
       placeholder: const Text('选择模型'),
@@ -1247,6 +1288,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             children: [
               Expanded(child: _modelSelect()),
               const SizedBox(width: 8),
+              GhostButton(
+                onPressed: fetchingModels || checkingCodex ? null : fetchModels,
+                leading: const Icon(LucideIcons.refreshCw, size: 15),
+                child: Text(
+                  fetchingModels || checkingCodex ? '获取中…' : '获取模型',
+                ),
+              ),
               GhostButton(
                 onPressed: _customModel,
                 leading: const Icon(LucideIcons.pencil, size: 15),

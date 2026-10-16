@@ -445,17 +445,45 @@ func (x *Connector) DeleteAdapter(id string) error {
 
 // TestAdapter checks a draft profile without changing the encrypted model list.
 func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHealth, error) {
-	x.mu.Lock()
-	if old, ok := x.adapters[a.ID]; ok && a.APIKey == "" && sameCredentialEndpoint(a, old) {
-		a.APIKey = old.APIKey
-	}
-	x.mu.Unlock()
+	a = x.withSavedKey(a)
 	if err := validateAdapter(&a); err != nil {
 		return AdapterHealth{}, err
 	}
 	a.Enabled = true
 	a.SkipModelProbe = false
 	return x.probeAdapter(ctx, a), nil
+}
+
+// ProviderModels lists the models a draft profile's provider offers, for the
+// model picker. Nothing is stored.
+func (x *Connector) ProviderModels(ctx context.Context, a AdapterConfig) ([]string, error) {
+	a = x.withSavedKey(a)
+	if err := checkEndpoint(a); err != nil {
+		return nil, err
+	}
+	ids, err := x.listProviderModels(ctx, a)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(ids)
+	out := []string{}
+	for i, m := range ids {
+		if m != "" && (i == 0 || m != ids[i-1]) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// withSavedKey fills a blank API key from the saved profile when the
+// endpoint is unchanged (the UI never receives stored keys).
+func (x *Connector) withSavedKey(a AdapterConfig) AdapterConfig {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if old, ok := x.adapters[a.ID]; ok && a.APIKey == "" && sameCredentialEndpoint(a, old) {
+		a.APIKey = old.APIKey
+	}
+	return a
 }
 
 func sameCredentialEndpoint(a, old AdapterConfig) bool {

@@ -1,6 +1,7 @@
 package connector_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +99,43 @@ func TestPatchToNewEndpointDoesNotInheritKey(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 获取模型 lists the provider's models (sorted, deduplicated). A blank key
+// reuses the stored one only for the same endpoint, never for another host.
+func TestProviderModelsKeyOnlyForSameEndpoint(t *testing.T) {
+	const secret = "sk-STORED"
+	list := func(rec *authRecorder) *httptest.Server {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+			rec.mu.Lock()
+			rec.seen = append(rec.seen, q.Header.Get("Authorization"))
+			rec.mu.Unlock()
+			w.Write([]byte(`{"data":[{"id":"m2"},{"id":"m1"},{"id":"m2"},{"id":""}]}`))
+		}))
+		t.Cleanup(s.Close)
+		return s
+	}
+	var oldRec, newRec authRecorder
+	oldSrv, newSrv := list(&oldRec), list(&newRec)
+	c := newAdapterCore(t, filepath.Join(t.TempDir(), "adapters.enc"))
+	defer c.Shutdown()
+	cfg := lmCfg
+	cfg.BaseURL, cfg.APIKey = oldSrv.URL+"/v1", secret
+	if _, err := c.CreateAdapter(cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	got, err := c.ProviderModels(ctx, connector.AdapterConfig{ID: "lm", Type: cfg.Type, BaseURL: cfg.BaseURL})
+	if err != nil || strings.Join(got, ",") != "m1,m2" || !oldRec.leaked(secret) {
+		t.Fatalf("same endpoint: %v %v (key used: %v)", got, err, oldRec.leaked(secret))
+	}
+	_, err = c.ProviderModels(ctx, connector.AdapterConfig{ID: "lm", Type: cfg.Type, BaseURL: newSrv.URL + "/v1"})
+	if err == nil || !strings.Contains(err.Error(), "API key required") || newRec.leaked(secret) {
+		t.Fatalf("other endpoint without key: err=%v leaked=%v", err, newRec.leaked(secret))
+	}
+	if got, err := c.ProviderModels(ctx, connector.AdapterConfig{Type: cfg.Type, BaseURL: newSrv.URL + "/v1", APIKey: "sk-NEW"}); err != nil || len(got) != 2 {
+		t.Fatalf("draft with its own key: %v %v", got, err)
 	}
 }
 

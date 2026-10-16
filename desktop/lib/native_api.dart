@@ -195,6 +195,14 @@ class NativeApi {
       (_invoke(_call, {'action': 'test_adapter', 'adapter': adapter}) as Map)
           .cast<String, dynamic>();
 
+  /// Models the provider of a draft profile offers (GET /models); nothing is
+  /// saved. A blank api_key reuses the saved key for the same endpoint.
+  List<String> providerModels(Map<String, dynamic> adapter) =>
+      ((_invoke(_call, {'action': 'provider_models', 'adapter': adapter})
+                  as List?) ??
+              const [])
+          .cast<String>();
+
   List<String> codexModels(String path) =>
       (_invoke(_call, {'action': 'codex_models', 'path': path}) as List)
           .cast<String>();
@@ -272,6 +280,9 @@ Future<void> deleteAdapterAsync(String id) =>
 
 Future<Map<String, dynamic>> testAdapterAsync(Map<String, dynamic> adapter) =>
     Isolate.run(() => NativeApi.instance.testAdapter(adapter));
+
+Future<List<String>> providerModelsAsync(Map<String, dynamic> adapter) =>
+    Isolate.run(() => NativeApi.instance.providerModels(adapter));
 
 Future<List<String>> codexModelsAsync(String path) =>
     Isolate.run(() => NativeApi.instance.codexModels(path));

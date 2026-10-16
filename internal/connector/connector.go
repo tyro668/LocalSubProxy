@@ -194,17 +194,6 @@ func validateAdapter(a *AdapterConfig) error {
 		}
 	}
 	switch a.Type {
-	case "ollama_http":
-		if err := safeURL(a.BaseURL); err != nil {
-			return fmt.Errorf("adapter URL: %w", err)
-		}
-	case "openai_compatible", "anthropic_compatible":
-		if err := safeProviderURL(a.BaseURL); err != nil {
-			return fmt.Errorf("adapter URL: %w", err)
-		}
-		if a.APIKey == "" || len(a.APIKey) > 4096 {
-			return errors.New("API key required (maximum 4096 characters)")
-		}
 	case "codex_app_server":
 		if len(a.Capabilities) > 0 {
 			return errors.New("the Codex adapter is text-only")
@@ -217,6 +206,26 @@ func validateAdapter(a *AdapterConfig) error {
 			return err
 		}
 		a.CodexBin = path
+	default:
+		return checkEndpoint(*a)
+	}
+	return nil
+}
+
+// checkEndpoint validates where an HTTP adapter sends requests and its key.
+func checkEndpoint(a AdapterConfig) error {
+	switch a.Type {
+	case "ollama_http":
+		if err := safeURL(a.BaseURL); err != nil {
+			return fmt.Errorf("adapter URL: %w", err)
+		}
+	case "openai_compatible", "anthropic_compatible":
+		if err := safeProviderURL(a.BaseURL); err != nil {
+			return fmt.Errorf("adapter URL: %w", err)
+		}
+		if a.APIKey == "" || len(a.APIKey) > 4096 {
+			return errors.New("API key required (maximum 4096 characters)")
+		}
 	default:
 		return fmt.Errorf("unsupported adapter type %q", a.Type)
 	}
@@ -694,56 +703,13 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHe
 		h.Health = "ready"
 		return x.withSlots(h)
 	}
-	probeURL := strings.TrimRight(a.BaseURL, "/") + "/api/tags"
-	if cloud {
-		probeURL = adapterEndpoint(a, "/models")
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+	ids, err := x.listProviderModels(ctx, a)
 	if err != nil {
-		return h
-	}
-	if a.Type == "openai_compatible" {
-		req.Header.Set("Authorization", "Bearer "+a.APIKey)
-	} else if a.Type == "anthropic_compatible" {
-		req.Header.Set("x-api-key", a.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-	probeClient := *x.client
-	probeClient.Timeout = 5 * time.Second
-	resp, err := probeClient.Do(req)
-	if err != nil {
-		return h
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
 		return h
 	}
 	available := map[string]bool{}
-	if cloud {
-		var v struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v) != nil {
-			return h
-		}
-		for _, m := range v.Data {
-			available[m.ID] = true
-		}
-	} else {
-		var v struct {
-			Models []struct {
-				Name  string `json:"name"`
-				Model string `json:"model"`
-			} `json:"models"`
-		}
-		if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v) != nil {
-			return h
-		}
-		for _, m := range v.Models {
-			available[m.Name], available[m.Model] = true, true
-		}
+	for _, m := range ids {
+		available[m] = true
 	}
 	h.Models = nil
 	for _, m := range a.Models {
@@ -755,6 +721,65 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHe
 		h.Health = "ready"
 	}
 	return x.withSlots(h)
+}
+
+// listProviderModels returns the model IDs an HTTP adapter's provider
+// reports: GET /models for cloud providers, /api/tags (name and model) for
+// Ollama.
+func (x *Connector) listProviderModels(ctx context.Context, a AdapterConfig) ([]string, error) {
+	cloud := a.Type == "openai_compatible" || a.Type == "anthropic_compatible"
+	probeURL := strings.TrimRight(a.BaseURL, "/") + "/api/tags"
+	if cloud {
+		probeURL = adapterEndpoint(a, "/models")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if a.Type == "openai_compatible" {
+		req.Header.Set("Authorization", "Bearer "+a.APIKey)
+	} else if a.Type == "anthropic_compatible" {
+		req.Header.Set("x-api-key", a.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	probeClient := *x.client
+	probeClient.Timeout = 5 * time.Second
+	resp, err := probeClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("model list: HTTP %d", resp.StatusCode)
+	}
+	ids := []string{}
+	if cloud {
+		var v struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil {
+			return nil, fmt.Errorf("model list: %w", err)
+		}
+		for _, m := range v.Data {
+			ids = append(ids, m.ID)
+		}
+	} else {
+		var v struct {
+			Models []struct {
+				Name  string `json:"name"`
+				Model string `json:"model"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil {
+			return nil, fmt.Errorf("model list: %w", err)
+		}
+		for _, m := range v.Models {
+			ids = append(ids, m.Name, m.Model)
+		}
+	}
+	return ids, nil
 }
 
 func (x *Connector) withSlots(h AdapterHealth) AdapterHealth {
