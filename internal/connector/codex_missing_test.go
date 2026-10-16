@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,8 +46,14 @@ func TestUnavailableCodexCLIDoesNotBlockLoad(t *testing.T) {
 		{"removed-disabled", false, os.Remove},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "no-exec-permission" && runtime.GOOS == "windows" {
+				t.Skip("Windows has no POSIX execute bit")
+			}
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "codex")
+			if runtime.GOOS == "windows" {
+				bin += ".exe"
+			}
 			copyExec(t, bin)
 			file := filepath.Join(dir, "adapters.enc")
 			x, err := New(Config{DataKey: codexTestDataKey, AdapterFile: file, MaxConcurrency: 4})
@@ -114,4 +121,5 @@ func TestUnavailableCodexCLIDoesNotBlockLoad(t *testing.T) {
 		})
 	}
 }
+
 const codexTestDataKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"

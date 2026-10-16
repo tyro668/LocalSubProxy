@@ -20,7 +20,7 @@ func TestStartCoreFailureReleasesAudit(t *testing.T) {
 		return nil, errors.New("core build failed (injected)")
 	}
 	var out map[string]any
-	_ = json.Unmarshal([]byte(start(`{"data_dir":"`+a+`"}`)), &out)
+	_ = json.Unmarshal([]byte(start(dataDirJSON(a))), &out)
 	buildCore = orig
 	if out["ok"] == true {
 		t.Fatalf("start A should fail: %v", out)
@@ -28,7 +28,7 @@ func TestStartCoreFailureReleasesAudit(t *testing.T) {
 	if runtime.audit != nil {
 		t.Fatal("audit log of failed start A still held")
 	}
-	_ = json.Unmarshal([]byte(start(`{"data_dir":"`+b+`"}`)), &out)
+	_ = json.Unmarshal([]byte(start(dataDirJSON(b))), &out)
 	defer call(`{"action":"stop"}`)
 	if out["ok"] != true {
 		t.Fatalf("start B: %v", out)

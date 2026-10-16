@@ -35,7 +35,7 @@ func Committed(err error) bool {
 // Fault injection points (tests).
 var (
 	renameFile = os.Rename
-	syncDir    = func(d *os.File) error { return d.Sync() }
+	syncDir    = platformSyncDir
 	syncFile   = func(f *os.File) error { return f.Sync() }
 )
 

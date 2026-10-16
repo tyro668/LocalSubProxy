@@ -46,7 +46,9 @@ func injectPhase(t *testing.T, p phase) func() {
 			return or(f)
 		}
 	}
-	return func() { writeJSON, readFile = ow, or }
+	restore := func() { writeJSON, readFile = ow, or }
+	t.Cleanup(restore) // never leak the injection into later tests if this one fails
+	return restore
 }
 
 func TestRevokeCommitPhases(t *testing.T) {

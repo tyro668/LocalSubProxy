@@ -86,7 +86,7 @@ func must(t *testing.T, req map[string]any) map[string]any {
 func startKernel(t *testing.T, dir string) {
 	t.Helper()
 	var r reply
-	_ = json.Unmarshal([]byte(start(`{"data_dir":"`+dir+`"}`)), &r)
+	_ = json.Unmarshal([]byte(start(dataDirJSON(dir))), &r)
 	if !r.OK {
 		t.Fatal(r.Error)
 	}
@@ -323,7 +323,7 @@ func TestKeyDeleteFailurePersistedAndRetried(t *testing.T) {
 	restart := func() map[string]any {
 		call(`{"action":"stop"}`)
 		var out map[string]any
-		_ = json.Unmarshal([]byte(start(`{"data_dir":"`+dir+`"}`)), &out)
+		_ = json.Unmarshal([]byte(start(dataDirJSON(dir))), &out)
 		st, _ := out["data"].(map[string]any)
 		if st == nil {
 			t.Fatalf("start: %v", out)
@@ -409,4 +409,11 @@ func TestMigrateV1KeyReadErrorKeepsV1(t *testing.T) {
 	if _, err := loadBinding(dir, id, id.Bindings[0]); err != nil {
 		t.Fatalf("migrated key unusable: %v", err)
 	}
+}
+
+// dataDirJSON encodes a start request; Windows paths contain backslashes that
+// must be JSON-escaped.
+func dataDirJSON(dir string) string {
+	b, _ := json.Marshal(map[string]string{"data_dir": dir})
+	return string(b)
 }

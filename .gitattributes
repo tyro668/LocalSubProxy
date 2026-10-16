@@ -1,0 +1,2 @@
+# 测试向量按字节比对，Windows 检出时不能转换为 CRLF
+spec/testvectors/** -text
