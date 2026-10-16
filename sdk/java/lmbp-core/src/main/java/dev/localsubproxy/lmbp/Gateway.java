@@ -57,6 +57,9 @@ final class Gateway {
   static final Pattern EVENTS_RE = Pattern.compile("^/lmbp/v1/tenant/tasks/([^/]+)/events$");
 
   static int errStatus(String code) { Integer s = STATUS_OF.get(code); return s == null ? 502 : s; }
+  /** Late-frame reclaim records per device session (same bound as the Node and Go gateways). */
+  static final int MAX_RECLAIMED = 1024;
+
   static boolean isTerminal(String t) { return "task.done".equals(t) || "task.error".equals(t); }
   static String stateOf(Store.Event ev) {
     return ev.type().equals("task.done") ? "SUCCEEDED" : ("CANCELLED".equals(Json.get(ev.data(), "code")) ? "CANCELLED" : "FAILED");
@@ -688,10 +691,25 @@ final class Gateway {
   boolean onDeviceData(DState ds, Map<String, Object> inp, int size) {
     String tid = inp.get("task_id") instanceof String s ? s : String.valueOf(inp.get("task_id"));
     Task t = ds.tasks.get(tid);
-    if (t == null) { ds.control(envelope("task.cancel", null, tid, Json.obj("reason", "unknown_task"))); return true; }
     Object sq = inp.get("seq");
     long seq = Json.isNumber(sq) ? (long) ((Number) sq).doubleValue() : 0;
-    switch (ds.inb.accept(tid, seq, size)) {
+    if (t == null) {
+      Long acked = ds.reclaimed.get(tid);
+      if (acked != null) {
+        // Ended here (cancel, timeout, slow consumer, ...) while the device was still running:
+        // ACK its late frames so its reliable buffer and flow credit come back. The decided
+        // outcome is not touched.
+        if (seq > acked) ds.reclaimed.put(tid, seq);
+        if (inp.get("type") instanceof String ty && isTerminal(ty)) ds.reclaimed.remove(tid);
+        if (seq > acked) ds.control(envelope("task.ack", null, tid, Json.obj("seq", seq)));
+        return true;
+      }
+      ds.control(envelope("task.cancel", null, tid, Json.obj("reason", "unknown_task")));
+      return true;
+    }
+    int verdict = ds.inb.accept(tid, seq, size);
+    if (verdict == Lmbp.ACCEPTED && inp.get("type") instanceof String ty && isTerminal(ty)) t.devTerminal = true;
+    switch (verdict) {
       case Lmbp.DUPLICATE: t.maybeAck(); return true;
       case Lmbp.GAP: t.cancel("protocol_error"); t.failLocal("INTERNAL", "sequence gap from device", false); return true;
       case Lmbp.OVERFLOW:
@@ -1256,7 +1274,16 @@ final class Gateway {
     final Map<String, Task> tasks = new LinkedHashMap<>();
     int slots;
     final List<SlotWaiter> slotWait = new ArrayList<>();
+    /** Locally ended task id -> highest seq ACKed, so late frames are ACKed (bounded, oldest first). */
+    final LinkedHashMap<String, Long> reclaimed = new LinkedHashMap<>();
     boolean dropped;
+
+    /** Remember a locally ended task so its late frames, including its terminal frame, are ACKed. */
+    void reclaim(String id, long acked) {
+      reclaimed.remove(id);
+      reclaimed.put(id, acked);
+      while (reclaimed.size() > MAX_RECLAIMED) reclaimed.remove(reclaimed.keySet().iterator().next());
+    }
     long lastSeen = System.currentTimeMillis();
 
     static final class SlotWaiter { boolean resolved, value; }
@@ -1321,6 +1348,7 @@ final class Gateway {
     final Map<Integer, Long> subs = new LinkedHashMap<>();
     int nextSub;
     long acked, persisted, seen, ackAt = System.currentTimeMillis();
+    boolean devTerminal, storeFailed;
     ScheduledFuture<?> grace, timeout, watch;
 
     Task(Gateway g, DState ds, String id, String tenant, String owner, String reqModel, boolean e2ee, boolean idempotent) {
@@ -1391,6 +1419,7 @@ final class Gateway {
         if (!decide()) { maybeAck(); return; }
         try { g.store.finishTask(id, ev, state); } catch (RuntimeException e) {
           g.log("lmbp: task " + id + ": persisting terminal event and state for seq " + seq + " failed: " + e.getMessage() + " (not acknowledged)");
+          storeFailed = true; // never ACK frames that were not persisted
           sendCancel("internal_error");
           commitLocal("INTERNAL", "gateway could not persist task output", false);
           return;
@@ -1398,6 +1427,7 @@ final class Gateway {
       } else {
         try { g.store.appendEvent(id, ev); } catch (RuntimeException e) {
           g.log("lmbp: task " + id + ": persisting event for seq " + seq + " failed: " + e.getMessage() + " (not acknowledged)");
+          storeFailed = true; // never ACK frames that were not persisted
           cancel("internal_error");
           failLocal("INTERNAL", "gateway could not persist task output", false);
           return;
@@ -1459,6 +1489,17 @@ final class Gateway {
       broadcast();
       if (ds != null) {
         if (fromDevice) maybeAck();
+        else if (!storeFailed) {
+          // Ended here while the device may still be sending: ACK what arrived so far and
+          // remember the task (bounded) so later frames, including its terminal frame, are
+          // ACKed too. Same rule as the Node and Go gateways.
+          long late = recvSeq();
+          if (late > acked) {
+            acked = late;
+            ds.control(envelope("task.ack", null, id, Json.obj("seq", late)));
+          }
+          if (!devTerminal) ds.reclaim(id, late);
+        }
         ds.tasks.remove(id);
         ds.out.forget(id);
         if (ds.inb != null) ds.inb.forget(id);

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrDuplicateSchemeName is returned when a scheme (adapter) name is already
@@ -20,21 +21,43 @@ func DefaultSchemeName(model string, taken []string) string {
 	if model == "" {
 		model = "scheme"
 	}
-	if r := []rune(model); len(r) > 90 { // names are limited to 100 bytes-ish
-		model = string(r[:90])
-	}
 	used := map[string]bool{}
 	for _, t := range taken {
 		used[schemeNameKey(t)] = true
 	}
-	if !used[schemeNameKey(model)] {
-		return model
+	if c := withSuffix(model, ""); !used[schemeNameKey(c)] {
+		return c
 	}
 	for n := 2; ; n++ {
-		if c := fmt.Sprintf("%s_%d", model, n); !used[schemeNameKey(c)] {
+		if c := withSuffix(model, fmt.Sprintf("_%d", n)); !used[schemeNameKey(c)] {
 			return c
 		}
 	}
+}
+
+// clipBytes cuts s to at most n bytes at a UTF-8 character boundary.
+func clipBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return strings.TrimSpace(s[:n])
+}
+
+// withSuffix appends suffix to base, cutting base so the result fits in
+// MaxSchemeNameBytes: the suffix is always kept whole.
+func withSuffix(base, suffix string) string {
+	return clipBytes(base, MaxSchemeNameBytes-len(suffix)) + suffix
+}
+
+// checkSchemeName is the final check on a settled name, before it is persisted.
+func checkSchemeName(name string) error {
+	if len(name) > MaxSchemeNameBytes {
+		return fmt.Errorf("scheme name is %d bytes; at most %d allowed", len(name), MaxSchemeNameBytes)
+	}
+	return nil
 }
 
 // namesLocked lists the scheme names in use, except the adapter skip.
@@ -59,7 +82,10 @@ func (x *Connector) settleNameLocked(a *AdapterConfig) error {
 			m = a.Models[0]
 		}
 		a.Name = DefaultSchemeName(m, others)
-		return nil
+		return checkSchemeName(a.Name)
+	}
+	if err := checkSchemeName(a.Name); err != nil {
+		return err
 	}
 	k := schemeNameKey(a.Name)
 	for _, o := range others {
@@ -83,7 +109,9 @@ func (x *Connector) dedupeNamesLocked() {
 	taken := []string{}
 	for _, id := range ids {
 		a := x.adapters[id]
-		a.Name = strings.TrimSpace(a.Name)
+		// An over-long name (written by an older version) is cut to fit:
+		// loading never fails because of a name.
+		a.Name = clipBytes(strings.TrimSpace(a.Name), MaxSchemeNameBytes)
 		if a.Name == "" && len(a.Models) > 0 {
 			all := append(append([]string(nil), taken...), x.namesLocked(id)...)
 			a.Name = DefaultSchemeName(a.Models[0], all)
@@ -91,7 +119,7 @@ func (x *Connector) dedupeNamesLocked() {
 		if used[schemeNameKey(a.Name)] {
 			base := a.Name
 			for n := 2; ; n++ {
-				c := fmt.Sprintf("%s (%d)", base, n)
+				c := withSuffix(base, fmt.Sprintf(" (%d)", n))
 				if !used[schemeNameKey(c)] && !x.nameUsedByOtherLocked(id, c) {
 					a.Name = c
 					break
@@ -113,3 +141,7 @@ func (x *Connector) nameUsedByOtherLocked(skip, name string) bool {
 	}
 	return false
 }
+
+// MaxSchemeNameBytes is the scheme name limit (UTF-8 bytes) checked on
+// every save and load.
+const MaxSchemeNameBytes = 100

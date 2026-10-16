@@ -55,7 +55,7 @@ final class Anthropic {
       if (content instanceof String cs) { msgs.add(Json.obj("role", role, "content", cs)); continue; }
       List<Object> blocks = Json.asList(content);
       if (blocks == null) throw new IllegalArgumentException("messages." + i + ".content: must be a string or an array of blocks");
-      List<Object> parts = new ArrayList<>(), calls = new ArrayList<>(), results = new ArrayList<>();
+      List<Object> parts = new ArrayList<>(), calls = new ArrayList<>(), results = new ArrayList<>(), toolImages = new ArrayList<>();
       List<String> text = new ArrayList<>();
       for (int j = 0; j < blocks.size(); j++) {
         Object b = blocks.get(j);
@@ -79,13 +79,30 @@ final class Anthropic {
           case "tool_result" -> {
             if (!"user".equals(role)) throw new IllegalArgumentException("messages." + i + ": tool_result blocks belong to user messages");
             String c = "";
+            String tid = s(Json.get(b, "tool_use_id"));
             Object bc = Json.get(b, "content");
             if (bc instanceof String bs) c = bs;
             else if (bc instanceof List<?> zl) {
+              // Every block is converted or the request is rejected; images follow the tool
+              // results as image_url parts of the next user message.
               List<String> ts = new ArrayList<>();
-              for (Object z : zl) if ("text".equals(Json.get(z, "type"))) ts.add(s(Json.get(z, "text")));
+              for (int k = 0; k < zl.size(); k++) {
+                Object z = zl.get(k);
+                Object zt = Json.get(z, "type");
+                if ("text".equals(zt)) ts.add(s(Json.get(z, "text")));
+                else if ("image".equals(zt)) {
+                  Object src = Json.get(z, "source");
+                  String url;
+                  if ("base64".equals(Json.get(src, "type"))) url = "data:" + s(Json.get(src, "media_type")) + ";base64," + s(Json.get(src, "data"));
+                  else if ("url".equals(Json.get(src, "type"))) url = s(Json.get(src, "url"));
+                  else throw new IllegalArgumentException("messages." + i + ".content." + j + ".content." + k + ": source.type: base64 or url required");
+                  toolImages.add(Json.obj("type", "image_url", "image_url", Json.obj("url", url)));
+                  ts.add("[image " + toolImages.size() + " from tool result " + tid + ": attached in the next user message]");
+                } else throw new IllegalArgumentException("messages." + i + ".content." + j + ".content." + k + ": unsupported tool_result content type "
+                    + (zt == null ? "undefined" : s(zt)) + " (text and image are supported)");
+              }
               c = String.join("\n", ts);
-            }
+            } else if (bc != null) throw new IllegalArgumentException("messages." + i + ".content." + j + ".content: must be a string or an array of blocks");
             if (Boolean.TRUE.equals(Json.get(b, "is_error"))) c = "Error: " + c;
             results.add(Json.obj("role", "tool", "tool_call_id", s(Json.get(b, "tool_use_id")), "content", c));
           }
@@ -94,6 +111,13 @@ final class Anthropic {
         }
       }
       msgs.addAll(results);
+      if (!toolImages.isEmpty()) {
+        List<Object> withImages = new ArrayList<>();
+        withImages.add(Json.obj("type", "text", "text", "Images returned by the tool results above:"));
+        withImages.addAll(toolImages);
+        withImages.addAll(parts);
+        parts = withImages;
+      }
       if ("assistant".equals(role)) {
         if (text.isEmpty() && calls.isEmpty()) continue;
         Map<String, Object> am = Json.obj("role", "assistant", "content", String.join("", text));

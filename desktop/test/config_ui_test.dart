@@ -193,4 +193,42 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('已被其他方案使用'), findsOneWidget);
   });
+
+  // Review9 P2-9: a new scheme for a service that can run inference but has
+  // no /models endpoint must be able to skip the model list probe from the
+  // editor (it was only kept for configs that already had it).
+  testWidgets('兼容协议方案可在高级选项中勾选跳过模型列表探测', (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS; // Select popups as on the desktop
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    // a new scheme starts as Codex (no option there); pick a compatible protocol
+    expect(find.byKey(const ValueKey('skip-model-probe')), findsNothing);
+    await tester.tap(find.widgetWithText(Select<String>, 'OpenAI Codex（订阅）'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('OpenAI 兼容协议').last);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final box = find.byKey(const ValueKey('skip-model-probe'));
+    expect(box, findsOneWidget, reason: 'no editor option to skip the model list probe');
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    expect(state.body()['skip_model_probe'], isFalse);
+    await tester.ensureVisible(box);
+    await tester.pumpAndSettle();
+    await tester.tap(box);
+    await tester.pumpAndSettle();
+    expect(state.body()['skip_model_probe'], isTrue);
+    // also offered for the Anthropic compatible protocol
+    await tester.tap(find.widgetWithText(Select<String>, 'OpenAI 兼容协议'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Anthropic 兼容协议').last);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const ValueKey('skip-model-probe')), findsOneWidget);
+    debugDefaultTargetPlatformOverride = null;
+  });
 }

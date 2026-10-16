@@ -49,7 +49,7 @@ export function toOpenAI(input: Obj): Obj {
     if (role !== 'user' && role !== 'assistant') throw new Error(`messages.${i}.role: must be user or assistant`);
     if (typeof m.content === 'string') { msgs.push({ role, content: m.content }); return; }
     if (!Array.isArray(m.content)) throw new Error(`messages.${i}.content: must be a string or an array of blocks`);
-    const parts: Obj[] = [], calls: Obj[] = [], results: Obj[] = [], text: string[] = [];
+    const parts: Obj[] = [], calls: Obj[] = [], results: Obj[] = [], text: string[] = [], toolImages: Obj[] = [];
     m.content.forEach((b: Obj, j: number) => {
       switch (b?.type) {
         case 'text': parts.push({ type: 'text', text: String(b.text ?? '') }); text.push(String(b.text ?? '')); break;
@@ -69,8 +69,26 @@ export function toOpenAI(input: Obj): Obj {
         case 'tool_result': {
           if (role !== 'user') throw new Error(`messages.${i}: tool_result blocks belong to user messages`);
           let c = '';
+          const tid = String(b.tool_use_id ?? '');
           if (typeof b.content === 'string') c = b.content;
-          else if (Array.isArray(b.content)) c = b.content.filter((z: Obj) => z?.type === 'text').map((z: Obj) => String(z.text ?? '')).join('\n');
+          else if (Array.isArray(b.content)) {
+            // Every block is converted or the request is rejected; images
+            // follow the tool results as image_url parts of the next user message.
+            const ts: string[] = [];
+            b.content.forEach((z: Obj, k: number) => {
+              if (z?.type === 'text') ts.push(String(z.text ?? ''));
+              else if (z?.type === 'image') {
+                const src = z.source || {};
+                let url: string;
+                if (src.type === 'base64') url = `data:${src.media_type ?? ''};base64,${src.data ?? ''}`;
+                else if (src.type === 'url') url = String(src.url ?? '');
+                else throw new Error(`messages.${i}.content.${j}.content.${k}: source.type: base64 or url required`);
+                toolImages.push({ type: 'image_url', image_url: { url } });
+                ts.push(`[image ${toolImages.length} from tool result ${tid}: attached in the next user message]`);
+              } else throw new Error(`messages.${i}.content.${j}.content.${k}: unsupported tool_result content type ${z?.type} (text and image are supported)`);
+            });
+            c = ts.join('\n');
+          } else if (b.content != null) throw new Error(`messages.${i}.content.${j}.content: must be a string or an array of blocks`);
           if (b.is_error === true) c = 'Error: ' + c;
           results.push({ role: 'tool', tool_call_id: String(b.tool_use_id ?? ''), content: c });
           break;
@@ -80,6 +98,7 @@ export function toOpenAI(input: Obj): Obj {
       }
     });
     msgs.push(...results);
+    if (toolImages.length) parts.unshift({ type: 'text', text: 'Images returned by the tool results above:' }, ...toolImages);
     if (role === 'assistant') {
       if (!text.length && !calls.length) return;
       const am: Obj = { role: 'assistant', content: text.join('') };

@@ -78,6 +78,9 @@ type AdapterHealth struct {
 	AuthState         string   `json:"auth_state"`
 	InferenceLocation string   `json:"inference_location"` // local | provider_cloud
 	FreeSlots         int      `json:"free_slots"`
+	// Error says why the scheme is unavailable when that is known locally
+	// (e.g. the Codex CLI is missing). Display only.
+	Error string `json:"error,omitempty"`
 }
 
 type Connector struct {
@@ -130,7 +133,8 @@ func New(cfg Config) (*Connector, error) {
 		client:      &http.Client{Timeout: 35 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		modelClient: &http.Client{Timeout: 0, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	for _, a := range cfg.Adapters {
-		if err := validateAdapter(&a); err != nil {
+		a.Name = clipBytes(strings.TrimSpace(a.Name), MaxSchemeNameBytes)
+		if err := validateLoadedAdapter(&a); err != nil {
 			return nil, err
 		}
 		if _, exists := x.adapters[a.ID]; exists {
@@ -171,11 +175,26 @@ func safeURL(raw string) error {
 	return nil
 }
 
-func validateAdapter(a *AdapterConfig) error {
+// validateAdapter is the full check for a scheme being saved or tested: an
+// enabled Codex scheme needs a runnable CLI.
+func validateAdapter(a *AdapterConfig) error { return validateAdapterOpt(a, true) }
+
+// validateSavedAdapter checks a scheme being saved by an edit: a disabled
+// Codex scheme may keep a CLI path that does not resolve right now, so it
+// can be renamed or disabled; enabling it again needs a runnable CLI.
+func validateSavedAdapter(a *AdapterConfig) error { return validateAdapterOpt(a, a.Enabled) }
+
+// validateLoadedAdapter checks a scheme read from configuration. A Codex CLI
+// that was removed, moved or lost its exec permission does not fail the
+// load: the scheme stays, editable and deletable, and its health reports
+// the missing CLI (probeCodexAdapter).
+func validateLoadedAdapter(a *AdapterConfig) error { return validateAdapterOpt(a, false) }
+
+func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 	if a.ID == "" || len(a.ID) > 64 || strings.Contains(a.ID, "/") || len(a.Models) == 0 || len(a.Models) > 100 {
 		return errors.New("adapter ID (no '/') and 1-100 models required")
 	}
-	if len(a.Name) > 100 || len(a.Provider) > 64 || a.ContextWindow < 0 || a.ContextWindow > 2_000_000 || a.MaxOutputTokens < 0 || a.MaxOutputTokens > 1_000_000 || a.Concurrency < 0 || a.Concurrency > 16 {
+	if len(a.Name) > MaxSchemeNameBytes || len(a.Provider) > 64 || a.ContextWindow < 0 || a.ContextWindow > 2_000_000 || a.MaxOutputTokens < 0 || a.MaxOutputTokens > 1_000_000 || a.Concurrency < 0 || a.Concurrency > 16 {
 		return errors.New("invalid profile settings")
 	}
 	switch a.ReasoningEffort {
@@ -214,7 +233,10 @@ func validateAdapter(a *AdapterConfig) error {
 		}
 		path, err := resolveCodex(a.CodexBin)
 		if err != nil {
-			return err
+			if needCodex {
+				return err
+			}
+			break // kept as configured; reported as the scheme's health
 		}
 		a.CodexBin = path
 	default:
@@ -716,6 +738,10 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHe
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
+		if cloud && (resp.StatusCode == 404 || resp.StatusCode == 405 || resp.StatusCode == 501) {
+			// Model discovery is not inference: say how to use such a service.
+			h.Error = fmt.Sprintf("model list endpoint unavailable (HTTP %d); if the service has no /models, enable \"skip model list probe\" for this scheme", resp.StatusCode)
+		}
 		return h
 	}
 	available := map[string]bool{}
@@ -827,11 +853,12 @@ func (x *Connector) loadAdapterFile() error {
 		x.recovery = n.view()
 		return nil
 	}
-	// A decrypted adapter that fails validation (e.g. the Codex CLI is not
-	// on PATH right now) is an error, as before: the file is intact, so it
-	// is never moved aside for that.
+	// A decrypted adapter that fails validation is an error: the file is
+	// intact, so it is never moved aside for that. A Codex CLI that is not
+	// runnable right now is not a validation failure here (review9 P2-4).
 	for _, a := range saved {
-		if err := validateAdapter(&a); err != nil {
+		a.Name = clipBytes(strings.TrimSpace(a.Name), MaxSchemeNameBytes) // an over-long legacy name never bricks startup
+		if err := validateLoadedAdapter(&a); err != nil {
 			return err
 		}
 		x.adapters[a.ID] = a

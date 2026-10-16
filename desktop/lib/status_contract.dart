@@ -1,3 +1,4 @@
+import 'dart:convert';
 // Desktop status contract (docs/desktop-status-contract.md): the kernel's
 // `status` JSON lists every paired SaaS in connections[]; the flat fields
 // mirror the primary (first) connection for older UI code.
@@ -306,14 +307,33 @@ String allowSummary(List<String> allow, List<Map<String, dynamic>> adapters) {
 String defaultSchemeName(String model, Iterable<String> taken) {
   var m = model.trim();
   if (m.isEmpty) m = 'scheme';
-  if (m.runes.length > 90) m = String.fromCharCodes(m.runes.take(90));
   final used = {for (final t in taken) t.trim().toLowerCase()};
-  if (!used.contains(m.toLowerCase())) return m;
+  final first = _withSuffix(m, '');
+  if (!used.contains(first.toLowerCase())) return first;
   for (var n = 2; ; n++) {
-    final c = '${m}_$n';
+    final c = _withSuffix(m, '_$n');
     if (!used.contains(c.toLowerCase())) return c;
   }
 }
+
+/// Scheme name limit in UTF-8 bytes (connector.MaxSchemeNameBytes).
+const maxSchemeNameBytes = 100;
+
+/// Cuts s to at most n UTF-8 bytes at a character boundary.
+String clipSchemeNameBytes(String s, int n) {
+  var used = 0;
+  final out = StringBuffer();
+  for (final r in s.runes) {
+    final b = utf8.encode(String.fromCharCode(r)).length;
+    if (used + b > n) break;
+    used += b;
+    out.writeCharCode(r);
+  }
+  return out.toString().trim();
+}
+
+String _withSuffix(String base, String suffix) =>
+    clipSchemeNameBytes(base, maxSchemeNameBytes - utf8.encode(suffix).length) + suffix;
 
 /// Inline validation for a scheme name; null when acceptable. exceptId is
 /// the scheme being edited (its own name never conflicts).
@@ -324,6 +344,9 @@ String? schemeNameError(
 }) {
   final k = name.trim().toLowerCase();
   if (k.isEmpty) return null; // the kernel fills a default
+  if (utf8.encode(name.trim()).length > maxSchemeNameBytes) {
+    return '名称过长：最多 $maxSchemeNameBytes 字节（约 33 个汉字）';
+  }
   for (final a in adapters) {
     if (exceptId != null && '${a['id']}' == exceptId) continue;
     if ('${a['name'] ?? ''}'.trim().toLowerCase() == k) {

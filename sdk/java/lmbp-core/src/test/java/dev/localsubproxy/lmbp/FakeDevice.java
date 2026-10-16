@@ -16,7 +16,9 @@ import java.util.concurrent.TimeUnit;
 
 /** A minimal connector for tests: pairs over HTTP, connects the lmbp WebSocket and answers tasks with a scripted reply. */
 final class FakeDevice implements AutoCloseable {
-  enum Mode { REPLY, HANG }
+  enum Mode { REPLY, HANG, LATE }
+  /** LATE mode: task ids whose first task.cancel already triggered the late frames. */
+  final java.util.Set<String> lateSent = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   final String base, tenant;
   final Lmbp.SigningKey key = Lmbp.signingKey(LMBPServer.generateSigningSeed());
@@ -72,6 +74,15 @@ final class FakeDevice implements AutoCloseable {
               buf.setLength(0);
               received.add(m);
               if ("welcome".equals(m.get("type"))) welcome.complete(null);
+              if (mode == Mode.LATE && "task.cancel".equals(m.get("type")) && lateSent.add((String) m.get("task_id"))) {
+                String tid = (String) m.get("task_id");
+                Thread.ofVirtual().start(() -> { // the device only notices a bit later
+                  try { Thread.sleep(50); } catch (InterruptedException e) { return; }
+                  send(Json.obj("v", 1L, "type", "task.delta", "task_id", tid, "seq", 3L, "data", Json.obj("text", "late 1")));
+                  send(Json.obj("v", 1L, "type", "task.delta", "task_id", tid, "seq", 4L, "data", Json.obj("text", "late 2")));
+                  send(Json.obj("v", 1L, "type", "task.error", "task_id", tid, "seq", 5L, "data", Json.obj("code", "CANCELLED", "message", "cancelled", "retryable", false)));
+                });
+              }
               if ("task.run".equals(m.get("type"))) Thread.ofVirtual().start(() -> run((String) m.get("task_id")));
             }
             w.request(1);
@@ -89,6 +100,11 @@ final class FakeDevice implements AutoCloseable {
   }
 
   void run(String taskId) {
+    if (mode == Mode.LATE) {
+      send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "hello ")));
+      send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", 2L, "data", Json.obj("text", "world")));
+      return;
+    }
     if (mode == Mode.HANG) {
       send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "partial")));
       return;
@@ -101,6 +117,22 @@ final class FakeDevice implements AutoCloseable {
   boolean sawCancel(String taskId) {
     for (Map<String, Object> m : received) if ("task.cancel".equals(m.get("type")) && taskId.equals(m.get("task_id"))) return true;
     return false;
+  }
+
+  /** Highest task.ack seq received for the task. */
+  long acked(String taskId) {
+    long a = 0;
+    for (Map<String, Object> m : received)
+      if ("task.ack".equals(m.get("type")) && taskId.equals(m.get("task_id"))) a = Math.max(a, ((Number) Json.get(m.get("data"), "seq")).longValue());
+    return a;
+  }
+
+  /** task.cancel reasons received for the task, in order. */
+  List<String> cancels(String taskId) {
+    List<String> r = new java.util.ArrayList<>();
+    for (Map<String, Object> m : received)
+      if ("task.cancel".equals(m.get("type")) && taskId.equals(m.get("task_id"))) r.add(String.valueOf(Json.get(m.get("data"), "reason")));
+    return r;
   }
 
   static void waitFor(java.util.function.BooleanSupplier c, long ms) throws InterruptedException {

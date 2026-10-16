@@ -3,6 +3,7 @@ import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 typedef _NativeCall = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartCall = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -25,6 +26,7 @@ class NativeApi {
   late final _DartCall _start = _library.lookupFunction<_NativeCall, _DartCall>(
     'LSP_Start',
   );
+  _DartCall _startFn() => _start;
   late final _DartCall _call = _library.lookupFunction<_NativeCall, _DartCall>(
     'LSP_Call',
   );
@@ -32,7 +34,23 @@ class NativeApi {
     'LSP_Free',
   );
 
-  dynamic _invoke(_DartCall fn, Map<String, dynamic> payload) {
+  /// Test seam: when set, every kernel call goes here instead of the native
+  /// library (payload as sent to LSP_Call; LSP_Start gets `'action': 'start'`),
+  /// and the *Async helpers run on the calling isolate. Never set in the app.
+  @visibleForTesting
+  static dynamic Function(Map<String, dynamic> payload)? debugTransport;
+
+  /// Test seam: awaited before each *Async call when [debugTransport] is set,
+  /// so a test can hold a call "in flight".
+  @visibleForTesting
+  static Future<void> Function()? debugGate;
+
+  dynamic _invoke(_DartCall Function() fnOf, Map<String, dynamic> payload) {
+    final t = debugTransport;
+    if (t != null) {
+      return t(fnOf == _startFn ? {'action': 'start', ...payload} : payload);
+    }
+    final fn = fnOf();
     final input = jsonEncode(payload).toNativeUtf8();
     try {
       final output = fn(input);
@@ -59,17 +77,18 @@ class NativeApi {
     if (dataDir != null) {
       input['data_dir'] = dataDir;
     }
-    return (_invoke(_start, input) as Map).cast<String, dynamic>();
+    return (_invoke(_startFn, input) as Map).cast<String, dynamic>();
   }
 
   Map<String, dynamic> status() =>
-      (_invoke(_call, {'action': 'status'}) as Map).cast<String, dynamic>();
+      (_invoke(() => _call, {'action': 'status'}) as Map)
+          .cast<String, dynamic>();
 
   // lmbp pairing, step 1: resolve the SaaS (https origin or lmbp://pair
   // link) and verify the gateway's signed metadata. Returns
   // {state: consent, consent: {saas: {...}, gateway, tenant, ...}}.
   Map<String, dynamic> pairPrepare(String urlOrLink) =>
-      (_invoke(_call, {
+      (_invoke(() => _call, {
                 'action': 'pair_prepare',
                 if (urlOrLink.startsWith('lmbp://'))
                   'link': urlOrLink
@@ -87,7 +106,7 @@ class NativeApi {
     List<String> allow, {
     int maxConcurrency = 0,
   }) =>
-      (_invoke(_call, {
+      (_invoke(() => _call, {
                 'action': 'pair_approve',
                 'pair_id': ?pairId,
                 'allow': allow,
@@ -98,11 +117,11 @@ class NativeApi {
 
   // Step 2b: the user declined (CONSENT_DENIED); nothing is sent.
   void pairDeny(String? pairId) =>
-      _invoke(_call, {'action': 'pair_deny', 'pair_id': ?pairId});
+      _invoke(() => _call, {'action': 'pair_deny', 'pair_id': ?pairId});
 
   // Per-connection management (connection_id = status connections[].id).
   Map<String, dynamic> connectionAction(String action, String id) =>
-      (_invoke(_call, {'action': action, 'connection_id': id}) as Map)
+      (_invoke(() => _call, {'action': action, 'connection_id': id}) as Map)
           .cast<String, dynamic>();
 
   /// Partial update: only the given fields change (the kernel keeps the
@@ -113,7 +132,7 @@ class NativeApi {
     int? maxConcurrency,
   }) =>
       (_invoke(
-                _call,
+                () => _call,
                 policyRequest(id, allow: allow, maxConcurrency: maxConcurrency),
               )
               as Map)
@@ -137,7 +156,7 @@ class NativeApi {
         .subtract(Duration(days: days))
         .toIso8601String();
     final r =
-        _invoke(_call, {
+        _invoke(() => _call, {
               'action': 'usage_stats',
               'group_by': groupBy,
               'filter': {'since': since},
@@ -151,7 +170,7 @@ class NativeApi {
 
   List<Map<String, dynamic>> auditList(int limit) {
     final r =
-        _invoke(_call, {
+        _invoke(() => _call, {
               'action': 'audit_list',
               'filter': {'limit': limit},
             })
@@ -162,14 +181,15 @@ class NativeApi {
   }
 
   Map<String, dynamic> pairStatus(String? pairId) =>
-      (_invoke(_call, {'action': 'pair_status', 'pair_id': ?pairId}) as Map)
+      (_invoke(() => _call, {'action': 'pair_status', 'pair_id': ?pairId})
+              as Map)
           .cast<String, dynamic>();
 
   void pairCancel(String? pairId) =>
-      _invoke(_call, {'action': 'pair_cancel', 'pair_id': ?pairId});
+      _invoke(() => _call, {'action': 'pair_cancel', 'pair_id': ?pairId});
 
   List<Map<String, dynamic>> listAdapters() {
-    final data = (_invoke(_call, {'action': 'list_adapters'}) as Map)
+    final data = (_invoke(() => _call, {'action': 'list_adapters'}) as Map)
         .cast<String, dynamic>();
     return (data['adapters'] as List)
         .map((item) => (item as Map).cast<String, dynamic>())
@@ -177,113 +197,125 @@ class NativeApi {
   }
 
   Map<String, dynamic> createAdapter(Map<String, dynamic> adapter) =>
-      (_invoke(_call, {'action': 'create_adapter', 'adapter': adapter}) as Map)
+      (_invoke(() => _call, {'action': 'create_adapter', 'adapter': adapter})
+              as Map)
           .cast<String, dynamic>();
 
   Map<String, dynamic> updateAdapter(Map<String, dynamic> adapter) =>
-      (_invoke(_call, {'action': 'update_adapter', 'adapter': adapter}) as Map)
+      (_invoke(() => _call, {'action': 'update_adapter', 'adapter': adapter})
+              as Map)
           .cast<String, dynamic>();
 
   /// Dismisses the "adapter configuration could not be decrypted" notice
   /// for good (persisted by the core, so it is not shown again).
   void ackAdapterRecovery() =>
-      _invoke(_call, {'action': 'adapter_recovery_ack'});
+      _invoke(() => _call, {'action': 'adapter_recovery_ack'});
   void deleteAdapter(String id) =>
-      _invoke(_call, {'action': 'delete_adapter', 'id': id});
+      _invoke(() => _call, {'action': 'delete_adapter', 'id': id});
 
   Map<String, dynamic> testAdapter(Map<String, dynamic> adapter) =>
-      (_invoke(_call, {'action': 'test_adapter', 'adapter': adapter}) as Map)
+      (_invoke(() => _call, {'action': 'test_adapter', 'adapter': adapter})
+              as Map)
           .cast<String, dynamic>();
 
   List<String> codexModels(String path) =>
-      (_invoke(_call, {'action': 'codex_models', 'path': path}) as List)
+      (_invoke(() => _call, {'action': 'codex_models', 'path': path}) as List)
           .cast<String>();
 
   String startCodexLogin(String path) =>
-      (_invoke(_call, {'action': 'codex_login_start', 'path': path})
+      (_invoke(() => _call, {'action': 'codex_login_start', 'path': path})
               as Map)['auth_url']
           as String;
 
   Map<String, dynamic> checkCodexLogin() =>
-      (_invoke(_call, {'action': 'codex_login_check'}) as Map)
+      (_invoke(() => _call, {'action': 'codex_login_check'}) as Map)
           .cast<String, dynamic>();
 
-  void cancelCodexLogin() => _invoke(_call, {'action': 'codex_login_cancel'});
+  void cancelCodexLogin() =>
+      _invoke(() => _call, {'action': 'codex_login_cancel'});
 
   void logoutCodex(String path) =>
-      _invoke(_call, {'action': 'codex_logout', 'path': path});
+      _invoke(() => _call, {'action': 'codex_logout', 'path': path});
 
-  void stop() => _invoke(_call, {'action': 'stop'});
+  void stop() => _invoke(() => _call, {'action': 'stop'});
 }
 
 // These closures are created outside widget State. Isolate.run otherwise can
 // retain a State (including its Timer), which cannot cross isolate boundaries.
 Future<Map<String, dynamic>> pairPrepareAsync(String urlOrLink) =>
-    Isolate.run(() => NativeApi.instance.pairPrepare(urlOrLink));
+    _offThread(() => NativeApi.instance.pairPrepare(urlOrLink));
 
 Future<Map<String, dynamic>> pairApproveAsync(
   String? pairId,
   List<String> allow,
-) => Isolate.run(() => NativeApi.instance.pairApprove(pairId, allow));
+) => _offThread(() => NativeApi.instance.pairApprove(pairId, allow));
 
 Future<void> pairDenyAsync(String? pairId) =>
-    Isolate.run(() => NativeApi.instance.pairDeny(pairId));
+    _offThread(() => NativeApi.instance.pairDeny(pairId));
 
 /// action: connection_disconnect | connection_connect | connection_revoke
 Future<Map<String, dynamic>> connectionActionAsync(String action, String id) =>
-    Isolate.run(() => NativeApi.instance.connectionAction(action, id));
+    _offThread(() => NativeApi.instance.connectionAction(action, id));
 
 Future<Map<String, dynamic>> setConnectionPolicyAsync(
   String id,
   List<String> allow,
-) =>
-    Isolate.run(() => NativeApi.instance.setConnectionPolicy(id, allow: allow));
+) => _offThread(() => NativeApi.instance.setConnectionPolicy(id, allow: allow));
 
 Future<List<Map<String, dynamic>>> usageStatsAsync(
   List<String> groupBy,
   int days,
-) => Isolate.run(() => NativeApi.instance.usageStats(groupBy, days));
+) => _offThread(() => NativeApi.instance.usageStats(groupBy, days));
 
 Future<List<Map<String, dynamic>>> auditListAsync(int limit) =>
-    Isolate.run(() => NativeApi.instance.auditList(limit));
+    _offThread(() => NativeApi.instance.auditList(limit));
 
 Future<Map<String, dynamic>> pairStatusAsync(String? pairId) =>
-    Isolate.run(() => NativeApi.instance.pairStatus(pairId));
+    _offThread(() => NativeApi.instance.pairStatus(pairId));
 
 /// Status + adapter list for the 2s poll, read off the UI thread.
 Future<(Map<String, dynamic>, List<Map<String, dynamic>>)>
-statusSnapshotAsync() => Isolate.run(
+statusSnapshotAsync() => _offThread(
   () => (NativeApi.instance.status(), NativeApi.instance.listAdapters()),
 );
 
 Future<void> pairCancelAsync(String? pairId) =>
-    Isolate.run(() => NativeApi.instance.pairCancel(pairId));
+    _offThread(() => NativeApi.instance.pairCancel(pairId));
 
 Future<Map<String, dynamic>> createAdapterAsync(Map<String, dynamic> adapter) =>
-    Isolate.run(() => NativeApi.instance.createAdapter(adapter));
+    _offThread(() => NativeApi.instance.createAdapter(adapter));
 
 Future<Map<String, dynamic>> updateAdapterAsync(Map<String, dynamic> adapter) =>
-    Isolate.run(() => NativeApi.instance.updateAdapter(adapter));
+    _offThread(() => NativeApi.instance.updateAdapter(adapter));
 
 Future<void> ackAdapterRecoveryAsync() =>
-    Isolate.run(() => NativeApi.instance.ackAdapterRecovery());
+    _offThread(() => NativeApi.instance.ackAdapterRecovery());
 Future<void> deleteAdapterAsync(String id) =>
-    Isolate.run(() => NativeApi.instance.deleteAdapter(id));
+    _offThread(() => NativeApi.instance.deleteAdapter(id));
 
 Future<Map<String, dynamic>> testAdapterAsync(Map<String, dynamic> adapter) =>
-    Isolate.run(() => NativeApi.instance.testAdapter(adapter));
+    _offThread(() => NativeApi.instance.testAdapter(adapter));
 
 Future<List<String>> codexModelsAsync(String path) =>
-    Isolate.run(() => NativeApi.instance.codexModels(path));
+    _offThread(() => NativeApi.instance.codexModels(path));
 
 Future<String> startCodexLoginAsync(String path) =>
-    Isolate.run(() => NativeApi.instance.startCodexLogin(path));
+    _offThread(() => NativeApi.instance.startCodexLogin(path));
 
 Future<Map<String, dynamic>> checkCodexLoginAsync() =>
-    Isolate.run(() => NativeApi.instance.checkCodexLogin());
+    _offThread(() => NativeApi.instance.checkCodexLogin());
 
 Future<void> cancelCodexLoginAsync() =>
-    Isolate.run(() => NativeApi.instance.cancelCodexLogin());
+    _offThread(() => NativeApi.instance.cancelCodexLogin());
 
 Future<void> logoutCodexAsync(String path) =>
-    Isolate.run(() => NativeApi.instance.logoutCodex(path));
+    _offThread(() => NativeApi.instance.logoutCodex(path));
+
+/// Native calls run in a separate isolate so they never block the UI thread;
+/// with the test transport they run here (statics are per isolate).
+Future<T> _offThread<T>(T Function() f) async {
+  if (NativeApi.debugTransport == null) return Isolate.run(f);
+  final gate = NativeApi.debugGate;
+  if (gate != null) await gate();
+  return f();
+}

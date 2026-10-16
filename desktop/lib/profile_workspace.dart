@@ -1260,6 +1260,31 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         ),
         if (provider != 'anthropic' && provider != 'legacy_ollama')
           _formField('思考强度', _reasoningSelect()),
+        if (type == 'openai_compatible' || type == 'anthropic_compatible')
+          _formField(
+            '高级选项',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Checkbox(
+                  key: const ValueKey('skip-model-probe'),
+                  state: skipModelProbe
+                      ? CheckboxState.checked
+                      : CheckboxState.unchecked,
+                  onChanged: (v) => setState(() {
+                    skipModelProbe = v == CheckboxState.checked;
+                    dirty = true;
+                  }),
+                  trailing: const Text('跳过模型列表探测'),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  '服务能正常推理但没有 /models 接口时勾选：不再用模型列表判断是否可用，方案会直接上报给已连接的服务。',
+                  style: TextStyle(color: _muted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
         if (error != null)
           Text(
             error!,

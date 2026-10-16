@@ -438,9 +438,22 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		g.serve(w, r, task, 0, req.Stream) // report what was recorded
 		return
 	}
+	hook(task, "slot-acquired")
+	// Terminal check and slot handoff in one step under task.mu: a terminal
+	// path that already decided (or finished) never sees a slot it must not
+	// release, and is never followed by task.run. Review9 P2-5.
 	task.mu.Lock()
-	task.slot = true
+	ended := task.done || task.decided
+	if !ended {
+		task.slot = true
+	}
 	task.mu.Unlock()
+	if ended {
+		ds.release()
+		w.Header().Set("X-Task-Id", taskID)
+		g.serve(w, r, task, 0, req.Stream) // report what was recorded
+		return
+	}
 	_ = g.cfg.Store.SetTaskState(context.Background(), taskID, "RUNNING")
 	run.TaskID, run.Iat, run.Exp, run.Nonce = taskID, now.Unix(), now.Add(time.Minute).Unix(), lmbp.RandomID("n_")
 	jws := lmbp.SignTaskRun(g.cfg.SigningKey, g.kid, run)
@@ -452,7 +465,15 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 // dispatch sends task.run and then the blob chunks through the flow-controlled
 // outbox (they block while the device's windows are full).
 func (g *Gateway) dispatch(t *gtask, jws string, blobs []blobData) {
-	t.sentRun.Store(true)
+	t.mu.Lock()
+	ended := t.done || t.decided
+	if !ended {
+		t.sentRun.Store(true)
+	}
+	t.mu.Unlock()
+	if ended {
+		return // decided before task.run went out: the device never runs it
+	}
 	if _, err := t.ds.out.Send(t.ctx, lmbp.Envelope{Type: lmbp.TypeTaskRun, TaskID: t.id, JWS: jws}); err != nil {
 		t.sentRun.Store(false)
 		t.failOffline(lmbp.ErrDeviceOffline, "device disconnected")

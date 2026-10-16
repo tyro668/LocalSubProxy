@@ -1440,134 +1440,140 @@ class _AdapterDialogState extends State<AdapterDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final creating = widget.existing == null;
-    return AppDialog(
-      title: Text(creating ? '添加适配器' : '编辑适配器'),
-      maxWidth: 540,
-      content: DefaultTextStyle(
-        style: theme.typography.small.copyWith(
-          color: theme.colorScheme.foreground,
-        ),
-        child: SizedBox(
-          width: 460,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LabeledField(
-                  label: '类型',
-                  child: Select<String>(
-                    value: type,
-                    enabled: creating,
-                    constraints: const BoxConstraints(minWidth: 460),
-                    placeholder: const Text('选择类型'),
-                    itemBuilder: (context, item) =>
-                        Text(adapterTypeLabel(item)),
-                    onChanged: creating
-                        ? (value) {
-                            if (value == null) return;
-                            setState(() => type = value);
-                          }
-                        : null,
-                    popup: (context) => const SelectPopup(
-                      items: SelectItemList(
-                        children: [
-                          SelectItemButton(
-                            value: 'codex_app_server',
-                            child: Text('OpenAI Codex（订阅）'),
-                          ),
-                          SelectItemButton(
-                            value: 'openai_compatible',
-                            child: Text('OpenAI 兼容协议'),
-                          ),
-                          SelectItemButton(
-                            value: 'anthropic_compatible',
-                            child: Text('Anthropic 兼容协议'),
-                          ),
-                        ],
+    // While saving, the dialog cannot be dismissed (X, Esc or barrier):
+    // the save would finish unseen and the list would not refresh.
+    return PopScope(
+      canPop: !saving,
+      child: AppDialog(
+        closeEnabled: !saving,
+        title: Text(creating ? '添加适配器' : '编辑适配器'),
+        maxWidth: 540,
+        content: DefaultTextStyle(
+          style: theme.typography.small.copyWith(
+            color: theme.colorScheme.foreground,
+          ),
+          child: SizedBox(
+            width: 460,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  LabeledField(
+                    label: '类型',
+                    child: Select<String>(
+                      value: type,
+                      enabled: creating,
+                      constraints: const BoxConstraints(minWidth: 460),
+                      placeholder: const Text('选择类型'),
+                      itemBuilder: (context, item) =>
+                          Text(adapterTypeLabel(item)),
+                      onChanged: creating
+                          ? (value) {
+                              if (value == null) return;
+                              setState(() => type = value);
+                            }
+                          : null,
+                      popup: (context) => const SelectPopup(
+                        items: SelectItemList(
+                          children: [
+                            SelectItemButton(
+                              value: 'codex_app_server',
+                              child: Text('OpenAI Codex（订阅）'),
+                            ),
+                            SelectItemButton(
+                              value: 'openai_compatible',
+                              child: Text('OpenAI 兼容协议'),
+                            ),
+                            SelectItemButton(
+                              value: 'anthropic_compatible',
+                              child: Text('Anthropic 兼容协议'),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const Gap(14),
-                LabeledField(
-                  label: '适配器 ID',
-                  child: TextField(
-                    controller: id,
-                    enabled: creating,
-                    placeholder: const Text('例如 local-codex'),
-                  ),
-                ),
-                const Gap(14),
-                LabeledField(
-                  label: '显示名称',
-                  child: TextField(
-                    controller: name,
-                    placeholder: const Text('在列表中显示的名称'),
-                  ),
-                ),
-                const Gap(14),
-                if (type == 'codex_app_server')
-                  LabeledField(
-                    label: '官方 Codex CLI 路径',
-                    child: TextField(
-                      controller: codex,
-                      placeholder: const Text('codex'),
-                    ),
-                  )
-                else
-                  LabeledField(
-                    label: 'API 根地址（HTTPS 或本机 HTTP）',
-                    child: TextField(
-                      controller: url,
-                      placeholder: const Text('https://host/v1'),
-                    ),
-                  ),
-                if (type == 'openai_compatible' ||
-                    type == 'anthropic_compatible') ...[
                   const Gap(14),
                   LabeledField(
-                    label: widget.existing?['has_api_key'] == true
-                        ? 'API Key（留空保留原密钥）'
-                        : 'API Key',
+                    label: '适配器 ID',
                     child: TextField(
-                      controller: apiKey,
-                      placeholder: const Text('sk-...'),
-                      features: const [InputFeature.passwordToggle()],
+                      controller: id,
+                      enabled: creating,
+                      placeholder: const Text('例如 local-codex'),
                     ),
                   ),
-                ],
-                const Gap(14),
-                LabeledField(
-                  label: '允许的模型 ID（逗号分隔）',
-                  child: TextField(
-                    controller: models,
-                    placeholder: const Text('gpt-4o, gpt-4o-mini'),
+                  const Gap(14),
+                  LabeledField(
+                    label: '显示名称',
+                    child: TextField(
+                      controller: name,
+                      placeholder: const Text('在列表中显示的名称'),
+                    ),
                   ),
-                ),
-                const Gap(8),
-                if (error != null) ...[
+                  const Gap(14),
+                  if (type == 'codex_app_server')
+                    LabeledField(
+                      label: '官方 Codex CLI 路径',
+                      child: TextField(
+                        controller: codex,
+                        placeholder: const Text('codex'),
+                      ),
+                    )
+                  else
+                    LabeledField(
+                      label: 'API 根地址（HTTPS 或本机 HTTP）',
+                      child: TextField(
+                        controller: url,
+                        placeholder: const Text('https://host/v1'),
+                      ),
+                    ),
+                  if (type == 'openai_compatible' ||
+                      type == 'anthropic_compatible') ...[
+                    const Gap(14),
+                    LabeledField(
+                      label: widget.existing?['has_api_key'] == true
+                          ? 'API Key（留空保留原密钥）'
+                          : 'API Key',
+                      child: TextField(
+                        controller: apiKey,
+                        placeholder: const Text('sk-...'),
+                        features: const [InputFeature.passwordToggle()],
+                      ),
+                    ),
+                  ],
+                  const Gap(14),
+                  LabeledField(
+                    label: '允许的模型 ID（逗号分隔）',
+                    child: TextField(
+                      controller: models,
+                      placeholder: const Text('gpt-4o, gpt-4o-mini'),
+                    ),
+                  ),
                   const Gap(8),
-                  Text(
-                    error!,
-                    style: TextStyle(color: theme.colorScheme.destructive),
-                  ).small(),
+                  if (error != null) ...[
+                    const Gap(8),
+                    Text(
+                      error!,
+                      style: TextStyle(color: theme.colorScheme.destructive),
+                    ).small(),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
+        actions: [
+          OutlineButton(
+            onPressed: saving ? null : () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          PrimaryButton(
+            onPressed: saving ? null : save,
+            child: Text(saving ? '保存中…' : '保存'),
+          ),
+        ],
       ),
-      actions: [
-        OutlineButton(
-          onPressed: saving ? null : () => Navigator.pop(context, false),
-          child: const Text('取消'),
-        ),
-        PrimaryButton(
-          onPressed: saving ? null : save,
-          child: Text(saving ? '保存中…' : '保存'),
-        ),
-      ],
     );
   }
 }

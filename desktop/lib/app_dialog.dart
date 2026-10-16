@@ -13,6 +13,7 @@ class AppDialog extends StatelessWidget {
     this.maxWidth = 440,
     this.scrollContent = true,
     this.onClose,
+    this.closeEnabled = true,
   });
 
   final Widget title;
@@ -26,6 +27,9 @@ class AppDialog extends StatelessWidget {
 
   /// Defaults to popping the dialog route with no result.
   final VoidCallback? onClose;
+
+  /// false: the close (X) button is disabled, e.g. while a save is running.
+  final bool closeEnabled;
 
   static const titleColor = Color(0xFF0F172A);
   static const closeColor = Color(0xFF64748B);
@@ -90,8 +94,9 @@ class AppDialog extends StatelessWidget {
                       size: 20,
                       color: closeColor,
                     ),
-                    onPressed:
-                        onClose ?? () => Navigator.of(context).maybePop(),
+                    onPressed: !closeEnabled
+                        ? null
+                        : onClose ?? () => Navigator.of(context).maybePop(),
                   ),
                 ],
               ),

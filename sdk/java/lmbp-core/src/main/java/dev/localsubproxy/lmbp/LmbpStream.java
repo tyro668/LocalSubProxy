@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit;
  */
 public final class LmbpStream implements Iterator<Map<String, Object>>, Iterable<Map<String, Object>>, AutoCloseable {
   static final Object EOF = new Object();
+  /** Put by close(): wakes a reader blocked in take(); the stream then ends. */
+  private static final Object CLOSED = new Object();
   private static final int QUEUE = 64;
 
   final HttpRequest req;
@@ -70,7 +72,13 @@ public final class LmbpStream implements Iterator<Map<String, Object>>, Iterable
     if (closed && o != EOF) throw new IOException("stream closed by the consumer");
   }
 
-  void end() { try { put(EOF); } catch (IOException e) { /* consumer gone */ } }
+  void end() {
+    try { put(EOF); } catch (IOException e) { /* consumer gone */ }
+    producerEnded = true;
+  }
+
+  /** Test observation: the engine side has finished producing. */
+  volatile boolean producerEnded;
 
   // ---- consumer side ----
   @Override public Iterator<Map<String, Object>> iterator() { return this; }
@@ -102,7 +110,9 @@ public final class LmbpStream implements Iterator<Map<String, Object>>, Iterable
       event(ev);
     }
     if (next != null || finished) return;
+    if (closed) { finished = true; return; } // explicit terminal state: never wait on a closed stream
     Object o = take();
+    if (o == CLOSED) { finished = true; return; }
     if (o == EOF) {
       if (status >= 400 || (status != 0 && status != 200 && pending.size() > 0)) fail(errorFromBody());
       else fail(new IncompleteStreamException(taskId, lastEventId));
@@ -159,6 +169,9 @@ public final class LmbpStream implements Iterator<Map<String, Object>>, Iterable
     if (closed) return;
     closed = true;
     req.abort();
+    // Clearing may drop an EOF the producer already put; once it has exited nothing else
+    // arrives. The closed flag ends the stream, and CLOSED wakes a reader blocked in take().
     q.clear();
+    q.offer(CLOSED);
   }
 }

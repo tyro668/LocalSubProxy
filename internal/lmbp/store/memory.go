@@ -150,9 +150,15 @@ func (m *Memory) SetDeviceE2EEKey(_ context.Context, id, stmt string) error {
 
 func (m *Memory) GetIdempotency(_ context.Context, tenantID, ownerID, key string) (Idempotency, error) {
 	defer m.lock()()
-	i, ok := m.idem[[3]string{tenantID, ownerID, key}]
+	k := [3]string{tenantID, ownerID, key}
+	i, ok := m.idem[k]
 	if !ok {
 		return i, ErrNotFound
+	}
+	if _, live := m.tasks[i.TaskID]; !live {
+		// Never "key exists, task does not": a dangling record reads as absent.
+		delete(m.idem, k)
+		return Idempotency{}, ErrNotFound
 	}
 	return i, nil
 }
@@ -164,8 +170,11 @@ func (m *Memory) CreateTask(_ context.Context, t Task, i *Idempotency) error {
 	}
 	if i != nil {
 		k := [3]string{i.TenantID, i.OwnerID, i.Key}
-		if _, ok := m.idem[k]; ok {
-			return ErrExists
+		if old, ok := m.idem[k]; ok {
+			if _, live := m.tasks[old.TaskID]; live {
+				return ErrExists
+			}
+			// dangling (its task is gone): the key is free again
 		}
 		m.idem[k] = *i
 	}
@@ -244,6 +253,12 @@ func (m *Memory) Purge(_ context.Context, cutoff time.Time) (int, error) {
 			delete(m.tasks, id)
 			delete(m.events, id)
 			n++
+		}
+	}
+	// Idempotency records go with their task: never a key without its task.
+	for k, i := range m.idem {
+		if _, live := m.tasks[i.TaskID]; !live {
+			delete(m.idem, k)
 		}
 	}
 	for h, d := range m.auths {

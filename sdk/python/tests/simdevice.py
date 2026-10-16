@@ -32,7 +32,7 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None, manual=None):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
@@ -80,9 +80,13 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
             await ws.send(json.dumps({"v": 1, "type": typ, "task_id": run["task_id"], "seq": seq,
                                       "data": {**extra, "e2ee": E.seal_chunk(k, req["rid"], typ, seq, json.dumps(v).encode())}}))
 
+    listeners = []  # manual mode: per-task handlers fed every envelope
+
     async def loop():
         async for raw in ws:
             e = json.loads(raw)
+            for fn in list(listeners):
+                fn(e)
             if e["type"] == "ping":
                 await ws.send(json.dumps({"v": 1, "type": "pong", "id": e.get("id")}))
             if e["type"] == "blob.chunk" and e.get("task_id") in pending:
@@ -105,6 +109,9 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
             run = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
             if on_run:
                 on_run(run)  # tests inspect the signed task.run payload
+            if manual:
+                manual(run, ws, listeners)
+                continue
             if run.get("e2ee"):
                 pending[run["task_id"]] = (run, [])
                 continue

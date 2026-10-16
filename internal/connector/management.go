@@ -189,7 +189,7 @@ func (x *Connector) CreateAdapter(a AdapterConfig) (AdapterView, error) {
 	}
 	x.mu.Unlock()
 	defer x.muts.Done()
-	if err := validateAdapter(&a); err != nil {
+	if err := validateSavedAdapter(&a); err != nil {
 		return AdapterView{}, err
 	}
 	x.mu.Lock()
@@ -349,7 +349,7 @@ func (x *Connector) updateAdapter(id string, build func(AdapterConfig) (AdapterC
 		a.IsDefault = true
 	}
 	x.mu.Unlock()
-	if err := validateAdapter(&a); err != nil {
+	if err := validateSavedAdapter(&a); err != nil {
 		return AdapterView{}, err
 	}
 	if mutHook != nil {

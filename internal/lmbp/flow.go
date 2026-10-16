@@ -18,6 +18,13 @@ import (
 
 var ErrOutboxClosed = errors.New("outbox closed")
 
+// ErrTaskForgotten: the task was dropped with Forget; its sends fail and its
+// state is never re-created.
+var ErrTaskForgotten = errors.New("task forgotten")
+
+// maxForgotten bounds the remembered forgotten task ids (oldest dropped first).
+const maxForgotten = 4096
+
 // ErrFrameTooLarge: the final encoded frame exceeds MaxFrameBytes. Such a
 // frame is never enqueued (no seq, no credit); the sender must split or fail.
 var ErrFrameTooLarge = errors.New("encoded frame exceeds max_frame_bytes")
@@ -58,9 +65,14 @@ type Outbox struct {
 	writeGen uint64     // generation of write (AttachOwned / Detach)
 	wmu      sync.Mutex // serializes flush so frames go out in seq order
 	closed   bool
+	// forgotten: tasks dropped with Forget (bounded FIFO). A send still
+	// waiting for credit, or arriving later, fails instead of re-creating
+	// state that no retransmit list covers. Review9 P2-7.
+	forgotten     map[string]struct{}
+	forgottenFIFO []string
 }
 
-func NewOutbox() *Outbox { return &Outbox{tasks: map[string]*outTask{}} }
+func NewOutbox() *Outbox { return &Outbox{tasks: map[string]*outTask{}, forgotten: map[string]struct{}{}} }
 
 // SetFlow installs the peer's advertised windows (nil disables flow control).
 func (o *Outbox) SetFlow(f *Flow) {
@@ -178,6 +190,12 @@ func (o *Outbox) wakeLocked() {
 			close(w.ch)
 			continue
 		}
+		if _, gone := o.forgotten[w.task]; gone {
+			o.waiters = o.waiters[1:]
+			w.err = ErrTaskForgotten
+			close(w.ch)
+			continue
+		}
 		t := o.task(w.task)
 		seq := t.nextSeq + 1
 		raw := w.mk(seq)
@@ -224,6 +242,10 @@ func (o *Outbox) SendFunc(ctx context.Context, taskID string, build func(seq int
 	if o.closed {
 		o.mu.Unlock()
 		return 0, ErrOutboxClosed
+	}
+	if _, gone := o.forgotten[taskID]; gone {
+		o.mu.Unlock()
+		return 0, ErrTaskForgotten
 	}
 	w := &waiter{task: taskID, mk: mk, ch: make(chan struct{})}
 	o.waiters = append(o.waiters, w)
@@ -316,13 +338,37 @@ func (o *Outbox) Tasks() []string {
 	return out
 }
 
-// Forget drops a finished task's state.
+// Forget drops a task's state for good: its credit is released, a send
+// still waiting for credit fails, and later sends for it fail too, so no
+// unreachable state (paused, outside any retransmit list) is re-created.
 func (o *Outbox) Forget(taskID string) {
 	o.mu.Lock()
 	if t := o.tasks[taskID]; t != nil {
 		o.connUsed -= t.used
 		delete(o.tasks, taskID)
 	}
+	if _, ok := o.forgotten[taskID]; !ok {
+		if o.forgotten == nil {
+			o.forgotten = map[string]struct{}{}
+		}
+		o.forgotten[taskID] = struct{}{}
+		o.forgottenFIFO = append(o.forgottenFIFO, taskID)
+		if len(o.forgottenFIFO) > maxForgotten {
+			delete(o.forgotten, o.forgottenFIFO[0])
+			o.forgottenFIFO = o.forgottenFIFO[1:]
+		}
+	}
+	// Fail this task's queued sends wherever they are in the queue.
+	kept := o.waiters[:0]
+	for _, w := range o.waiters {
+		if w.task == taskID {
+			w.err = ErrTaskForgotten
+			close(w.ch)
+			continue
+		}
+		kept = append(kept, w)
+	}
+	o.waiters = kept
 	o.wakeLocked()
 	o.mu.Unlock()
 }
