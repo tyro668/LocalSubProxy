@@ -582,10 +582,15 @@ func (x *Connector) linkStatusLocked(l *link) map[string]any {
 		state = "revoked"
 	case l.cfg.Paused:
 		state = "disconnected"
-	case l.remoteOK && l.gatewayOK:
+	case l.gatewayOK: // the LMBP session alone decides; remote discovery is display-only
 		state = "online"
 	case l.cancel == nil && l.lastErr != "":
 		state = "error"
+	}
+	// discovery: optional /.well-known/localsubproxy probe of the SaaS origin (RECOMMENDED, not required).
+	discovery := "none"
+	if l.cfg.RemoteURL != "" {
+		discovery = map[bool]string{true: "ok", false: "unavailable"}[l.remoteOK]
 	}
 	allow := []string{}
 	maxc := x.linkCapLocked(l)
@@ -595,8 +600,8 @@ func (x *Connector) linkStatusLocked(l *link) map[string]any {
 		allow = append(allow, "*")
 	}
 	return map[string]any{"id": l.cfg.ID, "saas_name": id.SaaSName, "issuer": id.Issuer, "tenant": id.Tenant, "device_id": id.DeviceID,
-		"remote_url": l.cfg.RemoteURL, "server_url": id.GatewayURL, "state": state, "connected": l.remoteOK && l.gatewayOK,
-		"remote_connected": l.remoteOK, "gateway_connected": l.gatewayOK, "transport": transport, "e2ee": id.E2EEKey != "",
+		"remote_url": l.cfg.RemoteURL, "server_url": id.GatewayURL, "state": state, "connected": l.gatewayOK && !l.revoked && !l.cfg.Paused,
+		"remote_connected": l.remoteOK, "discovery": discovery, "gateway_connected": l.gatewayOK, "transport": transport, "e2ee": id.E2EEKey != "",
 		"running_tasks": x.linkRunningLocked(l.cfg.ID), "max_concurrency": maxc, "allow": allow, "paused": l.cfg.Paused, "last_error": l.lastErr}
 }
 

@@ -332,3 +332,50 @@ String? schemeNameError(
   }
   return null;
 }
+
+/// Overall state of the paired connections, for the connection dialog
+/// header. Derived only from per-connection `state` so it never contradicts
+/// the status bar (which uses the same `connected` flags).
+enum ConnSummaryKind {
+  online,
+  partial,
+  connecting,
+  disconnected,
+  revoked,
+  error,
+  unknown,
+  none,
+}
+
+class ConnSummary {
+  const ConnSummary(this.kind, this.title);
+  final ConnSummaryKind kind;
+  final String title;
+}
+
+ConnSummary connectionSummary(DesktopStatus ds) {
+  final total = ds.total;
+  if (total == 0) return const ConnSummary(ConnSummaryKind.none, '未连接');
+  if (ds.stale) return const ConnSummary(ConnSummaryKind.unknown, '状态未知');
+  final online = ds.online;
+  String agg(String s) => total > 1 ? '$s（$online/$total 在线）' : s;
+  if (online == total) return ConnSummary(ConnSummaryKind.online, agg('已连接'));
+  if (online > 0) return ConnSummary(ConnSummaryKind.partial, agg('部分在线'));
+  final states = ds.connections.map((c) => c.state).toSet();
+  if (states.contains('connecting')) {
+    return ConnSummary(ConnSummaryKind.connecting, agg('连接中'));
+  }
+  if (states.contains('error')) {
+    return ConnSummary(ConnSummaryKind.error, agg('连接异常'));
+  }
+  if (states.length == 1 && states.single == 'revoked') {
+    return ConnSummary(ConnSummaryKind.revoked, agg('已被吊销'));
+  }
+  if (states.length == 1 && states.single == 'disconnected') {
+    return ConnSummary(ConnSummaryKind.disconnected, agg('已断开'));
+  }
+  if (states.contains('unknown')) {
+    return ConnSummary(ConnSummaryKind.unknown, agg('状态未知'));
+  }
+  return ConnSummary(ConnSummaryKind.disconnected, agg('未连接'));
+}

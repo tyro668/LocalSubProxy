@@ -775,15 +775,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             Row(
               children: [
-                Expanded(
-                  child: _StepHeader(
-                    icon: LucideIcons.circleCheck,
-                    iconColor: theme.colorScheme.chart2,
-                    title: ds.total > 1
-                        ? '已成功连接（${ds.online}/${ds.total} 在线）'
-                        : '已成功连接',
-                  ),
-                ),
+                Expanded(child: ConnectionSummaryHeader(status: ds)),
                 Tooltip(
                   tooltip: (context) =>
                       const TooltipContainer(child: Text('刷新')),
@@ -900,9 +892,11 @@ class _HomePageState extends State<HomePage> {
         trailingAlignment: Alignment.center,
         leading: _TypeMark(type),
         title: Text(name).medium().singleLine().ellipsis,
-        subtitle: Text(
-          subtitle.toString(),
-        ).small().muted().singleLine().ellipsis,
+        subtitle: Text(subtitle.toString())
+            .small()
+            .muted()
+            .singleLine()
+            .ellipsis,
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1063,6 +1057,28 @@ class _StepRail extends StatelessWidget {
 }
 
 /// Icon tile + title + description header for each connect step.
+/// Connection dialog header: icon, colour and wording follow the actual
+/// per-connection state (same source as the status bar), not "paired".
+class ConnectionSummaryHeader extends StatelessWidget {
+  const ConnectionSummaryHeader({super.key, required this.status});
+  final DesktopStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final sum = connectionSummary(status);
+    final (IconData icon, Color color) = switch (sum.kind) {
+      ConnSummaryKind.online => (LucideIcons.circleCheck, cs.chart2),
+      ConnSummaryKind.partial => (LucideIcons.circleAlert, cs.chart4),
+      ConnSummaryKind.connecting => (LucideIcons.loader, cs.mutedForeground),
+      ConnSummaryKind.error => (LucideIcons.triangleAlert, cs.destructive),
+      ConnSummaryKind.revoked => (LucideIcons.ban, cs.destructive),
+      _ => (LucideIcons.unplug, cs.mutedForeground),
+    };
+    return _StepHeader(icon: icon, iconColor: color, title: sum.title);
+  }
+}
+
 class _StepHeader extends StatelessWidget {
   const _StepHeader({
     required this.icon,
