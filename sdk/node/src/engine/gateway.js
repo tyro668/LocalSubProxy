@@ -51,6 +51,7 @@ export class Gateway {
     this.tasks = new Map();       // task id → Task hub
     this.jtis = new Map();
     this.fails = new Map();
+    this.pending = new Map();
     this.wss = new WebSocketServer({ noServer: true, maxPayload: L.MAX_FRAME_BYTES, perMessageDeflate: false,
       handleProtocols: (ps) => (ps.has(L.SUBPROTOCOL) ? L.SUBPROTOCOL : false) });
   }
@@ -190,6 +191,7 @@ export class Gateway {
     const d = { codeHash: L.shaHex(dc), userCode: userCode(), tenant: ps.tenant, pub, name: ps.device_name || '', status: 'pending',
       expires: Date.now() + this.cfg.codeTTL * 1000, interval: 2, lastPoll: 0, deviceID: '', owner: '' };
     this.store.putDeviceAuth(d);
+    this.pending.set(d.codeHash, d);
     res.setHeader('Cache-Control', 'no-store');
     return json(res, 200, { device_code: dc, user_code: d.userCode, expires_in: this.cfg.codeTTL, interval: d.interval });
   }
@@ -238,6 +240,7 @@ export class Gateway {
       this.store.putDevice({ id: d.deviceID, tenant, owner, name: d.name, pub: d.pub, status: 'active', created: new Date(), e2eeKey: '' });
     }
     this.store.putDeviceAuth(d);
+    this.pending.delete(d.codeHash);
     return d;
   }
 
@@ -305,7 +308,13 @@ export class Gateway {
       if (s) Object.assign(item, { online: true, models: [...s.models], model_capabilities: { ...s.modelCaps }, ...(Object.keys(s.modelNames || {}).length ? { model_names: { ...s.modelNames } } : {}), capabilities: [...s.caps], max_concurrency: s.maxConc });
       return item;
     });
-    return json(res, 200, { devices: out });
+    const now = Date.now(), pending_pairings = [];
+    for (const [h] of this.pending) {
+      const d = this.store.getDeviceAuth(h);
+      if (!d || d.status !== 'pending' || now > d.expires) { this.pending.delete(h); continue; }
+      if (d.tenant === a.t.id) pending_pairings.push({ device_name: d.name, jkt: L.thumbprint(d.pub), expires_at: new Date(d.expires).toISOString().replace(/\.\d+Z$/, 'Z') });
+    }
+    return json(res, 200, { devices: out, pending_pairings });
   }
 
   revoke(req, res, err, id) {

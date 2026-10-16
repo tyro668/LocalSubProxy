@@ -93,17 +93,22 @@ for (const impl of impls) {
     await page.waitForSelector('#app:not(.hidden)');
     await page.waitForFunction(() => document.getElementById('pairLink').textContent.startsWith('lmbp://pair'));
     const link = await page.textContent('#pairLink');
-    if (!(await page.$('#qr img'))) throw new Error('no QR code');
-    ok('logged in; pair link + QR: ' + link);
+    if (await page.$('#qr')) throw new Error('QR code should not be rendered');
+    if (!(await page.$('#copyLink')) || !(await page.$('#copyCmd'))) throw new Error('missing copy buttons');
+    if (!(await page.$('#pairModal.hidden'))) throw new Error('pair modal should be hidden before pairing request');
+    if (!(await page.$('.composer-bar #model'))) throw new Error('model selector should be inside .composer-bar');
+    ok('logged in; pair link + copy buttons (no QR, modal hidden): ' + link);
 
     // pair the real connector through the page
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), `lmbp-dev-${impl}-`));
     con = startConnector(dir, link, `http://127.0.0.1:${modelPort}`);
     const code = await until(async () => (con.out.match(/pairing code: ([A-Z]{4}-[A-Z]{4})/) || [])[1], 15000, 'pairing code');
     const jkt = (con.out.match(/jkt=([A-Za-z0-9_-]{43})/) || [])[1];
+    await page.waitForSelector('#pairModal:not(.hidden)', { timeout: 10000 });
     await page.fill('#code', code); if (jkt) await page.fill('#jkt', jkt);
     await page.click('#approve');
     await page.waitForFunction(() => document.getElementById('pairMsg').textContent.includes('已批准'));
+    await page.waitForSelector('#pairModal.hidden', { timeout: 5000 });
     await page.waitForSelector('#devices .badge.on', { timeout: 20000 });
     await page.waitForFunction(() => [...document.querySelectorAll('#model option')].some((o) => o.value), null, { timeout: 15000 });
     await page.screenshot({ path: path.join(shots, `chat-${impl}-paired.png`) });
@@ -157,12 +162,13 @@ for (const impl of impls) {
     // CONSENT_DENIED: a second (fake) device asks to pair, SaaS user denies, then tries to approve
     const pub = crypto.generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
     const au = await (await fetch(base + '/lmbp/v1/device/authorize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tenant: 'acme', public_key: pub, device_name: 'intruder' }) })).json();
+    await page.waitForSelector('#pairModal:not(.hidden)', { timeout: 10000 });
     await page.fill('#code', au.user_code); await page.click('#deny');
     await page.waitForFunction(() => document.getElementById('pairMsg').textContent.includes('已拒绝'));
     await page.fill('#code', au.user_code); await page.click('#approve');
     await page.waitForFunction(() => document.getElementById('pairMsg').textContent.includes('配对未获同意'));
-    await page.locator('#pairMsg').scrollIntoViewIfNeeded();
     ok('CONSENT_DENIED shown: ' + (await page.textContent('#pairMsg')));
+    await page.click('#closePairModal');
 
     // DEVICE_OFFLINE: stop the connector, wait for the gateway to drop it, send again
     con.kill('SIGKILL');

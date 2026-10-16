@@ -10,9 +10,9 @@
 
 功能：
 
-- **配对状态**和**配对新设备**：生成 `lmbp://pair` 链接与二维码，复制 Connector 命令；输入设备显示的 `user_code`（可选 `jkt` 强校验）后点“批准”或“拒绝”。页面带 `?user_code=…&jkt=…` 打开时会自动填入，所以租户档案的 `pairing_uri` 可以直接指向 `<网关>/chat`。
-- **我的设备**：在线/离线/已吊销，每台设备的模型与能力，吊销按钮。每 4 秒刷新一次。
-- **聊天**：选择模型，通过 `/v1/chat/completions` 的 SSE 流式输出；多轮历史；“停止”会中断请求，网关随即向设备发送 `task.cancel`；“添加图片”以 `data:` URI 发送（超过 16 KiB 时网关走 blob 分块）。
+- **配对状态**和**配对新设备**：生成 `lmbp://pair` 链接并提供复制链接与复制 CLI 命令两个按钮；当桌面端发起配对请求（或页面带 `?user_code=…&jkt=…` 打开）时，自动弹出居中配对码输入弹窗，输入 `user_code` 批准成功后弹窗自动消失。
+- **我的设备**：显示在线/离线设备及每台设备的模型与能力、吊销按钮；已吊销设备默认折叠在底部，可点击展开或收起查看。
+- **聊天**：在对话输入框底部发送按钮前选择模型，通过 `/v1/chat/completions` 的 SSE 流式输出；多轮历史；“停止”会中断请求，网关随即向设备发送 `task.cancel`；“添加图片”以 `data:` URI 发送（超过 16 KiB 时网关走 blob 分块）。
 - 每条回答显示首字耗时、总耗时、输入/输出 tokens、tok/s、`finish_reason` 与 `task_id`。
 - 错误按错误码显示中文说明（`DEVICE_OFFLINE`、`CONSENT_DENIED`、`MODEL_NOT_FOUND`、`DEVICE_BUSY`、`CAPABILITY_UNSUPPORTED`、`PAYLOAD_TOO_LARGE`、`UNAUTHENTICATED` 等）。
 

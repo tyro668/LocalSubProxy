@@ -10,6 +10,9 @@
   let attachment = null;      // {dataURL, name, size, type}
   let busy = null;            // AbortController of the running request
   let pairLink = '', issuer = '';
+  let showRevoked = false;    // whether revoked devices list is expanded
+  let lastPending = [];       // latest pending_pairings from /lmbp/v1/tenant/devices
+  const dismissedJkts = new Set();
   const initialEmpty = $('empty') ? $('empty').cloneNode(true) : null;
 
   const ERR = {
@@ -94,17 +97,67 @@
     } catch (e) { issuer = location.origin; toast('读取网关元数据失败：' + describe(e.code, e.message), true); }
     pairLink = 'lmbp://pair?v=1&gateway=' + encodeURIComponent(issuer) + '&tenant=' + encodeURIComponent(auth.tenant) + '&remote=' + encodeURIComponent(location.origin);
     $('pairLink').textContent = pairLink;
-    $('qr').textContent = '';
-    if (window.qrcode) {
-      const q = window.qrcode(0, 'M'); q.addData(pairLink); q.make();
-      const img = new Image(); img.src = q.createDataURL(4, 2); img.alt = '配对链接二维码'; $('qr').appendChild(img);
-    }
+    if ($('code').value.trim()) openPairModal(null);
   }
   const cmd = () => `localsubproxy connector -pair-link '${pairLink}' -adapter-id local -ollama-url http://127.0.0.1:11434 -models <模型名> -capabilities vision`;
   const copy = (t, what) => navigator.clipboard?.writeText(t).then(() => toast('已复制' + what), () => toast('复制失败', true));
   $('copyLink').onclick = () => copy(pairLink, '配对链接');
   $('copyCmd').onclick = () => copy(cmd(), ' Connector 命令');
   function pairMsg(text, bad) { const d = $('pairMsg'); d.className = bad ? 'msg-err' : 'msg-ok'; d.textContent = text; }
+
+  function updatePairDesc(info) {
+    const desc = $('pairReqDesc');
+    if (!desc) return;
+    if (info && info.device_name) {
+      desc.textContent = `检测到来自设备「${info.device_name}」的配对请求，请输入桌面端显示的 8 位配对码进行确认。`;
+    } else {
+      desc.textContent = '检测到桌面端发起配对请求，请输入桌面端显示的 8 位配对码进行确认。';
+    }
+  }
+  function openPairModal(info) {
+    updatePairDesc(info);
+    const modal = $('pairModal');
+    if (modal.classList.contains('hidden')) {
+      modal.classList.remove('hidden');
+      setTimeout(() => $('code')?.focus(), 20);
+    }
+  }
+  function closePairModal() {
+    for (const p of lastPending) if (p.jkt) dismissedJkts.add(p.jkt);
+    $('pairModal').classList.add('hidden');
+  }
+  $('closePairModal').onclick = closePairModal;
+  $('openPairModal').onclick = () => {
+    $('pairMsg').textContent = ''; $('pairMsg').className = '';
+    openPairModal(lastPending[0] || null);
+  };
+  $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); decide(false); } });
+  $('jkt').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); decide(false); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('pairModal').classList.contains('hidden')) closePairModal(); });
+
+  function renderPending(list) {
+    lastPending = list;
+    const activeJkts = new Set(list.map((p) => p.jkt).filter(Boolean));
+    for (const j of [...dismissedJkts]) if (!activeJkts.has(j)) dismissedJkts.delete(j);
+    const banner = $('pendingBanner');
+    if (banner) {
+      banner.classList.toggle('hidden', !list.length);
+      if (list.length) {
+        const nm = list[0].device_name;
+        $('pendingBannerText').textContent = nm ? `设备「${nm}」请求配对` : `收到 ${list.length} 个设备配对请求`;
+      }
+    }
+    const unseen = list.find((p) => !p.jkt || !dismissedJkts.has(p.jkt));
+    if (unseen) {
+      if ($('pairModal').classList.contains('hidden')) {
+        $('pairMsg').textContent = ''; $('pairMsg').className = '';
+        openPairModal(unseen);
+      } else {
+        updatePairDesc(unseen);
+      }
+    }
+  }
+
   async function decide(deny) {
     const user_code = $('code').value.trim();
     if (!user_code) return pairMsg('请输入设备上显示的配对码', true);
@@ -114,6 +167,12 @@
       const r = await api('POST', '/lmbp/v1/tenant/devices/approvals', body);
       pairMsg(r.status === 'approved' ? `已批准：${r.device_name || '设备'}（${r.device_id}），等待设备上线…` : '已拒绝该配对请求，设备将收到 CONSENT_DENIED');
       $('code').value = ''; $('jkt').value = ''; history_replaceParams();
+      if (r.status === 'approved') {
+        if (r.jkt) dismissedJkts.add(r.jkt);
+        toast(`已批准配对：${r.device_name || r.device_id}`);
+        $('pairModal').classList.add('hidden');
+      }
+      refresh();
       setTimeout(refresh, 1500);
     } catch (e) {
       const extra = { 404: '（配对码无效、已过期或已使用）', 409: '（jkt 与该配对请求的设备密钥不一致）', 429: '（失败次数过多，请一分钟后再试）' }[e.status] || '';
@@ -129,25 +188,19 @@
     if (!auth) return;
     try {
       const [d, m] = await Promise.all([api('GET', '/lmbp/v1/tenant/devices'), api('GET', '/v1/models')]);
+      renderPending(d.pending_pairings || []);
       renderDevices(d.devices || []); renderModels(m.data || []);
     } catch (e) { if (e.status !== 401) $('pairState').textContent = '加载失败：' + describe(e.code, e.message); }
   }
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
-  function renderDevices(devs) {
-    const active = devs.filter((d) => d.status === 'active'), online = active.filter((d) => d.online);
-    $('devCount').textContent = String(active.length);
-    const ps = $('pairState'); ps.textContent = '';
-    if (!active.length) ps.append(el('span', 'badge off', '未配对'), document.createTextNode(' 还没有已配对的设备，请先在下方配对。'));
-    else ps.append(el('span', 'badge ' + (online.length ? 'on' : 'off'), online.length ? '已连接' : '离线'),
-      document.createTextNode(` 已配对 ${active.length} 台，在线 ${online.length} 台`));
-    const box = $('devices'); box.textContent = '';
-    if (!devs.length) box.append(el('div', 'meta', '暂无设备'));
-    for (const d of devs) {
-      const row = el('div', 'dev');
-      const h = el('div', 'dev-head');
-      h.append(el('span', 'nm', d.name || '(未命名设备)'),
-        el('span', 'badge ' + (d.status !== 'active' ? 'rv' : d.online ? 'on' : 'off'), d.status !== 'active' ? '已吊销' : d.online ? '在线' : '离线'));
-      row.append(h, el('div', 'mono meta', d.device_id));
+  function renderDeviceRow(d) {
+    const isRevoked = d.status !== 'active';
+    const row = el('div', 'dev' + (isRevoked ? ' revoked' : ''));
+    const h = el('div', 'dev-head');
+    h.append(el('span', 'nm', d.name || '(未命名设备)'),
+      el('span', 'badge ' + (isRevoked ? 'rv' : d.online ? 'on' : 'off'), isRevoked ? '已吊销' : d.online ? '在线' : '离线'));
+    row.append(h, el('div', 'mono meta', d.device_id));
+    if ((d.models || []).length) {
       const ms = el('div', 'models');
       for (const m of d.models || []) {
         const caps = (d.model_capabilities || {})[m] || [];
@@ -156,16 +209,46 @@
         ms.append(b);
       }
       row.append(ms);
-      if (d.status === 'active') {
-        const b = el('button', 'danger', '吊销'); b.style.marginTop = '8px';
-        b.onclick = async () => {
-          if (!confirm(`吊销设备 ${d.name}？吊销后设备需要重新配对。`)) return;
-          try { await api('POST', '/lmbp/v1/tenant/devices/' + encodeURIComponent(d.device_id) + '/revoke'); toast('已吊销'); refresh(); }
-          catch (e) { toast(describe(e.code, e.message), true); }
-        };
-        row.append(b);
-      }
-      box.append(row);
+    }
+    if (!isRevoked) {
+      const b = el('button', 'danger', '吊销'); b.style.marginTop = '8px';
+      b.onclick = async () => {
+        if (!confirm(`吊销设备 ${d.name}？吊销后设备需要重新配对。`)) return;
+        try { await api('POST', '/lmbp/v1/tenant/devices/' + encodeURIComponent(d.device_id) + '/revoke'); toast('已吊销'); refresh(); }
+        catch (e) { toast(describe(e.code, e.message), true); }
+      };
+      row.append(b);
+    }
+    return row;
+  }
+  function renderDevices(devs) {
+    const active = devs.filter((d) => d.status === 'active'), revoked = devs.filter((d) => d.status !== 'active');
+    const online = active.filter((d) => d.online);
+    $('devCount').textContent = String(active.length);
+    const ps = $('pairState'); ps.textContent = '';
+    if (!active.length) ps.append(el('span', 'badge off', '未配对'), document.createTextNode(' 还没有已配对的设备，请先在下方配对。'));
+    else ps.append(el('span', 'badge ' + (online.length ? 'on' : 'off'), online.length ? '已连接' : '离线'),
+      document.createTextNode(` 已配对 ${active.length} 台，在线 ${online.length} 台`));
+    const box = $('devices'); box.textContent = '';
+    if (!active.length && !revoked.length) box.append(el('div', 'meta', '暂无设备'));
+    else if (!active.length) box.append(el('div', 'meta', '暂无可用设备'));
+    for (const d of active) box.append(renderDeviceRow(d));
+    if (revoked.length) {
+      const grp = el('div', 'revoked-group');
+      const btn = el('button', 'revoked-toggle');
+      btn.type = 'button';
+      const lbl = el('span', '', `已吊销的设备（${revoked.length}）`);
+      const arrow = el('span', '', showRevoked ? '收起 ▴' : '展开 ▾');
+      btn.append(lbl, arrow);
+      const list = el('div', 'revoked-list' + (showRevoked ? '' : ' hidden'));
+      for (const d of revoked) list.append(renderDeviceRow(d));
+      btn.onclick = () => {
+        showRevoked = !showRevoked;
+        list.classList.toggle('hidden', !showRevoked);
+        arrow.textContent = showRevoked ? '收起 ▴' : '展开 ▾';
+      };
+      grp.append(btn, list);
+      box.append(grp);
     }
   }
   // modelLabels shows the device-advertised scheme name (display_name) instead of
@@ -200,7 +283,7 @@
   }
   $('model').onchange = showCaps;
   $('refresh').onclick = refresh;
-  setInterval(refresh, 4000);
+  setInterval(refresh, 1500);
 
   // ---- attachments ----
   $('pick').onclick = () => $('file').click();

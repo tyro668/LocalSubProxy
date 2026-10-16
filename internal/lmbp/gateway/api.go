@@ -68,6 +68,9 @@ func (g *Gateway) decide(ctx context.Context, tenantID, owner, userCode, jkt str
 			return d, err
 		}
 	}
+	g.mu.Lock()
+	delete(g.pending, d.DeviceCodeHash)
+	g.mu.Unlock()
 	return d, g.cfg.Store.UpdateDeviceAuth(ctx, d)
 }
 

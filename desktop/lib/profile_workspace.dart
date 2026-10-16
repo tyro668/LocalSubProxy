@@ -73,7 +73,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   bool editorOpen = false;
   String? error;
   List<String> codexModels = [];
-  // Models fetched from an API provider (GET /models) for the picker.
+  // Models fetched from a provider (GET /models or /api/tags) for the picker.
   List<String> providerModels = [];
   bool fetchingModels = false;
   List<String> originalModels = [];
@@ -107,7 +107,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   String get type => switch (provider) {
     'codex' => 'codex_app_server',
     'anthropic' => 'anthropic_compatible',
-    'legacy_ollama' => 'ollama_http',
+    'ollama' => 'ollama_http',
     _ => 'openai_compatible',
   };
 
@@ -199,7 +199,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     provider = switch (a['type']) {
       'codex_app_server' => 'codex',
       'anthropic_compatible' => 'anthropic',
-      'ollama_http' => 'legacy_ollama',
+      'ollama_http' => 'ollama',
       _ => 'openai',
     };
     // A new draft keeps the generated default name until the user edits it.
@@ -530,7 +530,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (value == null || value == provider) return;
     setState(() {
       provider = value;
-      baseURL.text = '';
+      baseURL.text = value == 'ollama' ? 'http://127.0.0.1:11434' : '';
       model.text = value == 'codex' && codexModels.isNotEmpty
           ? codexModels.first
           : '';
@@ -545,16 +545,14 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   }
 
   /// 获取模型: Codex refreshes the subscription list; API providers are asked
-  /// for GET /models with the address and key typed in the form.
+  /// for GET /models (Ollama: /api/tags) using the connection in the form.
   Future<void> fetchModels() async {
     if (provider == 'codex') return refreshCodex();
     if (baseURL.text.trim().isEmpty) {
       setState(() => error = '请先填写 API 地址。');
       return;
     }
-    if (provider != 'legacy_ollama' &&
-        apiKey.text.trim().isEmpty &&
-        !hasReusableKey) {
+    if (provider != 'ollama' && apiKey.text.trim().isEmpty && !hasReusableKey) {
       setState(() => error = '请先填写 API 密钥。');
       return;
     }
@@ -843,7 +841,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       switch (adapter['type']) {
         'codex_app_server' => 'OpenAI Codex（订阅）',
         'anthropic_compatible' => 'Anthropic 兼容协议',
-        'ollama_http' => '旧版 Ollama',
+        'ollama_http' => 'Ollama 协议（本地模型）',
         _ => 'OpenAI 兼容协议',
       };
 
@@ -1182,7 +1180,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           TypeMark(switch (value) {
             'codex' => 'codex_app_server',
             'anthropic' => 'anthropic_compatible',
-            'legacy_ollama' => 'ollama_http',
+            'ollama' => 'ollama_http',
             _ => 'openai_compatible',
           }),
           const SizedBox(width: 8),
@@ -1190,7 +1188,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             'codex' => 'OpenAI Codex（订阅）',
             'openai' => 'OpenAI 兼容协议',
             'anthropic' => 'Anthropic 兼容协议',
-            _ => '旧版 Ollama（仅现有方案）',
+            _ => 'Ollama 协议（本地模型）',
           }, style: AppText.md.copyWith(color: t.fg)),
         ],
       ),
@@ -1201,6 +1199,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             SelectItemButton(value: 'codex', child: Text('OpenAI Codex（订阅）')),
             SelectItemButton(value: 'openai', child: Text('OpenAI 兼容协议')),
             SelectItemButton(value: 'anthropic', child: Text('Anthropic 兼容协议')),
+            SelectItemButton(value: 'ollama', child: Text('Ollama 协议（本地模型）')),
           ],
         ),
       ),
@@ -1238,7 +1237,11 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       return appTextField(
         context,
         controller: model,
-        placeholder: provider == 'codex' ? '输入模型 ID' : '输入供应商提供的模型 ID',
+        placeholder: switch (provider) {
+          'codex' => '输入模型 ID',
+          'ollama' => '输入本地模型 ID（如 qwen3:8b）',
+          _ => '输入供应商提供的模型 ID',
+        },
       );
     }
     return _fieldSelect(
@@ -1366,7 +1369,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     String v(TextEditingController c) =>
         c.text.trim().isEmpty ? '自动' : c.text.trim();
     final parts = ['上下文窗口 ${v(contextWindow)}', '最大输出 ${v(maxTokens)}'];
-    if (provider != 'anthropic' && provider != 'legacy_ollama') {
+    if (provider != 'anthropic' && provider != 'ollama') {
       parts.add('思考强度 ${_reasoningLabel(reasoning)}');
     }
     return parts.join(' · ');
@@ -1502,10 +1505,15 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                     appTextField(
                       context,
                       controller: baseURL,
-                      placeholder: 'https://example.com/v1',
+                      placeholder: provider == 'ollama'
+                          ? 'http://127.0.0.1:11434'
+                          : 'https://example.com/v1',
                     ),
+                    hint: provider == 'ollama'
+                        ? '填写 Ollama 服务根地址，无需添加 /api 或 /v1；本地服务无需 API 密钥。'
+                        : null,
                   ),
-                  if (provider != 'legacy_ollama')
+                  if (provider != 'ollama')
                     _field(
                       'API 密钥',
                       appTextField(
@@ -1546,8 +1554,14 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                   hint: modelChoices.isNotEmpty
                       ? (codex
                             ? '列表来自本机 Codex CLI；最后一项可输入自定义模型 ID'
+                            : provider == 'ollama'
+                            ? '列表来自 Ollama /api/tags；请选择已下载的本地模型'
                             : '列表来自 /v1/models；最后一项可输入自定义模型 ID')
-                      : (codex ? null : '点击“获取模型”可从服务商列表中选择，也可直接输入模型 ID'),
+                      : (codex
+                            ? null
+                            : provider == 'ollama'
+                            ? '请先启动 Ollama 并下载模型，再点击“获取模型”或输入完整模型 ID（含标签）'
+                            : '点击“获取模型”可从服务商列表中选择，也可直接输入模型 ID'),
                 ),
                 Container(
                   decoration: BoxDecoration(
@@ -1621,7 +1635,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                       ),
                     ],
                   ),
-                  if (provider != 'anthropic' && provider != 'legacy_ollama')
+                  if (provider != 'anthropic' && provider != 'ollama')
                     _field('思考强度', _reasoningSelect()),
                   if (type == 'openai_compatible' ||
                       type == 'anthropic_compatible')

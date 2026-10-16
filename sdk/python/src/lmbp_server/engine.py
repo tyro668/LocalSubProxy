@@ -613,7 +613,7 @@ class Gateway:
         self.tenants = {}
         self.devs: dict[str, DState] = {}
         self.tasks: dict[str, Task] = {}
-        self.jtis, self.fails = {}, {}
+        self.jtis, self.fails, self.pending = {}, {}, {}
 
     def register_tenant(self, id, api_key, profile=None):
         profile = profile or {}
@@ -785,6 +785,7 @@ class Gateway:
         d = {"code_hash": L.sha_hex(dc), "user_code": user_code(), "tenant": ps["tenant"], "pub": pub, "name": ps.get("device_name", ""),
              "status": "pending", "expires": time.time() + self.cfg["code_ttl"], "interval": 2, "last_poll": 0.0, "device_id": "", "owner": ""}
         self.store.put_device_auth(d)
+        self.pending[d["code_hash"]] = d
         return json_resp(200, {"device_code": dc, "user_code": d["user_code"], "expires_in": self.cfg["code_ttl"], "interval": d["interval"]},
                          {"Cache-Control": "no-store"})
 
@@ -848,6 +849,7 @@ class Gateway:
             self.store.put_device({"id": d["device_id"], "tenant": tenant, "owner": owner, "name": d["name"], "pub": d["pub"],
                                    "status": "active", "created": datetime.datetime.now(datetime.timezone.utc), "e2ee_key": ""})
         self.store.put_device_auth(d)
+        self.pending.pop(d["code_hash"], None)
         return d
 
     def issue(self, dev, iss):
@@ -930,7 +932,17 @@ class Gateway:
                 if s.model_names:
                     item["model_names"] = dict(s.model_names)
             out.append(item)
-        return json_resp(200, {"devices": out})
+        now = time.time()
+        pend = []
+        for h in list(self.pending):
+            d = self.store.get_device_auth(h)
+            if d is None or d["status"] != "pending" or now > d["expires"]:
+                self.pending.pop(h, None)
+                continue
+            if d["tenant"] == t["id"]:
+                exp = datetime.datetime.fromtimestamp(int(d["expires"]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                pend.append({"device_name": d["name"], "jkt": L.thumbprint(d["pub"]), "expires_at": exp})
+        return json_resp(200, {"devices": out, "pending_pairings": pend})
 
     async def revoke(self, req):
         err = self.err_for(req)

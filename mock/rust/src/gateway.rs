@@ -195,6 +195,7 @@ pub struct St {
     tobj: HashMap<u64, Task>,
     jtis: HashMap<String, i64>,
     fails: HashMap<String, Vec<i64>>,
+    pending: Vec<String>,
     wss: HashMap<u64, WsState>,
     timers: HashMap<u64, Timer>,
     theap: BinaryHeap<Reverse<(Instant, u64)>>,
@@ -243,6 +244,7 @@ pub fn init(mut cfg: Config, seed: Option<[u8; 32]>) -> lmbp::R<String> {
         tobj: HashMap::new(),
         jtis: HashMap::new(),
         fails: HashMap::new(),
+        pending: vec![],
         wss: HashMap::new(),
         timers: HashMap::new(),
         theap: BinaryHeap::new(),
@@ -611,7 +613,9 @@ fn authorize(g: &mut Guard, req: &Req, res: &mut Res) {
         ..Default::default()
     };
     let uc = d.user_code.clone();
+    let ch = d.code_hash.clone();
     g.store.put_device_auth(d);
+    g.pending.push(ch);
     res.set_header("Cache-Control", "no-store");
     let ttl = g.cfg.code_ttl;
     json_res(g, res, 200, &obj! {"device_code" => dc, "user_code" => uc, "expires_in" => ttl, "interval" => 2});
@@ -700,6 +704,7 @@ pub fn pair_decide(g: &mut Guard, tenant: &str, owner: &str, user_code: &str, de
         });
     }
     g.store.put_device_auth(d.clone());
+    g.pending.retain(|h| h != &d.code_hash);
     Ok(d)
 }
 
@@ -824,7 +829,19 @@ fn list_devices(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode) {
         }
         out.push(item);
     }
-    json_res(g, res, 200, &obj! {"devices" => out});
+    let now = lmbp::now_ms();
+    let mut pend = vec![];
+    let mut keep = vec![];
+    for h in std::mem::take(&mut g.pending) {
+        if let Some(d) = g.store.get_device_auth(&h).filter(|d| d.status == "pending" && now <= d.expires) {
+            if d.tenant == a.tenant {
+                pend.push(obj! {"device_name" => d.name.clone(), "jkt" => lmbp::thumbprint(&d.pub_), "expires_at" => iso8601(d.expires / 1000)});
+            }
+            keep.push(h);
+        }
+    }
+    g.pending = keep;
+    json_res(g, res, 200, &obj! {"devices" => out, "pending_pairings" => pend});
 }
 
 fn revoke(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode, id: &str) {

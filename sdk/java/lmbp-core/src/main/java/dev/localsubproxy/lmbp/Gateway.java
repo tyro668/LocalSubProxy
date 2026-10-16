@@ -94,6 +94,7 @@ final class Gateway {
   final Map<String, Task> tasks = new HashMap<>();
   final Map<String, Long> jtis = new HashMap<>();
   final Map<String, List<Long>> fails = new HashMap<>();
+  final Map<String, Store.DeviceAuth> pending = new LinkedHashMap<>();
 
   Gateway(Config cfg, byte[] seed, Store store, Consumer<String> logger) {
     this.cfg = cfg;
@@ -297,6 +298,7 @@ final class Gateway {
     d.codeHash = Lmbp.shaHex(dc); d.userCode = userCode(); d.tenant = ps.get("tenant"); d.pub = pub; d.name = ps.getOrDefault("device_name", "");
     d.status = "pending"; d.expires = System.currentTimeMillis() + cfg.codeTTL * 1000; d.interval = 2;
     store.putDeviceAuth(d);
+    pending.put(d.codeHash, d);
     res.setHeader("Cache-Control", "no-store");
     json(res, 200, Json.obj("device_code", dc, "user_code", d.userCode, "expires_in", cfg.codeTTL, "interval", (long) d.interval));
   }
@@ -358,6 +360,7 @@ final class Gateway {
       store.putDevice(dev);
     }
     store.putDeviceAuth(d);
+    pending.remove(d.codeHash);
     return d;
   }
 
@@ -438,7 +441,16 @@ final class Gateway {
       }
       out.add(item);
     }
-    json(res, 200, Json.obj("devices", out));
+    long now = System.currentTimeMillis();
+    List<Object> pend = new ArrayList<>();
+    for (var it = pending.entrySet().iterator(); it.hasNext(); ) {
+      String h = it.next().getKey();
+      Store.DeviceAuth d = store.getDeviceAuth(h);
+      if (d == null || !d.status.equals("pending") || now > d.expires) { it.remove(); continue; }
+      if (d.tenant.equals(a.t().id()))
+        pend.add(Json.obj("device_name", d.name, "jkt", Lmbp.thumbprint(d.pub), "expires_at", Instant.ofEpochMilli(d.expires).truncatedTo(ChronoUnit.SECONDS).toString()));
+    }
+    json(res, 200, Json.obj("devices", out, "pending_pairings", pend));
   }
 
   void revoke(HttpRequest req, Http.Res res, Err err, String id) {

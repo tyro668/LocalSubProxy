@@ -64,6 +64,7 @@ type Gateway struct {
 	tasks     map[string]*gtask  // task_id → task (kept AttachGrace+10m after completion)
 	jtis      map[string]time.Time
 	fail      map[string][]time.Time // tenant → recent failed approvals
+	pending   map[string]store.DeviceAuth
 	refreshes atomic.Int64
 	resumes   atomic.Int64
 }
@@ -129,7 +130,7 @@ func New(cfg Config) (*Gateway, error) {
 		cfg.Issuer = o
 	}
 	pub := cfg.SigningKey.Public().(ed25519.PublicKey)
-	return &Gateway{cfg: cfg, pub: pub, kid: lmbp.Thumbprint(pub), devs: map[string]*dstate{}, tasks: map[string]*gtask{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}}, nil
+	return &Gateway{cfg: cfg, pub: pub, kid: lmbp.Thumbprint(pub), devs: map[string]*dstate{}, tasks: map[string]*gtask{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}, pending: map[string]store.DeviceAuth{}}, nil
 }
 
 // PublicKey returns the key devices pin to verify task.run frames.
@@ -329,6 +330,9 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 500, "server_error")
 		return
 	}
+	g.mu.Lock()
+	g.pending[d.DeviceCodeHash] = d
+	g.mu.Unlock()
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"device_code": dc, "user_code": d.UserCode, "expires_in": int(g.cfg.CodeTTL.Seconds()), "interval": d.Interval})
 }
@@ -541,7 +545,39 @@ func (g *Gateway) listDevices(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, item)
 	}
-	writeJSON(w, 200, map[string]any{"devices": out})
+	writeJSON(w, 200, map[string]any{"devices": out, "pending_pairings": g.pendingPairings(r.Context(), t.ID)})
+}
+
+func (g *Gateway) pendingPairings(ctx context.Context, tenantID string) []map[string]any {
+	now := time.Now()
+	g.mu.Lock()
+	var cand []store.DeviceAuth
+	for h, d := range g.pending {
+		if now.After(d.ExpiresAt) {
+			delete(g.pending, h)
+			continue
+		}
+		if d.TenantID == tenantID {
+			cand = append(cand, d)
+		}
+	}
+	g.mu.Unlock()
+	out := []map[string]any{}
+	for _, c := range cand {
+		d, err := g.cfg.Store.DeviceAuthByCodeHash(ctx, c.DeviceCodeHash)
+		if err != nil || d.Status != "pending" || now.After(d.ExpiresAt) {
+			g.mu.Lock()
+			delete(g.pending, c.DeviceCodeHash)
+			g.mu.Unlock()
+			continue
+		}
+		out = append(out, map[string]any{
+			"device_name": d.DeviceName,
+			"jkt":         lmbp.Thumbprint(d.PublicKey),
+			"expires_at":  d.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out
 }
 
 func (g *Gateway) revoke(w http.ResponseWriter, r *http.Request) {

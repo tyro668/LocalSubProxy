@@ -1,6 +1,6 @@
 # LocalSubProxy 使用教程
 
-LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、OpenAI / Anthropic 兼容接口的 API Key），密钥始终留在本机。本教程按实际使用顺序介绍桌面端的全部操作。
+LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Ollama 本地模型、OpenAI / Anthropic 兼容接口的 API Key），密钥始终留在本机。本教程按实际使用顺序介绍桌面端的全部操作。
 
 > 截图来自当前版本的界面，示例数据为虚构。
 
@@ -44,7 +44,7 @@ LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Ope
 | OpenAI Codex（订阅） | Codex CLI 路径（默认 `codex`）、模型 | 使用本机已安装的官方 Codex CLI。未登录时点「连接订阅」，在浏览器完成登录后自动检测；也可以点「检查登录」。只支持纯文本 |
 | OpenAI 兼容协议 | API 地址、API 密钥、模型 | 适用于 OpenAI 以及 DeepSeek、通义千问等兼容接口 |
 | Anthropic 兼容协议 | API 地址、API 密钥、模型 | 适用于 Anthropic 及其兼容接口 |
-| 旧版 Ollama | — | 仅用于显示和编辑早期版本创建的方案，不能新建 |
+| Ollama 协议（本地模型） | API 地址、模型 | 默认地址 `http://127.0.0.1:11434`，无需 API 密钥，使用本机 Ollama 已下载的模型 |
 
 「方案名称」可以留空，默认使用模型名，重名时自动加 `_2`、`_3`。
 
@@ -58,6 +58,14 @@ LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Ope
 ![测试连接通过的 OpenAI 兼容方案](images/guide/03-openai-tested.png)
 
 如果服务能正常推理但没有 `/models` 接口，勾选「跳过模型列表探测」后再保存。
+
+### 示例：添加一个 Ollama 本地模型方案
+
+1. 确认本机 Ollama 服务已启动，并已下载要使用的模型。
+2. 点「添加方案」，「服务」选择「Ollama 协议（本地模型）」。
+3. 「API 地址」默认填入 `http://127.0.0.1:11434`。如使用其他本机端口，可修改此地址；只填写根地址，不要添加 `/api` 或 `/v1`，无需填写 API 密钥。
+4. 点「获取模型」，从 Ollama 返回的已下载模型中选择；也可以直接输入完整模型 ID（例如 `qwen3:8b`，须与本机模型名称和标签一致）。
+5. 点「测试连接」，通过后点「保存」，再在远端服务的模型授权中勾选此方案。
 
 ## 4. 管理方案
 

@@ -49,3 +49,35 @@ func TestSiblingImplementationsShareCSP(t *testing.T) {
 		}
 	}
 }
+
+func TestChatUILayoutRequirements(t *testing.T) {
+	hb, err := files.ReadFile("chat.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(hb)
+	if strings.Contains(html, `id="qr"`) {
+		t.Fatal("chat.html should not render QR code container")
+	}
+	for _, want := range []string{`id="pairLink"`, `id="copyLink"`, `id="copyCmd"`, `id="pairModal"`, `class="modal-mask hidden"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("chat.html missing %s", want)
+		}
+	}
+	barIdx := strings.Index(html, `<div class="composer-bar">`)
+	modelIdx := strings.Index(html, `id="model"`)
+	sendIdx := strings.Index(html, `id="send"`)
+	if barIdx < 0 || modelIdx < barIdx || sendIdx < modelIdx {
+		t.Fatalf("model selector must be inside .composer-bar before #send (bar=%d model=%d send=%d)", barIdx, modelIdx, sendIdx)
+	}
+	jb, err := files.ReadFile("chat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jb)
+	for _, want := range []string{"pending_pairings", "revoked-group", "revoked-toggle", "openPairModal", "closePairModal"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("chat.js missing %s", want)
+		}
+	}
+}

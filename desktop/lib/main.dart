@@ -1752,7 +1752,7 @@ String adapterTypeShort(String? type) => switch (type) {
 String adapterTypeLabel(String type) => switch (type) {
   'codex_app_server' => 'OpenAI Codex（订阅）',
   'anthropic_compatible' => 'Anthropic 兼容协议',
-  'ollama_http' => '旧版 Ollama',
+  'ollama_http' => 'Ollama 协议（本地模型）',
   _ => 'OpenAI 兼容协议',
 };
 

@@ -11,6 +11,7 @@ void main() {
   Future<void> pumpWorkspace(
     WidgetTester tester, {
     Map<String, dynamic>? connectionStatus,
+    List<Map<String, dynamic>>? adapters,
   }) async {
     tester.view.physicalSize = const Size(1500, 900);
     tester.view.devicePixelRatio = 1;
@@ -30,29 +31,31 @@ void main() {
                   'device_name': '测试电脑',
                   'running_tasks': 0,
                 },
-            adapters: const [
-              {
-                'id': 'deepseek',
-                'name': 'deepseek-v4-pro',
-                'type': 'openai_compatible',
-                'provider': 'deepseek',
-                'base_url': 'https://api.deepseek.com',
-                'models': ['deepseek-v4-pro'],
-                'enabled': true,
-                'is_default': true,
-                'has_api_key': true,
-              },
-              {
-                'id': 'claude',
-                'name': 'claude-sonnet',
-                'type': 'anthropic_compatible',
-                'provider': 'anthropic',
-                'base_url': 'https://api.anthropic.com',
-                'models': ['claude-sonnet'],
-                'enabled': true,
-                'has_api_key': true,
-              },
-            ],
+            adapters:
+                adapters ??
+                const [
+                  {
+                    'id': 'deepseek',
+                    'name': 'deepseek-v4-pro',
+                    'type': 'openai_compatible',
+                    'provider': 'deepseek',
+                    'base_url': 'https://api.deepseek.com',
+                    'models': ['deepseek-v4-pro'],
+                    'enabled': true,
+                    'is_default': true,
+                    'has_api_key': true,
+                  },
+                  {
+                    'id': 'claude',
+                    'name': 'claude-sonnet',
+                    'type': 'anthropic_compatible',
+                    'provider': 'anthropic',
+                    'base_url': 'https://api.anthropic.com',
+                    'models': ['claude-sonnet'],
+                    'enabled': true,
+                    'has_api_key': true,
+                  },
+                ],
             onChanged: () async {},
           ),
         ),
@@ -131,7 +134,7 @@ void main() {
     expect(find.text('API 密钥'), findsOneWidget);
   });
 
-  testWidgets('供应商仅提供三种类型，兼容协议均显示地址和密钥', (tester) async {
+  testWidgets('服务支持四种类型，云端兼容协议均显示地址和密钥', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     try {
       await pumpWorkspace(tester);
@@ -144,7 +147,7 @@ void main() {
       expect(find.text('OpenAI 兼容协议'), findsWidgets);
       expect(find.text('Anthropic 兼容协议'), findsWidgets);
       expect(find.text('DeepSeek'), findsNothing);
-      expect(find.text('本机 Ollama'), findsNothing);
+      expect(find.text('Ollama 协议（本地模型）'), findsOneWidget);
 
       await tester.tap(find.text('Anthropic 兼容协议').last);
       await tester.pump();
@@ -163,6 +166,106 @@ void main() {
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
+  });
+
+  testWidgets(
+    '新增 Ollama 方案可免密钥获取模型、测试连接并保存',
+    (tester) async {
+      final requests = <Map<String, dynamic>>[];
+      NativeApi.debugTransport = (payload) {
+        requests.add(payload);
+        return switch (payload['action']) {
+          'codex_models' => <String>[],
+          'provider_models' => ['qwen3:8b', 'llama3:latest'],
+          'test_adapter' => {
+            'health': 'ready',
+            'models': ['qwen3:8b'],
+          },
+          'create_adapter' => payload['adapter'],
+          _ => throw StateError('Unexpected action: ${payload['action']}'),
+        };
+      };
+      addTearDown(() => NativeApi.debugTransport = null);
+      await pumpWorkspace(tester);
+      await tester.tap(find.text('添加方案').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(Select<String>, 'OpenAI Codex（订阅）'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Ollama 协议（本地模型）').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('API 密钥'), findsNothing);
+      final address = find.byWidgetPredicate(
+        (w) => w is TextField && w.controller?.text == 'http://127.0.0.1:11434',
+      );
+      expect(
+        tester.widget<TextField>(address).controller!.text,
+        'http://127.0.0.1:11434',
+      );
+      // The default can be changed for another locally running instance.
+      await tester.enterText(address, 'http://127.0.0.1:11435');
+      await tester.tap(find.text('获取模型'));
+      await tester.pumpAndSettle();
+      final discovery = requests.singleWhere(
+        (r) => r['action'] == 'provider_models',
+      );
+      expect(discovery['adapter'], containsPair('type', 'ollama_http'));
+      expect(
+        discovery['adapter'],
+        containsPair('base_url', 'http://127.0.0.1:11435'),
+      );
+      expect(discovery['adapter'], containsPair('api_key', ''));
+      expect(find.widgetWithText(Select<String>, 'qwen3:8b'), findsOneWidget);
+      expect(find.textContaining('列表来自 Ollama /api/tags'), findsOneWidget);
+
+      await tester.tap(find.text('测试连接'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('连接测试通过'), findsOneWidget);
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      final saved = requests.singleWhere(
+        (r) => r['action'] == 'create_adapter',
+      )['adapter'];
+      expect(saved, containsPair('type', 'ollama_http'));
+      expect(saved, containsPair('provider', 'ollama'));
+      expect(saved, containsPair('base_url', 'http://127.0.0.1:11435'));
+      expect(saved, containsPair('models', ['qwen3:8b']));
+      expect(saved, containsPair('api_key', ''));
+      expect(find.text('编辑方案'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets('已有 Ollama 方案保留地址和模型，支持直接编辑', (tester) async {
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 'existing-ollama',
+          'name': '本机模型',
+          'type': 'ollama_http',
+          'provider': 'legacy_ollama',
+          'base_url': 'http://127.0.0.1:11435',
+          'models': ['qwen3:8b', 'llama3:latest'],
+          'enabled': true,
+        },
+      ],
+    );
+    expect(find.text('旧版 Ollama'), findsNothing);
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    expect(
+      find.widgetWithText(Select<String>, 'Ollama 协议（本地模型）'),
+      findsOneWidget,
+    );
+    expect(find.text('API 密钥'), findsNothing);
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    expect(state.validate(), isNull);
+    expect(state.body()['type'], 'ollama_http');
+    expect(state.body()['base_url'], 'http://127.0.0.1:11435');
+    expect(state.body()['models'], ['qwen3:8b', 'llama3:latest']);
   });
 
   testWidgets('新方案名称默认为模型名，重名时加编号 并随模型变化，重名时提示', (tester) async {
