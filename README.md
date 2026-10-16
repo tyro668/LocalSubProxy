@@ -8,17 +8,25 @@ LocalSubProxy 是 macOS / Windows 桌面应用：让你授权的远端服务（S
 
 桌面端主动连出到网关，本机无需开放端口。设备与网关之间使用开放协议 **LMBP 1.0**（正式版），见 [规范](docs/lmbp-spec.md)。
 
-## 桌面用户：快速开始
+## 快速上手
 
-1. 从 [Releases](https://github.com/tyro668/LocalSubProxy/releases) 下载安装包（macOS `.dmg`，Windows `setup.exe`）。安装包暂未签名，首次打开的处理方法见 [docs/release.md](docs/release.md#未签名构建的注意事项)。
-2. **添加方案**：选择「OpenAI Codex（订阅）」「OpenAI 兼容协议」或「Anthropic 兼容协议」，填写后可点「测试连接」。提供商没有模型列表接口时，打开「跳过模型列表探测」。
-3. **连接 SaaS**：在底部输入服务地址，或粘贴 SaaS 给的 `lmbp://pair?…` 链接，点「连接」。同意页显示经网关签名校验的 SaaS 名称、隐私政策和请求的权限，并让你勾选允许它使用的模型。同意后把显示的 `XXXX-XXXX` 配对码填到 SaaS 页面上。
-4. 可以同时连接多个 SaaS，每个连接有自己的模型白名单和并发上限，可随时暂停或移除。断线会自动重连，无需重新配对。
+1. **安装**：从 [Releases](https://github.com/tyro668/LocalSubProxy/releases) 下载安装包（macOS `.dmg`，Windows `setup.exe`）。安装包暂未签名，首次打开的处理方法见 [docs/release.md](docs/release.md#未签名构建的注意事项)。
+2. **添加方案**：点「添加方案」，选择「OpenAI Codex（订阅）」「OpenAI 兼容协议」或「Anthropic 兼容协议」，填好后点「测试连接」再「保存」。
 
-其他说明：
+   ![测试连接通过的方案](docs/images/guide/03-openai-tested.png)
+
+3. **连接 SaaS**：点状态栏的「立即连接 ›」，粘贴 SaaS 的地址或 `lmbp://pair?…` 链接。确认 SaaS 身份并勾选允许它使用的模型，再把显示的配对码填到 SaaS 页面上。
+
+   ![确认身份并选择模型](docs/images/guide/08-pair-consent.png)
+
+4. **查看连接**：点状态栏左侧的状态标签。每个 SaaS 有自己的模型授权，可以随时断开或撤销；断线会自动重连。
+
+   ![连接列表](docs/images/guide/10-connections.png)
+
+完整图文教程（方案管理、状态说明、用量统计、常见错误等）见 **[docs/guide.md](docs/guide.md)**。
 
 - 关闭窗口只隐藏界面，内核在后台运行；从系统托盘「配置」重新打开，「退出」停止。
-- 每次请求写入本机审计日志 `audit.db`（不记录对话内容，默认保留 90 天），可在「近 7 天用量」或命令行 `localsubproxy usage`、`localsubproxy audit` 查看。
+- 每次请求写入本机审计日志 `audit.db`（不记录对话内容，默认保留 90 天），可在「用量统计」或命令行 `localsubproxy usage`、`localsubproxy audit` 查看。
 - Codex 方案只接受纯文本，不支持 `temperature`、`top_p`、`stop`、`max_tokens`，见规范 §16.4。
 
 ## SaaS 开发者：选一个 SDK
