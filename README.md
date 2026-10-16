@@ -34,7 +34,7 @@ SDK 负责配对和协议，你的业务代码用官方 `openai` / `anthropic` �
 
 ## 文档
 
-完整索引见 [docs/README.md](docs/README.md)。
+完整索引见 [docs/README.md](docs/README.md)。服务器或无桌面环境请用命令行的无界面模式：[docs/headless.md](docs/headless.md)。
 
 ## 从源码构建与测试
 

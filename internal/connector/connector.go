@@ -84,14 +84,16 @@ type AdapterHealth struct {
 }
 
 type Connector struct {
-	cfgVer          uint64         // bumped by every adapter-list change
-	closed          bool           // Shutdown started: adapter changes refused
-	muts            sync.WaitGroup // adapter changes in progress (Shutdown waits)
-	reqs            sync.WaitGroup // task handling incl. early rejects and audit (Shutdown waits)
-	lastSaved       []byte         // last adapters.enc content known on disk
-	adaptersBlocked error          // set when adapters.enc may differ from memory
-	storageWarning  string         // adapters.enc committed but not synced
-	recovery        map[string]any // set when the adapter file was unreadable and backed up
+	cfgVer          uint64            // bumped by every adapter-list change
+	invalid         map[string]string // adapter id → why its saved config failed validation (never served)
+	loadWarnings    []string          // saved entries that could not be loaded at all
+	closed          bool              // Shutdown started: adapter changes refused
+	muts            sync.WaitGroup    // adapter changes in progress (Shutdown waits)
+	reqs            sync.WaitGroup    // task handling incl. early rejects and audit (Shutdown waits)
+	lastSaved       []byte            // last adapters.enc content known on disk
+	adaptersBlocked error             // set when adapters.enc may differ from memory
+	storageWarning  string            // adapters.enc committed but not synced
+	recovery        map[string]any    // set when the adapter file was unreadable and backed up
 	cfg             Config
 	client          *http.Client
 	modelClient     *http.Client
@@ -346,7 +348,7 @@ func (x *Connector) Models() []string {
 	defer x.mu.Unlock()
 	out := []string{}
 	for _, a := range x.adapters {
-		if !a.Enabled {
+		if !a.Enabled || x.invalid[a.ID] != "" {
 			continue
 		}
 		if h, ok := x.health[a.ID]; ok && h.Health != "ready" {
@@ -482,7 +484,7 @@ func (x *Connector) execute(ctx context.Context, l *link, run lmbp.TaskRun, emit
 	adapterID, modelID, ok := strings.Cut(run.Model, "/")
 	x.mu.Lock()
 	a, exists := x.adapters[adapterID]
-	if !ok || !exists || !a.Enabled || !has(a.Models, modelID) {
+	if !ok || !exists || !a.Enabled || !has(a.Models, modelID) || x.invalid[adapterID] != "" {
 		x.mu.Unlock()
 		return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: "model not allowed by local adapter policy"}
 	}
@@ -700,6 +702,17 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHe
 	if a.ID == "" {
 		return AdapterHealth{}
 	}
+	x.mu.Lock()
+	bad := x.invalid[a.ID]
+	x.mu.Unlock()
+	if bad != "" { // loaded broken: never probed or served until fixed
+		return AdapterHealth{AdapterID: a.ID, AdapterType: a.Type, Models: a.Models, Health: "unavailable", AuthState: "unknown", Error: bad}
+	}
+	return x.probeConfig(ctx, a)
+}
+
+// probeConfig probes a configuration (a stored scheme or a draft under test).
+func (x *Connector) probeConfig(ctx context.Context, a AdapterConfig) AdapterHealth {
 	if a.Type == "codex_app_server" {
 		return x.withSlots(x.probeCodexAdapter(ctx, a))
 	}
@@ -853,13 +866,23 @@ func (x *Connector) loadAdapterFile() error {
 		x.recovery = n.view()
 		return nil
 	}
-	// A decrypted adapter that fails validation is an error: the file is
-	// intact, so it is never moved aside for that. A Codex CLI that is not
+	// A decrypted adapter that fails validation does not fail the load (the
+	// file is intact, so it is never moved aside for that either): the
+	// scheme stays listed, editable and deletable, is never served, and its
+	// health reports why. Only an entry that cannot be addressed (bad or
+	// duplicate ID) is left out, with a warning. A Codex CLI that is not
 	// runnable right now is not a validation failure here (review9 P2-4).
 	for _, a := range saved {
 		a.Name = clipBytes(strings.TrimSpace(a.Name), MaxSchemeNameBytes) // an over-long legacy name never bricks startup
 		if err := validateLoadedAdapter(&a); err != nil {
-			return err
+			if _, dup := x.adapters[a.ID]; a.ID == "" || len(a.ID) > 64 || strings.Contains(a.ID, "/") || dup {
+				x.loadWarnings = append(x.loadWarnings, fmt.Sprintf("a saved scheme with an unusable ID %q was skipped (%v); it is dropped at the next scheme change", a.ID, err))
+				continue
+			}
+			if x.invalid == nil {
+				x.invalid = map[string]string{}
+			}
+			x.invalid[a.ID] = "invalid configuration: " + err.Error()
 		}
 		x.adapters[a.ID] = a
 	}

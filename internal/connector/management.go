@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
@@ -35,6 +36,9 @@ type AdapterView struct {
 	Concurrency     int      `json:"concurrency"`
 	Health          string   `json:"health"`
 	AuthState       string   `json:"auth_state"`
+	// HealthError says why the scheme is unavailable when known locally,
+	// e.g. its saved configuration is invalid (it is then never served).
+	HealthError string `json:"health_error,omitempty"`
 	// edit-side values (what is stored); Capabilities/Concurrency above are
 	// the computed effective values for display only.
 	ConfiguredCapabilities []string `json:"configured_capabilities"`
@@ -86,6 +90,10 @@ func (x *Connector) ListAdapters() []AdapterView {
 		view := viewAdapter(a)
 		view.Health = x.health[a.ID].Health
 		view.AuthState = x.health[a.ID].AuthState
+		view.HealthError = x.health[a.ID].Error
+		if bad := x.invalid[a.ID]; bad != "" { // also before the first probe
+			view.Health, view.HealthError = "unavailable", bad
+		}
 		list = append(list, view)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
@@ -147,6 +155,9 @@ func (x *Connector) saveAdaptersLocked() error {
 func (x *Connector) AdapterStorageWarning() string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	if len(x.loadWarnings) > 0 {
+		return strings.TrimSpace(x.storageWarning + " " + strings.Join(x.loadWarnings, "; "))
+	}
 	return x.storageWarning
 }
 
@@ -380,8 +391,13 @@ func (x *Connector) updateAdapter(id string, build func(AdapterConfig) (AdapterC
 		}
 	}
 	x.adapters[a.ID] = a
+	wasInvalid := x.invalid[a.ID]
+	delete(x.invalid, a.ID) // the edit validated
 	err = x.saveAdaptersLocked()
 	if err != nil {
+		if wasInvalid != "" {
+			x.invalid[a.ID] = wasInvalid
+		}
 		x.adapters[a.ID] = old
 		for id, isDefault := range previousDefaults {
 			existing := x.adapters[id]
@@ -435,6 +451,8 @@ func (x *Connector) DeleteAdapter(id string) error {
 			next.IsDefault = false
 			x.adapters[nextDefaultID] = next
 		}
+	} else {
+		delete(x.invalid, id)
 	}
 	x.mu.Unlock()
 	if err == nil {
@@ -455,7 +473,7 @@ func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHe
 	}
 	a.Enabled = true
 	a.SkipModelProbe = false
-	return x.probeAdapter(ctx, a), nil
+	return x.probeConfig(ctx, a), nil // a validated draft: a stored invalid flag does not apply
 }
 
 func sameCredentialEndpoint(a, old AdapterConfig) bool {
