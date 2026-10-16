@@ -11,7 +11,10 @@ import (
 )
 
 func TestEndToEnd(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// The demo pushes ~16 MB (60k chunks) through every layer with per-frame
+	// SQLite persistence; -race slows that I/O path ~5-10x. Generous budget:
+	// the real slowness (O(n²) stream cursor) is fixed in the gateway.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	r, err := Run(ctx, io.Discard, t.TempDir())
 	if err != nil {

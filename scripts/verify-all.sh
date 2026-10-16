@@ -74,11 +74,10 @@ step() { # name cmd...
   fi
 }
 
-gopkgs() { go list ./... | grep -v '/mock/external$'; }  # external: run against live gateways in step 5
+gopkgs() { go list ./...; }  # mock/external runs hermetically here and against every live gateway in step 5
 step "route-lint (spec §4.5: one word per route segment)" bash -c 'python3 scripts/route-lint.py --selftest'
 step "go vet" bash -c 'go vet $(go list ./... ) && (cd examples/go-nethttp && go vet ./...)'
 step "go test -json (reference gateway, Go SDK, conformance, stores, connector)" $ST go -count=1 $(gopkgs)
-step "go test -json mock/external CI-mode guard" $ST go -count=1 ./mock/external -run TestExternalGatewayFailsInCIWithoutEnv
 step "examples/go-nethttp build" bash -c 'cd examples/go-nethttp && go build -o /dev/null .'
 step "Node SDK (sdk/node)" bash -c 'cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && npm run -s build && ../../scripts/strict-test.py node test/'
 step "Node mock (mock/node)" bash -c 'cd mock/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && ../../scripts/strict-test.py node test/'

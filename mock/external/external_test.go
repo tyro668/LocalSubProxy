@@ -1,9 +1,15 @@
 // Package external runs the real Go desktop connector end to end against an
 // externally started LMBP gateway (the Node or Python mocks, or any other
-// implementation). It is skipped unless LMBP_EXTERNAL_GATEWAY is set:
+// implementation) given by LMBP_EXTERNAL_GATEWAY:
 //
 //	LMBP_EXTERNAL_GATEWAY=http://127.0.0.1:8080 LMBP_TENANT=acme LMBP_TENANT_KEY=... \
 //	  go test ./mock/external -run TestExternalGateway -v
+//
+// Without LMBP_EXTERNAL_GATEWAY the test is hermetic: it starts the in-repo
+// reference gateway in-process and runs the same checks against it, so a
+// plain `go test ./...` (also in CI/strict mode) exercises it instead of
+// skipping. scripts/mock-interop.sh always sets LMBP_EXTERNAL_GATEWAY (and
+// LMBP_OFFICIAL_CLIENTS) per implementation, where both stay mandatory.
 package external
 
 import (
@@ -29,6 +35,8 @@ import (
 	"github.com/tyro668/LocalSubProxy/internal/connector"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
 	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
 )
 
@@ -103,15 +111,20 @@ func ciMode() bool {
 
 func TestExternalGateway(t *testing.T) {
 	gw := strings.TrimRight(os.Getenv("LMBP_EXTERNAL_GATEWAY"), "/")
-	if gw == "" {
-		if ciMode() {
-			t.Fatal("LMBP_EXTERNAL_GATEWAY not set (required in CI / LMBP_REQUIRE_EXTERNAL mode: a skipped external check is a failure)")
-		}
-		t.Skip("LMBP_EXTERNAL_GATEWAY not set")
+	tenant, key := os.Getenv("LMBP_TENANT"), os.Getenv("LMBP_TENANT_KEY")
+	external := gw != ""
+	if !external && os.Getenv("LMBP_EXPECT_EXTERNAL") == "1" {
+		// set by scripts/mock-interop.sh: a run meant for a live gateway must
+		// never fall back to the in-process one
+		t.Fatal("LMBP_EXTERNAL_GATEWAY not set but LMBP_EXPECT_EXTERNAL=1")
+	}
+	if !external {
+		gw, tenant, key = startReferenceGateway(t)
+		t.Logf("LMBP_EXTERNAL_GATEWAY not set: running against the in-process reference gateway %s", gw)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	e := &env{t: t, ctx: ctx, gw: gw, tenant: os.Getenv("LMBP_TENANT"), key: os.Getenv("LMBP_TENANT_KEY"), u: "e2e-" + lmbp.RandomID("")[:8]}
+	e := &env{t: t, ctx: ctx, gw: gw, tenant: tenant, key: key, u: "e2e-" + lmbp.RandomID("")[:8]}
 	if e.tenant == "" {
 		e.tenant = "acme"
 	}
@@ -323,7 +336,7 @@ func TestExternalGateway(t *testing.T) {
 	}
 	// 5c. Optional: the official openai/anthropic client libraries, unchanged,
 	// with base_url pointed at the gateway (scripts/official-clients.sh).
-	if os.Getenv("LMBP_OFFICIAL_CLIENTS") == "" && ciMode() {
+	if os.Getenv("LMBP_OFFICIAL_CLIENTS") == "" && ciMode() && external {
 		t.Fatal("LMBP_OFFICIAL_CLIENTS not set (required in CI / LMBP_REQUIRE_EXTERNAL mode)")
 	}
 	if cmd := os.Getenv("LMBP_OFFICIAL_CLIENTS"); cmd != "" {
@@ -351,4 +364,25 @@ func TestExternalGateway(t *testing.T) {
 	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
+}
+
+// startReferenceGateway runs the in-repo Go gateway (SQLite store, ephemeral
+// signing key, tenant "acme") on a loopback port for the hermetic mode.
+func startReferenceGateway(t *testing.T) (url, tenant, key string) {
+	t.Helper()
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "gw.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := gateway.New(gateway.Config{Store: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key = "tk_" + strings.Repeat("e", 40)
+	if err := g.RegisterTenantProfile(context.Background(), "acme", key, store.TenantProfile{DisplayName: "Acme (in-process)"}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(g.Handler())
+	t.Cleanup(func() { srv.CloseClientConnections(); srv.Close(); st.Close() })
+	return srv.URL, "acme", key
 }

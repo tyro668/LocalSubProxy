@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -518,12 +519,11 @@ func (t *gtask) stream(ctx context.Context, after int64, keepalive func() error,
 	defer keep.Stop()
 	for {
 		t.mu.Lock()
-		var batch []event
-		for _, e := range t.events {
-			if e.Seq > after {
-				batch = append(batch, e)
-			}
-		}
+		// events are kept in strictly increasing seq order: find the cursor
+		// by binary search instead of rescanning the whole history on every
+		// wake-up (that made a long stream O(n²)).
+		i := sort.Search(len(t.events), func(i int) bool { return t.events[i].Seq > after })
+		batch := append([]event(nil), t.events[i:]...)
 		wait := t.notify
 		// Finished task and nothing after the cursor (Last-Event-ID equal to
 		// or beyond the terminal seq): end instead of waiting forever.

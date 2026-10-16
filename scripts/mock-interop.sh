@@ -79,7 +79,7 @@ for impl in "${impls[@]}"; do
   else
     echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; echo "   --- $impl gateway log (tail)"; tail -30 "$tmp/$impl.log"; fail=1
   fi
-  if LMBP_OFFICIAL_CLIENTS=${LMBP_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LMBP_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LMBP_TENANT=acme LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME \
+  if LMBP_OFFICIAL_CLIENTS=${LMBP_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LMBP_EXPECT_EXTERNAL=1 LMBP_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LMBP_TENANT=acme LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME \
       scripts/strict-test.py go -count=1 ./mock/external -run TestExternalGateway >"$tmp/$impl.e2e" 2>&1; then
     echo "   connector e2e: ok ($(tail -1 "$tmp/$impl.e2e" | sed 's/^strict-test: ok: //'))"
   else

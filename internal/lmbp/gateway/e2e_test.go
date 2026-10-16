@@ -3,10 +3,12 @@ package gateway
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -152,20 +154,37 @@ func TestE2EBackpressure(t *testing.T) {
 	const n = 20000 // ≈6 MB: far more than socket buffers can absorb
 	// The gateway advertises a tiny receive window (8 KiB/task) to the device.
 	r := newRig(t, lmbp.Flow{TaskWindow: 8 << 10, ConnWindow: 32 << 10}, n, 0)
-	resp := doReq(t, r.req("POST", "/v1/chat/completions", map[string]any{"model": r.model("slow"), "stream": true, "messages": user("go")}, nil))
+	// No wall-clock cap on the whole 6 MB stream (the shared client's 30 s
+	// Timeout cut slow -race runs mid-stream); a generous ctx bounds it.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	resp, err := (&http.Client{}).Do(r.req("POST", "/v1/chat/completions", map[string]any{"model": r.model("slow"), "stream": true, "messages": user("go")}, nil).WithContext(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	br := bufio.NewReaderSize(resp.Body, 512)
 	_, _ = br.ReadString('\n')
 	// The client stops reading. Socket buffers fill up, the gateway stops
 	// acknowledging, and the device's emit blocks on its credit window.
+	// Stalled = the device's task window is full (no room for another
+	// chunk) and no chunk was emitted across 20 consecutive observations.
+	const frame = 400 // > one slow chunk frame
 	var stalled int64 = -1
-	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); {
-		time.Sleep(400 * time.Millisecond)
+	stable := 0
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline) && stable < 20; {
+		time.Sleep(50 * time.Millisecond)
+		_, used := r.dev.OutboxUsage()
 		cur := r.exec.emitted.Load()
-		if cur == stalled {
-			break
+		if used+frame > 8<<10 && cur == stalled {
+			stable++
+		} else {
+			stable = 0
 		}
 		stalled = cur
+	}
+	if stable < 20 {
+		t.Fatalf("device never blocked on its credit window (emitted %d)", stalled)
 	}
 	if stalled >= n {
 		t.Fatalf("no backpressure: device emitted all %d chunks while the client was paused", stalled)
