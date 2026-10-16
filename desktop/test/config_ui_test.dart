@@ -65,7 +65,7 @@ void main() {
 
     expect(find.text('配置方案'), findsOneWidget);
     expect(find.text('服务'), findsWidgets);
-    expect(find.text('操作'), findsOneWidget);
+    expect(find.text('方案名称'), findsWidgets);
     expect(find.text('方案详情'), findsOneWidget);
     expect(find.text('编辑'), findsOneWidget);
     expect(find.text('编辑方案'), findsNothing);
@@ -74,7 +74,7 @@ void main() {
     expect(find.text('测试连接'), findsNothing);
     expect(find.text('保存'), findsNothing);
     expect(find.text('测试电脑'), findsOneWidget);
-    expect(find.text('连接详情  ›'), findsOneWidget);
+    expect(find.text('连接详情 ›'), findsOneWidget);
   });
 
   testWidgets('保存配对信息不等于远端服务在线', (tester) async {
@@ -90,7 +90,7 @@ void main() {
 
     expect(find.text('未连接'), findsOneWidget);
     expect(find.text('已连接'), findsNothing);
-    expect(find.text('连接详情  ›'), findsOneWidget);
+    expect(find.text('连接详情 ›'), findsOneWidget);
   });
 
   testWidgets('添加方案先放入列表并选中，编辑后才打开表单', (tester) async {
@@ -99,14 +99,10 @@ void main() {
     await tester.tap(find.text('添加方案').first);
     await tester.pumpAndSettle();
 
+    // the new draft is listed, selected and opened straight in the editor
     expect(find.text('未命名方案'), findsWidgets);
-    expect(find.text('方案详情'), findsOneWidget);
-    expect(find.text('保存'), findsNothing);
-    expect(find.text('deepseek-v4-pro'), findsOneWidget);
-
-    await tester.tap(find.text('编辑'));
-    await tester.pumpAndSettle();
     expect(find.text('编辑方案'), findsOneWidget);
+    expect(find.text('deepseek-v4-pro'), findsOneWidget);
     expect(find.text('Codex CLI 路径'), findsOneWidget);
     expect(find.text('保存'), findsOneWidget);
 
@@ -125,7 +121,7 @@ void main() {
     expect(find.text('编辑方案'), findsNothing);
     expect(find.text('方案详情'), findsOneWidget);
     expect(find.text('Anthropic 兼容协议'), findsWidgets);
-    expect(find.text('API 密钥'), findsNothing);
+    expect(find.byType(TextField), findsNothing);
 
     await tester.tap(find.text('编辑'));
     await tester.pumpAndSettle();
@@ -139,8 +135,6 @@ void main() {
     try {
       await pumpWorkspace(tester);
       await tester.tap(find.text('添加方案').first);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('编辑'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.widgetWithText(Select<String>, 'OpenAI Codex（订阅）'));
@@ -174,8 +168,6 @@ void main() {
     await pumpWorkspace(tester);
     await tester.tap(find.text('添加方案').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('编辑'));
-    await tester.pumpAndSettle();
 
     TextField field(String hint) => tester.widget<TextField>(
       find.ancestor(of: find.text(hint), matching: find.byType(TextField)),
@@ -198,11 +190,10 @@ void main() {
   // no /models endpoint must be able to skip the model list probe from the
   // editor (it was only kept for configs that already had it).
   testWidgets('兼容协议方案可在高级选项中勾选跳过模型列表探测', (tester) async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.macOS; // Select popups as on the desktop
+    debugDefaultTargetPlatformOverride =
+        TargetPlatform.macOS; // Select popups as on the desktop
     await pumpWorkspace(tester);
     await tester.tap(find.text('添加方案').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('编辑'));
     await tester.pumpAndSettle();
     // a new scheme starts as Codex (no option there); pick a compatible protocol
     expect(find.byKey(const ValueKey('skip-model-probe')), findsNothing);
@@ -212,8 +203,17 @@ void main() {
     await tester.tap(find.text('OpenAI 兼容协议').last);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
+    // the option sits in the collapsed 高级选项 section
+    expect(find.byKey(const ValueKey('skip-model-probe')), findsNothing);
+    await tester.ensureVisible(find.byKey(const ValueKey('advanced-toggle')));
+    await tester.tap(find.byKey(const ValueKey('advanced-toggle')));
+    await tester.pumpAndSettle();
     final box = find.byKey(const ValueKey('skip-model-probe'));
-    expect(box, findsOneWidget, reason: 'no editor option to skip the model list probe');
+    expect(
+      box,
+      findsOneWidget,
+      reason: 'no editor option to skip the model list probe',
+    );
     final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
     expect(state.body()['skip_model_probe'], isFalse);
     await tester.ensureVisible(box);

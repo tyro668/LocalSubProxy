@@ -42,14 +42,14 @@ void main() {
     ),
     'online all': (
       st([conn('a', 'online'), conn('b', 'online')]),
-      '已连接（2/2 在线）',
+      '已连接 · 2/2 在线',
       LucideIcons.circleCheck,
       '已连接 2/2',
     ),
     'partial': (
       st([conn('a', 'online'), conn('b', 'disconnected')]),
-      '部分在线（1/2 在线）',
-      LucideIcons.circleAlert,
+      '部分在线 · 1/2 在线',
+      LucideIcons.triangleAlert,
       '已连接 1/2',
     ),
     'connecting': (
@@ -60,14 +60,19 @@ void main() {
     ),
     'disconnected': (
       st([conn('a', 'disconnected'), conn('b', 'disconnected')]),
-      '已断开（0/2 在线）',
+      '已断开 · 0/2 在线',
       LucideIcons.unplug,
       '未连接 0/2',
     ),
-    'revoked': (st([conn('a', 'revoked')]), '已被吊销', LucideIcons.ban, '未连接 0/1'),
+    'revoked': (
+      st([conn('a', 'revoked')]),
+      '已被吊销 · 1 个错误',
+      LucideIcons.ban,
+      '未连接 0/1',
+    ),
     'error': (
       st([conn('a', 'error'), conn('b', 'disconnected')]),
-      '连接异常（0/2 在线）',
+      '连接异常 · 0/2 在线 · 1 个错误',
       LucideIcons.triangleAlert,
       '未连接 0/2',
     ),

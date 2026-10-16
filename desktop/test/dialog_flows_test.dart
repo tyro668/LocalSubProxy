@@ -113,7 +113,10 @@ void main() {
     expect(find.text('远端服务连接'), findsOneWidget);
     expect(find.text('输入地址'), findsOneWidget); // step rail visible
 
-    await tester.enterText(find.byType(TextField).last, 'https://acme.example.com');
+    await tester.enterText(
+      find.byType(TextField).last,
+      'https://acme.example.com',
+    );
     await tester.tap(find.text('连接'));
     await tester.pumpAndSettle();
     expect(kernel.calls, contains('pair_prepare'));
@@ -135,6 +138,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('ABCD-1234'), findsNothing);
     expect(find.text('输入地址'), findsNothing); // step 3: connection list
+    // 撤销 sits in the collapsed card details
+    expect(find.text('Acme SaaS'), findsWidgets);
+    await tester.tap(find.byKey(const ValueKey('conn-expand-b_1')));
+    await tester.pumpAndSettle();
     expect(find.text('撤销'), findsOneWidget);
     expect(dialogs(), findsOneWidget, reason: 'same dialog, content switched');
     await unmount(tester);
@@ -149,7 +156,7 @@ void main() {
       'connections': [connection()],
     };
     await pumpHome(tester);
-    await tester.tap(find.textContaining('已连接'));
+    await tester.tap(find.byKey(const ValueKey('status-pill-ok')));
     await tester.pumpAndSettle();
     expect(dialogs(), findsOneWidget);
     await tester.tap(
@@ -157,7 +164,8 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(dialogs(), findsNWidgets(2));
-    expect(find.text('「Acme SaaS」可用模型'), findsOneWidget);
+    expect(find.text('可用模型'), findsOneWidget);
+    expect(find.textContaining('Acme SaaS · 只能调用勾选的方案'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('app-dialog-close')).last);
     await tester.pumpAndSettle();

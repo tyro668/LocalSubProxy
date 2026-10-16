@@ -63,7 +63,7 @@ void main() {
     expect(a.allows('openai/gpt-4o-mini'), isTrue);
     expect(a.allows('openai/gpt-5'), isFalse);
     final b = s.connections.last;
-    expect(b.stateLabel, '已被吊销');
+    expect(b.stateLabel, '已吊销');
     expect(
       b.allows('ollama/qwen3'),
       isFalse,
@@ -110,7 +110,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('已连接 1/2'), findsOneWidget);
+    expect(find.text('部分在线 1/2 · 1 个错误'), findsOneWidget);
+    expect(find.byKey(const ValueKey('status-pill-warn')), findsOneWidget);
     expect(find.text('3 个任务'), findsOneWidget);
   });
 

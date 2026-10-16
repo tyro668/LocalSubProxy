@@ -93,19 +93,21 @@ void main() {
             .first,
       );
       final style = title.text.style!;
-      expect(style.fontSize, 18);
-      expect(style.fontWeight, FontWeight.w700);
-      expect(style.color, AppDialog.titleColor);
+      // design tokens: 16px semibold title, secondary-grey close icon
+      final tokens = AppTokens.light;
+      expect(style.fontSize, 16);
+      expect(style.fontWeight, FontWeight.w600);
+      expect(style.color, tokens.fg);
       final x = t.widget<Icon>(find.byIcon(LucideIcons.x));
-      expect(x.color, AppDialog.closeColor);
+      expect(x.color, tokens.fg2);
       expect(
         t.getRect(find.byIcon(LucideIcons.x)).center.dx,
         greaterThan(dialog.center.dx),
       );
       final box = t.widget<Container>(find.byKey(const ValueKey('app-dialog')));
       final deco = box.decoration as BoxDecoration;
-      expect(deco.borderRadius, BorderRadius.circular(20));
-      expect(deco.color, const Color(0xFFFFFFFF));
+      expect(deco.borderRadius, BorderRadius.circular(AppRadius.card));
+      expect(deco.color, tokens.surface);
     },
   );
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
@@ -9,12 +10,11 @@ import 'status_contract.dart';
 import 'app_dialog.dart';
 export 'app_dialog.dart';
 import 'profile_workspace.dart';
+import 'tokens.dart';
 import 'tray.dart';
-
-const _brand = Color(0xFF4D25D8);
-const _brandForeground = Color(0xFFFFFFFF);
-const _brandDark = Color(0xFFAB94FF);
-const _brandDarkForeground = Color(0xFF0C1224);
+import 'ui_kit.dart';
+export 'tokens.dart';
+export 'ui_kit.dart';
 
 String _transportLabel(Object? transport) => switch (transport) {
   'wss' => 'WSS（lmbp）',
@@ -22,22 +22,16 @@ String _transportLabel(Object? transport) => switch (transport) {
   _ => '未连接',
 };
 
-ThemeData _lightTheme() => ThemeData(
-  colorScheme: ColorSchemes.lightZinc.copyWith(
-    primary: () => _brand,
-    primaryForeground: () => _brandForeground,
-    ring: () => _brand,
-  ),
-  radius: 0.6,
+/// Light theme from the design tokens.
+ThemeData appLightTheme() => ThemeData(
+  colorScheme: AppTokens.light.colorScheme(Brightness.light),
+  radius: 0.5,
 );
 
-ThemeData _darkTheme() => ThemeData.dark(
-  colorScheme: ColorSchemes.darkZinc.copyWith(
-    primary: () => _brandDark,
-    primaryForeground: () => _brandDarkForeground,
-    ring: () => _brandDark,
-  ),
-  radius: 0.6,
+/// Dark theme from the design tokens (same layout, dark token set).
+ThemeData appDarkTheme() => ThemeData.dark(
+  colorScheme: AppTokens.dark.colorScheme(Brightness.dark),
+  radius: 0.5,
 );
 
 void main() async {
@@ -53,9 +47,10 @@ class ProxyApp extends StatelessWidget {
   Widget build(BuildContext context) => ShadcnApp(
     title: 'LocalSubProxy',
     debugShowCheckedModeBanner: false,
-    theme: _lightTheme(),
-    darkTheme: _darkTheme(),
-    themeMode: ThemeMode.light,
+    theme: appLightTheme(),
+    darkTheme: appDarkTheme(),
+    // follows the system appearance
+    themeMode: ThemeMode.system,
     home: const HomePage(),
   );
 }
@@ -85,6 +80,9 @@ class _HomePageState extends State<HomePage> {
   String? pairLinkUrl;
   // Verified SaaS identity awaiting the user's explicit approve/deny.
   Map<String, dynamic>? consent;
+
+  /// When the current pair code was issued (drives the countdown).
+  DateTime? pairStartedAt;
   // Pairing session id (pair_id) and the models chosen on the consent page
   // (default deny: nothing is checked until the user picks).
   String? pairId;
@@ -134,21 +132,36 @@ class _HomePageState extends State<HomePage> {
       location: ToastLocation.bottomRight,
       showDuration: const Duration(seconds: 4),
       builder: (context, overlay) {
-        final theme = Theme.of(context);
-        return SurfaceCard(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        final t = AppTokens.of(context);
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: t.surface,
+            borderRadius: BorderRadius.circular(AppRadius.control),
+            border: Border.all(color: t.border),
+            boxShadow: [
+              BoxShadow(
+                color: t.shadow,
+                blurRadius: 24,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(
-                error ? LucideIcons.triangleAlert : LucideIcons.circleCheck,
-                size: 16,
-                color: error
-                    ? theme.colorScheme.destructive
-                    : theme.colorScheme.chart2,
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Icon(
+                  error ? LucideIcons.triangleAlert : LucideIcons.circleCheck,
+                  size: 16,
+                  color: error ? t.danger : t.success,
+                ),
               ),
-              const Gap(10),
-              Expanded(child: Text(message).small()),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(message, style: AppText.sm.copyWith(color: t.fg)),
+              ),
             ],
           ),
         );
@@ -169,19 +182,17 @@ class _HomePageState extends State<HomePage> {
           title: Text(title),
           content: Text(message),
           actions: [
-            OutlineButton(
+            AppButton(
+              label: '取消',
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消'),
             ),
-            destructive
-                ? DestructiveButton(
-                    onPressed: () => Navigator.of(ctx).pop(true),
-                    child: Text(action),
-                  )
-                : PrimaryButton(
-                    onPressed: () => Navigator.of(ctx).pop(true),
-                    child: Text(action),
-                  ),
+            AppButton(
+              label: action,
+              variant: destructive
+                  ? ButtonVariant.destructive
+                  : ButtonVariant.primary,
+              onPressed: () => Navigator.of(ctx).pop(true),
+            ),
           ],
         ),
       ),
@@ -208,6 +219,7 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     await refresh();
+    await loadUsage(); // per-scheme 7-day usage for the detail pane
   }
 
   Future<void> refresh({bool force = false}) async {
@@ -269,6 +281,7 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           consent = null;
           awaitingCode = true;
+          pairStartedAt = DateTime.now();
           pairUserCode = p['user_code'] as String?;
           pairLinkUrl = p['link_url'] as String?;
         });
@@ -324,17 +337,6 @@ class _HomePageState extends State<HomePage> {
       }
     }
     return id;
-  }
-
-  static String _fmtTokens(num n) {
-    String trim(double v) {
-      final s = v.toStringAsFixed(1);
-      return s.endsWith('.0') ? s.substring(0, s.length - 2) : s;
-    }
-
-    if (n >= 1000000) return '${trim(n / 1000000)}M';
-    if (n >= 1000) return '${trim(n / 1000)}k';
-    return '$n';
   }
 
   Future<void> pollPairing() async {
@@ -415,34 +417,47 @@ class _HomePageState extends State<HomePage> {
     // are listed so that saving keeps authorizations the user did not touch.
     final entries = policyEntries(adapters, c.allow);
     final selected = <String>{...c.allow};
+    final types = adapterTypes(adapters);
     final ok = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setLocal) => AppDialog(
-            title: Text('「${c.title}」可用模型'),
-            maxWidth: 540,
-            content: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 460),
-              child: ModelChecklist(
-                models: [for (final e in entries) e.id],
-                notes: {for (final e in entries) e.id: e.note},
-                labels: {for (final e in entries) e.id: e.label},
-                details: {for (final e in entries) e.id: e.detail},
-                selected: selected,
-                lockedBy: (m) => coveredByWildcard(m, selected),
-                onChanged: (m, v) =>
-                    setLocal(() => v ? selected.add(m) : selected.remove(m)),
-              ),
+            title: const Text('可用模型'),
+            subtitle: Text('${c.title} · 只能调用勾选的方案'),
+            maxWidth: 480,
+            content: ModelChecklist(
+              models: [for (final e in entries) e.id],
+              notes: {for (final e in entries) e.id: e.note},
+              labels: {for (final e in entries) e.id: e.label},
+              details: {
+                for (final e in entries)
+                  e.id: modelDetail(e.id, adapters, types, model: e.detail),
+              },
+              selected: selected,
+              lockedBy: (m) => coveredByWildcard(m, selected),
+              onChanged: (m, v) =>
+                  setLocal(() => v ? selected.add(m) : selected.remove(m)),
+              onAll: (v) => setLocal(() {
+                if (v) {
+                  selected.addAll([
+                    for (final e in entries)
+                      if (!e.isWildcard) e.id,
+                  ]);
+                } else {
+                  selected.clear();
+                }
+              }),
             ),
             actions: [
-              OutlineButton(
+              AppButton(
+                label: '取消',
                 onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('取消'),
               ),
-              PrimaryButton(
+              AppButton(
+                label: '保存',
+                variant: ButtonVariant.primary,
                 onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('保存'),
               ),
             ],
           ),
@@ -468,7 +483,8 @@ class _HomePageState extends State<HomePage> {
           host: this,
           title: '远端服务连接',
           content: connectionCard,
-          maxWidth: 800,
+          footer: connectionFooter,
+          maxWidth: connectStep == 3 ? 720 : 760,
           scrollContent: false,
         ),
       ),
@@ -481,72 +497,42 @@ class _HomePageState extends State<HomePage> {
     await showOverlay<void>(
       context,
       DialogConfiguration<void>(
-        builder: (_) =>
-            _DialogRelay(host: this, title: '用量统计', content: usageCard),
+        builder: (_) => _DialogRelay(
+          host: this,
+          title: '用量统计',
+          subtitle: '近 7 天 · 本机',
+          maxWidth: 560,
+          headerActions: () => [
+            AppIconButton(
+              key: const ValueKey('usage-refresh'),
+              icon: LucideIcons.refreshCw,
+              tooltip: '刷新用量',
+              onPressed: loadUsage,
+            ),
+          ],
+          content: usageCard,
+        ),
       ),
     ).future;
   }
 
-  Widget usageCard() {
-    final rows = [...usage]
-      ..sort(
-        (a, b) => (b['total_tokens'] ?? 0).compareTo(a['total_tokens'] ?? 0),
-      );
-    Widget cell(String v, {bool head = false, bool right = false}) {
-      final t = Text(v, textAlign: right ? TextAlign.right : null);
-      return right
-          ? SizedBox(width: 72, child: head ? t.xSmall().muted() : t.small())
-          : Expanded(
-              child: head
-                  ? t.xSmall().muted()
-                  : t.small().medium().singleLine().ellipsis,
-            );
-    }
+  /// Total tokens per scheme id, for the scheme details.
+  Map<String, int> get usageByScheme => {
+    for (final b in usage)
+      '${b['adapter'] ?? ''}': ((b['total_tokens'] ?? 0) as num).toInt(),
+  };
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Expanded(child: const Text('近 7 天用量').small().medium()),
-            GhostButton(
-              size: ButtonSize.small,
-              onPressed: loadUsage,
-              child: const Text('刷新用量'),
-            ),
-          ],
+  Widget usageCard() => UsagePanel(
+    rows: [
+      for (final b in usage)
+        UsageRow(
+          _schemeName('${b['adapter'] ?? ''}'),
+          ((b['prompt_tokens'] ?? 0) as num).toInt(),
+          ((b['completion_tokens'] ?? 0) as num).toInt(),
+          ((b['total_tokens'] ?? 0) as num).toInt(),
         ),
-        const Gap(10),
-        if (rows.isEmpty)
-          const Text('暂无记录（不记录对话内容）').small().muted()
-        else ...[
-          Row(
-            children: [
-              cell('方案名', head: true),
-              cell('输入', head: true, right: true),
-              cell('输出', head: true, right: true),
-              cell('总计', head: true, right: true),
-            ],
-          ),
-          const Gap(4),
-          const Divider(),
-          for (final b in rows) ...[
-            const Gap(2),
-            Row(
-              children: [
-                cell(_schemeName('${b['adapter'] ?? ''}')),
-                cell(_fmtTokens(b['prompt_tokens'] ?? 0), right: true),
-                cell(_fmtTokens(b['completion_tokens'] ?? 0), right: true),
-                cell(_fmtTokens(b['total_tokens'] ?? 0), right: true),
-              ],
-            ),
-            const Gap(2),
-          ],
-        ],
-      ],
-    );
-  }
+    ],
+  );
 
   Future<void> edit([Map<String, dynamic>? existing]) async {
     final changed = await showOverlay<bool>(
@@ -587,41 +573,21 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Widget connectionCard() {
-    if (!kernelReady) {
-      return Card(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Alert(
-              destructive: true,
-              leading: const Icon(LucideIcons.triangleAlert),
-              title: const Text('内核启动失败'),
-              content: Text(kernelError ?? '内核启动失败'),
-            ),
-            const Gap(16),
-            Align(
-              alignment: Alignment.centerRight,
-              child: PrimaryButton(
-                onPressed: boot,
-                leading: const Icon(LucideIcons.refreshCw),
-                child: const Text('重试'),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
+  /// Step of the connect dialog: 0 address, 1 consent, 2 code, 3 list.
+  int get connectStep {
     final paired = status?['paired'] == true;
-    final recovery = status?['adapter_recovery'] as Map?;
-    final step = paired && !adding && consent == null && !awaitingCode
+    return paired && !adding && consent == null && !awaitingCode
         ? 3
         : awaitingCode
         ? 2
         : consent != null
         ? 1
         : 0;
+  }
+
+  Widget connectionCard() {
+    final recovery = status?['adapter_recovery'] as Map?;
+    final step = connectStep;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -629,20 +595,22 @@ class _HomePageState extends State<HomePage> {
         if (recovery != null && !recoveryDismissed) ...[
           // Informational, dismissible and shown once: the app works
           // normally with an empty adapter list; the old file is kept.
-          Alert(
-            leading: const Icon(LucideIcons.info),
-            title: const Text('旧的模型方案配置已备份'),
-            content: Text(
-              '本机保存的模型方案配置无法用当前密钥解密（可能来自旧版本应用），'
-              '已备份到：${recovery['backup']}\n'
-              '应用可以正常使用，请重新添加模型方案即可。',
-            ),
-            trailing: GhostButton(
+          AppAlert(
+            tone: Tone.brand,
+            icon: LucideIcons.info,
+            title: '旧的模型方案配置已备份',
+            message:
+                '本机保存的模型方案配置无法用当前密钥解密（可能来自旧版本应用），'
+                '已备份到：${recovery['backup']}\n'
+                '应用可以正常使用，请重新添加模型方案即可。',
+            trailing: AppButton(
+              label: '知道了',
+              variant: ButtonVariant.ghost,
+              small: true,
               onPressed: dismissRecovery,
-              child: const Text('知道了'),
             ),
           ),
-          const Gap(16),
+          const SizedBox(height: 16),
         ],
         // Step 3 manages its own scrolling (fixed header/footer, list
         // scrolls); the pairing steps scroll as a whole.
@@ -654,8 +622,8 @@ class _HomePageState extends State<HomePage> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SizedBox(width: 140, child: _StepRail(current: step)),
-                  const Gap(24),
+                  SizedBox(width: 160, child: _StepRail(current: step)),
+                  const SizedBox(width: AppSpace.s24),
                   Expanded(child: _connectStepPane(step)),
                 ],
               ),
@@ -665,74 +633,148 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  /// Footer bar of the connect dialog for the current step.
+  Widget connectionFooter() {
+    switch (connectStep) {
+      case 1:
+        return Row(
+          children: [
+            const Spacer(),
+            AppButton(label: '拒绝', onPressed: busy ? null : denyConsent),
+            const SizedBox(width: 8),
+            AppButton(
+              label: busy ? '处理中…' : '同意并配对',
+              icon: LucideIcons.link,
+              variant: ButtonVariant.primary,
+              onPressed: busy ? null : approveConsent,
+            ),
+          ],
+        );
+      case 2:
+        return Row(
+          children: [
+            AppButton(
+              label: '返回',
+              icon: LucideIcons.chevronLeft,
+              variant: ButtonVariant.ghost,
+              onPressed: busy ? null : cancelPairing,
+            ),
+            const Spacer(),
+            AppButton(label: '取消配对', onPressed: busy ? null : cancelPairing),
+          ],
+        );
+      case 3:
+        return ConnectionsPanel.footer(status);
+      default:
+        return Row(
+          children: [
+            if (adding)
+              AppButton(
+                label: '返回连接列表',
+                icon: LucideIcons.chevronLeft,
+                variant: ButtonVariant.ghost,
+                onPressed: busy ? null : () => setState(() => adding = false),
+              ),
+            const Spacer(),
+            AppButton(
+              label: '连接',
+              icon: LucideIcons.link,
+              variant: ButtonVariant.primary,
+              onPressed: busy ? null : prepareConnection,
+            ),
+          ],
+        );
+    }
+  }
+
+  /// Opens a URL with the platform handler (pairing confirmation page,
+  /// data directory).
+  Future<void> openExternal(String target) async {
+    try {
+      if (Platform.isMacOS) {
+        await Process.run('open', [target]);
+      } else if (Platform.isWindows) {
+        await Process.run('explorer.exe', [target]);
+      } else {
+        await Process.run('xdg-open', [target]);
+      }
+    } catch (e) {
+      show('无法打开：$e', error: true);
+    }
+  }
+
   Widget _connectStepPane(int step) {
-    final theme = Theme.of(context);
+    final t = AppTokens.of(context);
     switch (step) {
       case 1: // 身份验证：consent — the SaaS identity was verified by signature
         final saas =
             (consent?['saas'] as Map?)?.cast<String, dynamic>() ?? const {};
         final saasName = '${saas['name'] ?? ''}'.trim();
         final verified = consent?['verified'] == true;
+        final types = adapterTypes(adapters);
+        final concrete = consentModels;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _StepHeader(
               icon: LucideIcons.shieldCheck,
               title: saasName.isEmpty ? '确认服务授权' : '「$saasName」请求使用本机模型',
-              desc: verified ? '身份已通过网关签名校验' : '身份未校验',
+              trailing: verified
+                  ? const StatusBadge(
+                      '签名已校验',
+                      tone: Tone.success,
+                      icon: LucideIcons.check,
+                    )
+                  : const StatusBadge('身份未校验', tone: Tone.warning),
             ),
-            const Gap(14),
+            const SizedBox(height: 16),
             _ConsentView(consent: consent!),
-            const Gap(12),
-            const Text('可用本机模型').small().medium(),
-            const Gap(6),
+            const SizedBox(height: 16),
             ModelChecklist(
-              models: consentModels,
+              title: '授权给它的模型',
+              models: concrete,
               labels: schemeLabels(adapters),
-              details: {
-                for (final m in consentModels)
-                  if (m.contains('/')) m: m.substring(m.indexOf('/') + 1),
+              types: {
+                for (final m in concrete) m: types[m.split('/').first] ?? '',
               },
+              details: {
+                for (final m in concrete)
+                  m: adapterTypeLabel(types[m.split('/').first] ?? ''),
+              },
+              inlineDetail: true,
               selected: consentAllow,
               onChanged: (m, v) => setState(
                 () => v ? consentAllow.add(m) : consentAllow.remove(m),
               ),
-            ),
-            const Gap(16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                OutlineButton(
-                  onPressed: busy ? null : denyConsent,
-                  child: const Text('拒绝'),
-                ),
-                const Gap(8),
-                PrimaryButton(
-                  onPressed: busy ? null : approveConsent,
-                  leading: const Icon(LucideIcons.link),
-                  child: Text(busy ? '处理中…' : '同意并配对'),
-                ),
-              ],
+              onAll: (v) => setState(() {
+                v ? consentAllow.addAll(concrete) : consentAllow.clear();
+              }),
             ),
           ],
         );
       case 2: // 确认授权：show the pairing code for the remote page
+        final left = pairStartedAt == null
+            ? const Duration(minutes: 10)
+            : const Duration(minutes: 10) -
+                  DateTime.now().difference(pairStartedAt!);
+        final expired = left.isNegative || left == Duration.zero;
+        final mm = left.inMinutes.clamp(0, 99).toString().padLeft(2, '0');
+        final ss = (left.inSeconds % 60)
+            .clamp(0, 59)
+            .toString()
+            .padLeft(2, '0');
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _StepHeader(
               icon: LucideIcons.keyRound,
               title: '输入配对码',
-              desc: '在远端服务页面输入此配对码即可完成连接',
+              desc: '在远端服务页面输入此配对码完成连接',
             ),
-            const Gap(16),
-            Container(
-              decoration: BoxDecoration(
-                color: theme.colorScheme.muted.withValues(alpha: 0.55),
-                border: Border.all(color: theme.colorScheme.border),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            const SizedBox(height: 16),
+            AppCard(
+              subtle: true,
+              padding: const EdgeInsets.all(AppSpace.s24),
               child: Column(
                 children: [
                   Row(
@@ -740,43 +782,66 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       Text(
                         pairUserCode ?? '',
-                        style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 4,
-                          fontFamily: 'monospace',
+                        key: const ValueKey('pair-code'),
+                        style: monoStyle(
+                          AppText.sm.copyWith(
+                            fontSize: 32,
+                            height: 40 / 32,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 6,
+                            color: t.fg,
+                          ),
                         ),
                       ),
-                      const Gap(6),
-                      Tooltip(
-                        tooltip: (context) =>
-                            const TooltipContainer(child: Text('复制配对码')),
-                        child: IconButton.ghost(
-                          density: ButtonDensity.icon,
-                          icon: const Icon(LucideIcons.copy),
-                          onPressed: () {
-                            Clipboard.setData(
-                              ClipboardData(text: pairUserCode ?? ''),
-                            );
-                            show('配对码已复制');
-                          },
-                        ),
+                      const SizedBox(width: 12),
+                      AppIconButton(
+                        icon: LucideIcons.copy,
+                        outline: true,
+                        tooltip: '复制配对码',
+                        onPressed: () {
+                          Clipboard.setData(
+                            ClipboardData(text: pairUserCode ?? ''),
+                          );
+                          show('配对码已复制');
+                        },
                       ),
                     ],
                   ),
-                  const Gap(6),
-                  const Text('10 分钟内有效').xSmall().muted(),
+                  const SizedBox(height: 12),
+                  if (expired)
+                    Text(
+                      '配对码已过期，请返回重新开始配对',
+                      style: AppText.sm.copyWith(color: t.danger),
+                    )
+                  else
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SpinnerArc(),
+                        const SizedBox(width: 8),
+                        Text(
+                          '等待远端确认… ',
+                          style: AppText.sm.copyWith(color: t.fg2),
+                        ),
+                        Text(
+                          '$mm:$ss',
+                          style: monoStyle(AppText.sm.copyWith(color: t.fg)),
+                        ),
+                        Text(' 后过期', style: AppText.sm.copyWith(color: t.fg2)),
+                      ],
+                    ),
                 ],
               ),
             ),
-            const Gap(14),
-            Align(
-              alignment: Alignment.centerRight,
-              child: GhostButton(
-                onPressed: busy ? null : cancelPairing,
-                child: const Text('返回'),
+            if ((pairLinkUrl ?? '').isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Center(
+                child: AppButton(
+                  label: '在浏览器中打开确认页 ›',
+                  onPressed: () => openExternal(pairLinkUrl!),
+                ),
               ),
-            ),
+            ],
           ],
         );
       case 3: // 连接列表：every paired SaaS
@@ -800,43 +865,40 @@ class _HomePageState extends State<HomePage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _StepHeader(icon: LucideIcons.link, title: '连接远端服务'),
-            const Gap(14),
-            TextField(
+            const _StepHeader(
+              icon: LucideIcons.link,
+              title: '连接远端服务',
+              desc: '粘贴 SaaS 提供的服务地址或配对链接',
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '服务地址',
+              style: AppText.sm.copyWith(
+                color: t.fg,
+                fontWeight: AppText.medium,
+              ),
+            ),
+            const SizedBox(height: 6),
+            appTextField(
+              context,
               controller: remoteUrl,
-              placeholder: const Text('输入服务地址（https://…）或配对链接（lmbp://pair?…）'),
-              features: const [InputFeature.clear()],
+              placeholder: '输入服务地址（https://…）或配对链接（lmbp://pair?…）',
+              clear: true,
               onSubmitted: (_) {
                 if (!busy) prepareConnection();
               },
             ),
-            if ((status?['pairing_error'] ?? '') != '') ...[
-              const Gap(8),
+            const SizedBox(height: 4),
+            if ((status?['pairing_error'] ?? '') != '')
               Text(
                 '${status?['pairing_error']}',
-                style: TextStyle(color: theme.colorScheme.destructive),
-              ).xSmall(),
-            ],
-            const Gap(16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (adding) ...[
-                  GhostButton(
-                    onPressed: busy
-                        ? null
-                        : () => setState(() => adding = false),
-                    child: const Text('返回连接列表'),
-                  ),
-                  const Gap(8),
-                ],
-                PrimaryButton(
-                  onPressed: busy ? null : prepareConnection,
-                  leading: const Icon(LucideIcons.link),
-                  child: Text(busy ? '处理中…' : '连接'),
-                ),
-              ],
-            ),
+                style: AppText.xs.copyWith(color: t.danger),
+              )
+            else
+              Text(
+                '支持 https://… 或 lmbp://pair?… 两种格式。本机只会主动外连，无需开放端口。',
+                style: AppText.xs.copyWith(color: t.fg3),
+              ),
           ],
         );
     }
@@ -899,8 +961,9 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
     return Scaffold(
-      backgroundColor: const Color(0xFFFFFFFF),
+      backgroundColor: t.bg,
       loadingProgressIndeterminate: busy,
       child: AppShell(
         status: status,
@@ -909,57 +972,321 @@ class _HomePageState extends State<HomePage> {
                 api: api,
                 adapters: adapters,
                 status: status,
+                usage: usageByScheme,
                 onConnectionTap: openConnection,
                 onUsageTap: openUsage,
                 onChanged: () => refresh(force: true),
               )
-            : Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 560),
-                  child: connectionCard(),
-                ),
+            : KernelErrorPage(
+                error: kernelError ?? '内核启动失败',
+                onRetry: boot,
+                onOpenDataDir: () => openExternal(dataDirPath()),
               ),
       ),
     );
   }
 }
 
+/// The kernel's default data directory (os.UserConfigDir()/localsubproxy).
+String dataDirPath() {
+  final env = Platform.environment;
+  if (Platform.isWindows) return '${env['APPDATA'] ?? ''}\\localsubproxy';
+  final home = env['HOME'] ?? '';
+  if (Platform.isMacOS) {
+    return '$home/Library/Application Support/localsubproxy';
+  }
+  return '${env['XDG_CONFIG_HOME'] ?? '$home/.config'}/localsubproxy';
+}
+
 /// Shared outer layout: kernel-wide warnings stay visible on every page
 /// (e.g. after the last connection is revoked and the pairing page shows).
-class AppShell extends StatelessWidget {
+class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.status, required this.child});
 
   final Map<String, dynamic>? status;
   final Widget child;
 
   @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  /// The warning text the user closed; a different warning shows again.
+  String? dismissed;
+
+  Future<void> details(String warning) async {
+    await showOverlay<void>(
+      context,
+      DialogConfiguration<void>(
+        builder: (ctx) => AppDialog(
+          title: const Text('本机私钥清理未完成'),
+          maxWidth: 520,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('已撤销连接的部分私钥文件暂时无法删除，应用会在每次启动时重试。'),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTokens.of(ctx).mutedBg,
+                  borderRadius: BorderRadius.circular(AppRadius.control),
+                ),
+                child: SelectableText(
+                  warning,
+                  style: monoStyle(
+                    AppText.xs.copyWith(
+                      color: AppTokens.of(ctx).fg2,
+                      height: 18 / 12,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            AppButton(
+              label: '知道了',
+              variant: ButtonVariant.primary,
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+          ],
+        ),
+      ),
+    ).future;
+  }
+
+  @override
   Widget build(BuildContext context) {
     // The tree shape never changes (only the bar's content does), so the
     // page below keeps its state (e.g. unsaved drafts) when a warning shows.
-    final warning = DesktopStatus.parse(status).cleanupWarning;
-    final theme = Theme.of(context);
+    final ds = DesktopStatus.parse(widget.status);
+    final warning = ds.cleanupWarning;
+    final t = AppTokens.of(context);
+    final n = ds.cleanupPending;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (warning == null)
+        if (warning == null || warning == dismissed)
           const SizedBox.shrink(key: ValueKey('cleanup-warning-slot'))
         else
           Container(
             key: const ValueKey('cleanup-warning'),
-            color: theme.colorScheme.destructive.withValues(alpha: 0.08),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              '本机私钥清理未完成（将在每次启动时重试）：$warning',
-              style: TextStyle(color: theme.colorScheme.destructive),
-            ).small,
+            height: AppSize.banner,
+            padding: const EdgeInsets.fromLTRB(24, 0, 16, 0),
+            decoration: BoxDecoration(
+              color: t.danger50,
+              border: Border(bottom: BorderSide(color: t.danger200)),
+            ),
+            child: Row(
+              children: [
+                Icon(LucideIcons.triangleAlert, size: 16, color: t.dangerFg),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    n > 0
+                        ? '有 $n 个已撤销连接的本机私钥未能删除，将在下次启动时重试。'
+                        : '部分已撤销连接的本机私钥未能删除，将在下次启动时重试。',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.sm.copyWith(color: t.dangerFg),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  key: const ValueKey('cleanup-warning-details'),
+                  onTap: () => details(warning),
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: Text(
+                      '查看详情',
+                      style: AppText.sm.copyWith(
+                        color: t.dangerFg,
+                        fontWeight: AppText.medium,
+                        decoration: TextDecoration.underline,
+                        decorationColor: t.dangerFg,
+                      ),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                AppIconButton(
+                  key: const ValueKey('cleanup-warning-close'),
+                  icon: LucideIcons.x,
+                  size: 28,
+                  color: t.dangerFg,
+                  tooltip: '关闭',
+                  onPressed: () => setState(() => dismissed = warning),
+                ),
+              ],
+            ),
           ),
-        Expanded(key: const ValueKey('app-shell-body'), child: child),
+        Expanded(key: const ValueKey('app-shell-body'), child: widget.child),
       ],
     );
   }
 }
 
-/// Numbered rail for the connect dialog's 4 steps.
+/// Full-window page shown when the native kernel failed to start.
+class KernelErrorPage extends StatefulWidget {
+  const KernelErrorPage({
+    super.key,
+    required this.error,
+    required this.onRetry,
+    required this.onOpenDataDir,
+  });
+  final String error;
+  final VoidCallback onRetry;
+  final VoidCallback onOpenDataDir;
+
+  @override
+  State<KernelErrorPage> createState() => _KernelErrorPageState();
+}
+
+class _KernelErrorPageState extends State<KernelErrorPage> {
+  bool open = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final raw = cleanError(widget.error);
+    final hint = kernelErrorHint(raw);
+    return ColoredBox(
+      color: t.subtle,
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpace.s24),
+          child: Container(
+            key: const ValueKey('kernel-error'),
+            width: 520,
+            padding: const EdgeInsets.all(AppSpace.s32),
+            decoration: BoxDecoration(
+              color: t.surface,
+              borderRadius: BorderRadius.circular(AppRadius.card),
+              border: Border.all(color: t.border),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const IconTile(
+                      LucideIcons.triangleAlert,
+                      tone: Tone.danger,
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '无法启动本机服务',
+                            style: AppText.xl.copyWith(color: t.fg),
+                          ),
+                          Text(
+                            'LocalSubProxy 的本机内核没有启动成功',
+                            style: AppText.sm.copyWith(color: t.fg2),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                if (hint != null) ...[
+                  AppAlert(
+                    tone: Tone.warning,
+                    title: hint.title,
+                    message: hint.message,
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                Row(
+                  children: [
+                    GestureDetector(
+                      onTap: () => setState(() => open = !open),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: Row(
+                          children: [
+                            Icon(
+                              open
+                                  ? LucideIcons.chevronDown
+                                  : LucideIcons.chevronRight,
+                              size: 16,
+                              color: t.fg,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              '错误详情',
+                              style: AppText.sm.copyWith(
+                                color: t.fg,
+                                fontWeight: AppText.medium,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    AppButton(
+                      label: '复制',
+                      icon: LucideIcons.copy,
+                      variant: ButtonVariant.ghost,
+                      small: true,
+                      onPressed: () =>
+                          Clipboard.setData(ClipboardData(text: raw)),
+                    ),
+                  ],
+                ),
+                if (open) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: t.mutedBg,
+                      borderRadius: BorderRadius.circular(AppRadius.control),
+                    ),
+                    child: SelectableText(
+                      raw,
+                      key: const ValueKey('kernel-error-detail'),
+                      style: monoStyle(
+                        AppText.xs.copyWith(color: t.fg2, height: 18 / 12),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: AppSpace.s24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    AppButton(
+                      label: '打开数据目录',
+                      icon: LucideIcons.folder,
+                      onPressed: widget.onOpenDataDir,
+                    ),
+                    const SizedBox(width: 8),
+                    AppButton(
+                      label: '重试',
+                      icon: LucideIcons.refreshCw,
+                      variant: ButtonVariant.primary,
+                      onPressed: widget.onRetry,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Numbered rail for the connect dialog's 4 steps (24px circles, 56px per
+/// step, 2px connector that turns brand once the step is done).
 class _StepRail extends StatelessWidget {
   const _StepRail({required this.current});
 
@@ -968,69 +1295,88 @@ class _StepRail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final t = AppTokens.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (var i = 0; i < _labels.length; i++) ...[
-          Row(
-            children: [
-              Container(
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: i <= current
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.muted,
-                ),
-                alignment: Alignment.center,
-                child: i < current
-                    ? const Icon(
-                        LucideIcons.check,
-                        size: 12,
-                        color: Colors.white,
-                      )
-                    : Text(
-                        '${i + 1}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: i == current
-                              ? Colors.white
-                              : theme.colorScheme.mutedForeground,
+        for (var i = 0; i < _labels.length; i++)
+          SizedBox(
+            height: 56,
+            child: Stack(
+              children: [
+                if (i < _labels.length - 1)
+                  Positioned(
+                    left: 11,
+                    top: 28,
+                    bottom: 4,
+                    child: Container(
+                      width: 2,
+                      color: i < current ? t.brand : t.border,
+                    ),
+                  ),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 24,
+                      height: 24,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: i < current ? t.brand : t.surface,
+                        border: Border.all(
+                          width: 2,
+                          color: i <= current ? t.brand : t.border,
                         ),
                       ),
-              ),
-              const Gap(8),
-              Expanded(
-                child: i <= current
-                    ? Text(_labels[i]).small().medium()
-                    : Text(_labels[i]).small().muted(),
-              ),
-            ],
-          ),
-          if (i < _labels.length - 1)
-            Padding(
-              padding: const EdgeInsets.only(left: 10.5, top: 4, bottom: 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Container(
-                  width: 1,
-                  height: 14,
-                  color: i < current
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.border,
+                      child: i < current
+                          ? Icon(LucideIcons.check, size: 12, color: t.brandFg)
+                          : Text(
+                              '${i + 1}',
+                              style: AppText.xs.copyWith(
+                                height: 1,
+                                fontWeight: AppText.semibold,
+                                color: i == current ? t.brand : t.fg3,
+                              ),
+                            ),
+                    ),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      height: 24,
+                      child: Center(
+                        child: Text(
+                          _labels[i],
+                          style: AppText.sm.copyWith(
+                            color: i == current
+                                ? t.fg
+                                : i < current
+                                ? t.fg2
+                                : t.fg3,
+                            fontWeight: i == current
+                                ? AppText.semibold
+                                : AppText.regular,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
+              ],
             ),
-        ],
+          ),
       ],
     );
   }
 }
 
-/// Icon tile + title + description header for each connect step.
-/// Connection dialog header: icon, colour and wording follow the actual
+Tone summaryTone(ConnSummaryKind k) => switch (k) {
+  ConnSummaryKind.online => Tone.success,
+  ConnSummaryKind.partial || ConnSummaryKind.connecting => Tone.warning,
+  ConnSummaryKind.error || ConnSummaryKind.revoked => Tone.danger,
+  _ => Tone.neutral,
+};
+
+/// Connection dialog header: colour and wording follow the actual
 /// per-connection state (same source as the status bar), not "paired".
 class ConnectionSummaryHeader extends StatelessWidget {
   const ConnectionSummaryHeader({super.key, required this.status});
@@ -1038,59 +1384,63 @@ class ConnectionSummaryHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final sum = connectionSummary(status);
-    final (IconData icon, Color color) = switch (sum.kind) {
-      ConnSummaryKind.online => (LucideIcons.circleCheck, cs.chart2),
-      ConnSummaryKind.partial => (LucideIcons.circleAlert, cs.chart4),
-      ConnSummaryKind.connecting => (LucideIcons.loader, cs.mutedForeground),
-      ConnSummaryKind.error => (LucideIcons.triangleAlert, cs.destructive),
-      ConnSummaryKind.revoked => (LucideIcons.ban, cs.destructive),
-      _ => (LucideIcons.unplug, cs.mutedForeground),
-    };
-    return _StepHeader(icon: icon, iconColor: color, title: sum.title);
+    final errors = status.stale
+        ? 0
+        : status.connections.where((c) => c.failed).length;
+    final tone = summaryTone(sum.kind);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: StatusBadge(
+        errors > 0 ? '${sum.title} · $errors 个错误' : sum.title,
+        key: ValueKey('summary-${sum.kind.name}'),
+        tone: tone,
+        height: 24,
+        icon: switch (sum.kind) {
+          ConnSummaryKind.online => LucideIcons.circleCheck,
+          ConnSummaryKind.partial => LucideIcons.triangleAlert,
+          ConnSummaryKind.connecting => LucideIcons.loader,
+          ConnSummaryKind.error => LucideIcons.triangleAlert,
+          ConnSummaryKind.revoked => LucideIcons.ban,
+          _ => LucideIcons.unplug,
+        },
+      ),
+    );
   }
 }
 
+/// Icon tile + title (+ description, + trailing badge) for each step.
 class _StepHeader extends StatelessWidget {
   const _StepHeader({
     required this.icon,
     required this.title,
     this.desc,
-    this.iconColor,
+    this.trailing,
   });
 
   final IconData icon;
   final String title;
   final String? desc;
-  final Color? iconColor;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = iconColor ?? theme.colorScheme.primary;
+    final t = AppTokens.of(context);
     return Row(
       children: [
-        Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          alignment: Alignment.center,
-          child: Icon(icon, size: 20, color: color),
-        ),
-        const Gap(12),
+        IconTile(icon),
+        const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title).medium(),
-              if (desc != null) ...[const Gap(3), Text(desc!).xSmall().muted()],
+              Text(title, style: AppText.lg.copyWith(color: t.fg)),
+              if (desc != null)
+                Text(desc!, style: AppText.xs.copyWith(color: t.fg2)),
             ],
           ),
         ),
+        if (trailing != null) ...[const SizedBox(width: 12), trailing!],
       ],
     );
   }
@@ -1101,13 +1451,19 @@ class _DialogRelay extends StatefulWidget {
     required this.host,
     required this.title,
     required this.content,
+    this.subtitle,
+    this.footer,
+    this.headerActions,
     this.maxWidth = 420,
     this.scrollContent = true,
   });
 
   final _HomePageState host;
   final String title;
+  final String? subtitle;
   final Widget Function() content;
+  final Widget Function()? footer;
+  final List<Widget> Function()? headerActions;
   final double maxWidth;
   final bool scrollContent;
 
@@ -1135,8 +1491,11 @@ class _DialogRelayState extends State<_DialogRelay> {
   @override
   Widget build(BuildContext context) => DialogFrame(
     title: widget.title,
+    subtitle: widget.subtitle,
     maxWidth: widget.maxWidth,
     scrollContent: widget.scrollContent,
+    footer: widget.footer?.call(),
+    headerActions: widget.headerActions?.call(),
     child: widget.content(),
   );
 }
@@ -1147,26 +1506,35 @@ class DialogFrame extends StatelessWidget {
     super.key,
     required this.title,
     required this.child,
+    this.subtitle,
+    this.footer,
+    this.headerActions,
     this.maxWidth = 420,
     this.scrollContent = true,
   });
 
   final String title;
+  final String? subtitle;
   final Widget child;
+  final Widget? footer;
+  final List<Widget>? headerActions;
   final double maxWidth;
   final bool scrollContent;
 
   @override
   Widget build(BuildContext context) => AppDialog(
     title: Text(title),
+    subtitle: subtitle == null ? null : Text(subtitle!),
     maxWidth: maxWidth,
     scrollContent: scrollContent,
+    footer: footer,
+    headerActions: headerActions,
     content: child,
   );
 }
 
-/// 连接列表 page of the connection dialog: summary header, one tile per
-/// paired SaaS, device/task footer.
+/// 连接列表 page of the connection dialog: summary badge, one card per
+/// paired SaaS (scrolls), device/task footer in the dialog footer.
 class ConnectionsPanel extends StatelessWidget {
   const ConnectionsPanel({
     super.key,
@@ -1189,6 +1557,37 @@ class ConnectionsPanel extends StatelessWidget {
   final void Function(ConnectionInfo) onRevoke;
   final void Function(ConnectionInfo) onModels;
 
+  /// Device and running tasks, shown in the dialog footer.
+  static Widget footer(Map<String, dynamic>? status) => Builder(
+    builder: (context) {
+      final t = AppTokens.of(context);
+      final ds = DesktopStatus.parse(status);
+      final style = AppText.sm.copyWith(color: t.fg2);
+      return Row(
+        key: const ValueKey('connection-footer'),
+        children: [
+          Icon(LucideIcons.monitor, size: 16, color: t.fg2),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              '${status?['device_name'] ?? status?['device_id'] ?? ''}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: style,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Icon(LucideIcons.list, size: 16, color: t.fg2),
+          const SizedBox(width: 6),
+          Text(
+            '${ds.stale ? '—' : status?['running_tasks'] ?? 0} 个任务',
+            style: style,
+          ),
+        ],
+      );
+    },
+  );
+
   @override
   Widget build(BuildContext context) {
     final ds = DesktopStatus.parse(status);
@@ -1199,24 +1598,21 @@ class ConnectionsPanel extends StatelessWidget {
         Row(
           children: [
             Expanded(child: ConnectionSummaryHeader(status: ds)),
-            Tooltip(
-              tooltip: (context) => const TooltipContainer(child: Text('刷新')),
-              child: IconButton.ghost(
-                density: ButtonDensity.icon,
-                icon: const Icon(LucideIcons.refreshCw),
-                onPressed: busy ? null : onRefresh,
-              ),
+            AppIconButton(
+              icon: LucideIcons.refreshCw,
+              outline: true,
+              tooltip: '刷新',
+              onPressed: busy ? null : onRefresh,
             ),
-            const Gap(6),
-            OutlineButton(
-              size: ButtonSize.small,
+            const SizedBox(width: 8),
+            AppButton(
+              label: '添加连接',
+              icon: LucideIcons.plus,
               onPressed: busy ? null : onAdd,
-              leading: const Icon(LucideIcons.plus, size: 14),
-              child: const Text('添加连接'),
             ),
           ],
         ),
-        const Gap(14),
+        const SizedBox(height: 16),
         // Only the list scrolls; summary/actions above and device/task
         // below stay visible however many SaaS are paired.
         Flexible(
@@ -1225,27 +1621,23 @@ class ConnectionsPanel extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final c in ds.connections) ...[
-                  _ConnectionTile(
-                    adapters: adapters,
-                    c: c,
-                    busy: busy,
-                    onToggle: () => onToggle(c),
-                    onRevoke: () => onRevoke(c),
-                    onModels: () => onModels(c),
+                for (final c in ds.connections)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _ConnectionTile(
+                      key: ValueKey('conn-${c.id}'),
+                      adapters: adapters,
+                      c: c,
+                      busy: busy,
+                      onToggle: () => onToggle(c),
+                      onRevoke: () => onRevoke(c),
+                      onModels: () => onModels(c),
+                    ),
                   ),
-                  const Gap(10),
-                ],
               ],
             ),
           ),
         ),
-        const Gap(4),
-        _StatRow(
-          '设备',
-          '${status?['device_name'] ?? status?['device_id'] ?? ''}',
-        ),
-        _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
       ],
     );
   }
@@ -1282,18 +1674,25 @@ class _StatRow extends StatelessWidget {
 
   final String label;
   final String value;
-
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
+    final t = AppTokens.of(context);
+    return SizedBox(
+      height: 32,
       child: Row(
         children: [
           SizedBox(
-            width: 64,
-            child: Text(label).small().muted().singleLine().ellipsis,
+            width: 72,
+            child: Text(label, style: AppText.sm.copyWith(color: t.fg2)),
           ),
-          Expanded(child: Text(value).small().medium().singleLine().ellipsis),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.sm.copyWith(color: t.fg),
+            ),
+          ),
         ],
       ),
     );
@@ -1586,19 +1985,14 @@ class _ConsentView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
-    final scopes = ((consent['requested_scopes'] as List?) ?? []).join(', ');
+    final scopes = ((consent['requested_scopes'] as List?) ?? []).join('、');
     final gateway = '${consent['gateway'] ?? ''}';
     final homepage = '${saas['homepage_uri'] ?? ''}';
     final policy = '${saas['policy_uri'] ?? ''}';
-    return Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.muted.withValues(alpha: 0.4),
-        border: Border.all(color: theme.colorScheme.border),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
+    return AppCard(
+      subtle: true,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1615,20 +2009,33 @@ class _ConsentView extends StatelessWidget {
   }
 }
 
-/// Checkbox list of local models ("adapter/model") for one SaaS.
-class ModelChecklist extends StatelessWidget {
-  Widget _label(String m, String note) {
-    final l = (labels[m] ?? '').isEmpty ? m : labels[m]!;
-    final main = Text(note.isEmpty ? l : '$l  · $note').small();
-    final d = details[m] ?? '';
-    if (d.isEmpty || d == l) return main;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [main, Text(d).xSmall().muted()],
-    );
-  }
+/// Adapter id -> type, for type marks next to model ids.
+Map<String, String> adapterTypes(List<Map<String, dynamic>> adapters) => {
+  for (final a in adapters) '${a['id']}': '${a['type'] ?? ''}',
+};
 
+/// Secondary line of a model row: provider type, availability, model.
+String modelDetail(
+  String id,
+  List<Map<String, dynamic>> adapters,
+  Map<String, String> types, {
+  String model = '',
+}) {
+  if (id == '*' || id.endsWith('/*')) return '';
+  final aid = id.split('/').first;
+  final a = adapters.where((e) => '${e['id']}' == aid).firstOrNull;
+  if (a == null) return model;
+  final parts = [adapterTypeLabel(types[aid] ?? '')];
+  if (a['enabled'] == true &&
+      (a['health'] == 'unavailable' || a['health'] == 'storage_full')) {
+    parts.add('当前不可用');
+  }
+  return parts.join(' · ');
+}
+
+/// Checkbox list of local models ("adapter/model") for one SaaS: counter,
+/// 全选 / 清空, one 44px row per model with label, detail and note badge.
+class ModelChecklist extends StatelessWidget {
   const ModelChecklist({
     super.key,
     required this.models,
@@ -1637,60 +2044,201 @@ class ModelChecklist extends StatelessWidget {
     this.notes = const {},
     this.labels = const {},
     this.details = const {},
+    this.types = const {},
     this.lockedBy,
+    this.onAll,
+    this.title,
+    this.inlineDetail = false,
   });
 
   /// Display only: scheme name per stored id (falls back to the id).
   final Map<String, String> labels;
 
-  /// Display only: small secondary text per id (e.g. the upstream model).
+  /// Display only: small secondary text per id (e.g. the provider type).
   final Map<String, String> details;
+
+  /// Optional adapter type per id: shows the provider mark.
+  final Map<String, String> types;
 
   final List<String> models;
   final Set<String> selected;
   final void Function(String model, bool value) onChanged;
 
-  /// Optional hint per model (e.g. 方案已停用).
+  /// Optional hint per model (e.g. 方案已停用), shown as a badge.
   final Map<String, String> notes;
 
   /// Models already granted by a selected wildcard: shown checked, read-only.
   final bool Function(String model)? lockedBy;
 
+  /// 全选 (true) / 清空 (false); hidden when null.
+  final void Function(bool all)? onAll;
+
+  /// Optional heading left of the counter.
+  final String? title;
+
+  /// Detail after the label on one line instead of below it.
+  final bool inlineDetail;
+
+  static String badgeText(String note) =>
+      note.startsWith('方案已停用') ? note.replaceFirst('方案已停用', '已停用') : note;
+
   @override
   Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
     if (models.isEmpty) {
-      return const Text('还没有启用的模型方案，可稍后添加方案后在连接列表中授权。').small().muted();
+      return Text(
+        '还没有启用的模型方案，可稍后添加方案后在连接列表中授权。',
+        style: AppText.sm.copyWith(color: t.fg2),
+      );
     }
+    bool isOn(String m) => (lockedBy?.call(m) ?? false) || selected.contains(m);
+    final count = models.where(isOn).length;
+    final all = count == models.length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final m in models)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: Builder(
-              builder: (context) {
-                final locked = lockedBy?.call(m) ?? false;
-                final note = locked ? '已由通配授权' : (notes[m] ?? '');
-                return Checkbox(
-                  state: locked || selected.contains(m)
-                      ? CheckboxState.checked
-                      : CheckboxState.unchecked,
-                  onChanged: locked
-                      ? null
-                      : (v) => onChanged(m, v == CheckboxState.checked),
-                  trailing: _label(m, note),
-                );
-              },
+        Row(
+          children: [
+            Expanded(
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    if (title != null)
+                      TextSpan(
+                        text: '$title ',
+                        style: TextStyle(
+                          color: t.fg,
+                          fontWeight: AppText.semibold,
+                        ),
+                      ),
+                    TextSpan(
+                      text: title != null
+                          ? '· 已选 $count / ${models.length}'
+                          : '已选 $count / ${models.length}',
+                    ),
+                  ],
+                ),
+                key: const ValueKey('model-count'),
+                style: AppText.sm.copyWith(color: t.fg2),
+              ),
             ),
-          ),
+            if (onAll != null) ...[
+              AppButton(
+                label: '全选',
+                variant: ButtonVariant.ghost,
+                small: true,
+                onPressed: all ? null : () => onAll!(true),
+              ),
+              AppButton(
+                label: '清空',
+                variant: ButtonVariant.ghost,
+                small: true,
+                onPressed: count == 0 ? null : () => onAll!(false),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 4),
+        for (final m in models) _row(context, t, m),
       ],
+    );
+  }
+
+  Widget _row(BuildContext context, AppTokens t, String m) {
+    final locked = lockedBy?.call(m) ?? false;
+    final note = locked ? '已由通配授权' : (notes[m] ?? '');
+    final wildcard = m == '*' || m.endsWith('/*');
+    final label = (labels[m] ?? '').isEmpty ? m : labels[m]!;
+    var detail = details[m] ?? '';
+    if (detail == label) detail = '';
+    // long wildcard explanations read better as the detail line
+    final badge = wildcard ? '' : note;
+    if (wildcard && note.isNotEmpty) detail = note;
+    final type = types[m] ?? '';
+    final on = locked || selected.contains(m);
+    final main = Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: AppText.sm.copyWith(color: t.fg, fontWeight: AppText.medium),
+    );
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: locked ? null : () => onChanged(m, !on),
+      child: Container(
+        key: ValueKey('model-$m'),
+        constraints: const BoxConstraints(minHeight: 44),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: t.border)),
+        ),
+        child: Row(
+          children: [
+            AppCheckbox(
+              checked: on,
+              onChanged: locked ? null : (v) => onChanged(m, v),
+            ),
+            const SizedBox(width: 12),
+            if (type.isNotEmpty) ...[TypeMark(type), const SizedBox(width: 12)],
+            Expanded(
+              child: inlineDetail
+                  ? Row(
+                      children: [
+                        Flexible(child: main),
+                        if (detail.isNotEmpty)
+                          Text(
+                            ' · $detail',
+                            style: AppText.xs.copyWith(color: t.fg2),
+                          ),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        main,
+                        if (detail.isNotEmpty)
+                          Text(
+                            detail,
+                            style: AppText.xs.copyWith(color: t.fg2),
+                          ),
+                      ],
+                    ),
+            ),
+            if (badge.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              StatusBadge(badgeText(badge)),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
 
-/// One paired SaaS in the connections list.
-class _ConnectionTile extends StatelessWidget {
+Tone levelTone(StatusLevel l) => switch (l) {
+  StatusLevel.ok => Tone.success,
+  StatusLevel.warn => Tone.warning,
+  StatusLevel.error => Tone.danger,
+  StatusLevel.off => Tone.neutral,
+};
+
+/// Title of a failed connection's alert, from its last error.
+String connErrorTitle(ConnectionInfo c) {
+  final e = c.lastError.toLowerCase();
+  if (c.state == 'revoked') return '已被吊销';
+  if (e.contains('401') ||
+      e.contains('403') ||
+      e.contains('revoked') ||
+      e.contains('unauthorized')) {
+    return '认证失败';
+  }
+  return '连接错误';
+}
+
+/// One paired SaaS: one-line summary, expandable details, error alert.
+class _ConnectionTile extends StatefulWidget {
   const _ConnectionTile({
+    super.key,
     required this.c,
     this.adapters = const [],
     required this.busy,
@@ -1707,62 +2255,264 @@ class _ConnectionTile extends StatelessWidget {
   final VoidCallback onModels;
 
   @override
+  State<_ConnectionTile> createState() => _ConnectionTileState();
+}
+
+class _ConnectionTileState extends State<_ConnectionTile> {
+  bool expanded = false;
+
+  @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final color = c.connected
-        ? theme.colorScheme.chart2
-        : (c.state == 'revoked' || c.state == 'error')
-        ? theme.colorScheme.destructive
-        : theme.colorScheme.mutedForeground;
-    final allow = allowSummary(c.allow, adapters);
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: theme.colorScheme.border),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+    final t = AppTokens.of(context);
+    final c = widget.c;
+    final busy = widget.busy;
+    final tone = levelTone(c.level);
+    final allow = allowSummary(c.allow, widget.adapters).replaceAll(', ', '、');
+    final revoke = AppButton(
+      label: '撤销',
+      variant: ButtonVariant.dangerOutline,
+      small: true,
+      onPressed: busy ? null : widget.onRevoke,
+    );
+    return AppCard(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              ),
-              const Gap(8),
-              Expanded(child: Text(c.title).medium().singleLine().ellipsis),
-              Text(c.stateLabel).xSmall().muted(),
-              const Gap(10),
-              GhostButton(
-                size: ButtonSize.small,
-                onPressed: busy ? null : onModels,
-                child: const Text('模型'),
-              ),
-              if (c.state != 'revoked' && c.state != 'error')
-                OutlineButton(
-                  size: ButtonSize.small,
-                  onPressed: busy ? null : onToggle,
-                  child: Text(c.paused ? '连接' : '断开'),
+              StatusDot(tone),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      c.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.md.copyWith(
+                        color: t.fg,
+                        fontWeight: AppText.semibold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '模型：$allow · 任务 ${c.runningTasks}/${c.maxConcurrency}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.xs.copyWith(color: t.fg2),
+                    ),
+                  ],
                 ),
-              const Gap(6),
-              DestructiveButton(
-                size: ButtonSize.small,
-                onPressed: busy ? null : onRevoke,
-                child: const Text('撤销'),
+              ),
+              const SizedBox(width: 12),
+              StatusBadge(c.stateLabel, tone: tone),
+              const SizedBox(width: 12),
+              AppButton(
+                label: '模型',
+                small: true,
+                onPressed: busy ? null : widget.onModels,
+              ),
+              if (!c.failed) ...[
+                const SizedBox(width: 8),
+                AppButton(
+                  label: c.paused ? '连接' : '断开',
+                  small: true,
+                  onPressed: busy ? null : widget.onToggle,
+                ),
+              ] else ...[
+                const SizedBox(width: 8),
+                revoke,
+              ],
+              const SizedBox(width: 8),
+              AppIconButton(
+                key: ValueKey('conn-expand-${c.id}'),
+                icon: expanded
+                    ? LucideIcons.chevronUp
+                    : LucideIcons.chevronDown,
+                tooltip: expanded ? '收起' : '详情',
+                onPressed: () => setState(() => expanded = !expanded),
               ),
             ],
           ),
-          _StatRow('网关', c.issuer),
-          _StatRow('租户', c.tenant),
-          if (c.displayUrl.isNotEmpty) _StatRow('地址', c.displayUrl),
-          _StatRow('传输', _transportLabel(c.transport)),
-          _StatRow('模型', allow),
-          _StatRow('任务', '${c.runningTasks} 个（上限 ${c.maxConcurrency}）'),
-          if (c.lastError.isNotEmpty) _StatRow('错误', c.lastError),
+          if (c.failed || (c.lastError.isNotEmpty && !c.connected)) ...[
+            const SizedBox(height: 12),
+            AppAlert(
+              tone: Tone.danger,
+              compact: true,
+              inline: true,
+              title: connErrorTitle(c),
+              message: c.lastError.isEmpty
+                  ? '请撤销后重新配对。'
+                  : '${c.lastError}${c.failed ? '。请撤销后重新配对。' : ''}',
+            ),
+          ],
+          if (expanded) ...[
+            const SizedBox(height: 8),
+            const Hairline(),
+            const SizedBox(height: 4),
+            _StatRow('网关', c.issuer),
+            _StatRow('租户', c.tenant),
+            if (c.displayUrl.isNotEmpty) _StatRow('地址', c.displayUrl),
+            _StatRow(
+              '传输',
+              '${_transportLabel(c.transport)}${c.e2ee ? ' · 端到端加密' : ''}',
+            ),
+            _StatRow('模型', allow),
+            _StatRow('任务', '${c.runningTasks} 个（上限 ${c.maxConcurrency}）'),
+            if (!c.failed) ...[
+              const SizedBox(height: 8),
+              Align(alignment: Alignment.centerRight, child: revoke),
+            ],
+          ],
         ],
       ),
+    );
+  }
+}
+
+/// One scheme row of the usage table.
+class UsageRow {
+  const UsageRow(this.name, this.input, this.output, this.total);
+  final String name;
+  final int input, output, total;
+}
+
+/// 用量统计: 3 summary cards, per-scheme table with share bars, total row.
+class UsagePanel extends StatelessWidget {
+  const UsagePanel({super.key, required this.rows});
+  final List<UsageRow> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    if (rows.isEmpty) {
+      return const SizedBox(
+        height: 220,
+        child: EmptyState(
+          icon: LucideIcons.chartColumn,
+          title: '暂无用量记录',
+          message: '有请求后会显示各方案的 token 用量（不记录对话内容）。',
+        ),
+      );
+    }
+    final sorted = [...rows]..sort((a, b) => b.total.compareTo(a.total));
+    final inSum = rows.fold<int>(0, (s, r) => s + r.input);
+    final outSum = rows.fold<int>(0, (s, r) => s + r.output);
+    final total = rows.fold<int>(0, (s, r) => s + r.total);
+    final head = AppText.xs.copyWith(color: t.fg2);
+    final cell = AppText.sm.copyWith(color: t.fg);
+    Widget num(String v, TextStyle s) => SizedBox(
+      width: 88,
+      child: Text(v, textAlign: TextAlign.right, style: s),
+    );
+    Widget card(String label, String value) => Expanded(
+      child: AppCard(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: AppText.xs.copyWith(color: t.fg2)),
+            Text(value, style: AppText.xl.copyWith(color: t.fg)),
+          ],
+        ),
+      ),
+    );
+    final bold = cell.copyWith(fontWeight: AppText.semibold);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            card('总计 Token', fmtTokens(total)),
+            const SizedBox(width: 12),
+            card('输入', fmtTokens(inSum)),
+            const SizedBox(width: 12),
+            card('输出', fmtTokens(outSum)),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Container(
+          height: 32,
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: t.border)),
+          ),
+          child: Row(
+            children: [
+              Expanded(child: Text('方案', style: head)),
+              num('输入', head),
+              num('输出', head),
+              num('总计', head),
+            ],
+          ),
+        ),
+        for (final r in sorted)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: t.border)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        r.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: cell,
+                      ),
+                    ),
+                    num(fmtTokens(r.input), cell),
+                    num(fmtTokens(r.output), cell),
+                    num(fmtTokens(r.total), bold),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                FractionallySizedBox(
+                  alignment: Alignment.centerLeft,
+                  widthFactor: 0.45,
+                  child: Container(
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: t.brand100,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                    alignment: Alignment.centerLeft,
+                    child: FractionallySizedBox(
+                      widthFactor: total == 0
+                          ? 0
+                          : (r.total / total).clamp(0.01, 1.0),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: t.brand,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        SizedBox(
+          height: 40,
+          child: Row(
+            children: [
+              Expanded(child: Text('合计', style: bold)),
+              num(fmtTokens(inSum), bold),
+              num(fmtTokens(outSum), bold),
+              num(fmtTokens(total), bold),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text('只统计 token 数，不记录对话内容。', style: AppText.xs.copyWith(color: t.fg2)),
+      ],
     );
   }
 }
