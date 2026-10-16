@@ -550,7 +550,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
   [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lmbp-conformance` 依次扮演设备和租户后端，共 63 项检查（含 X1、X-* 扩展检查，以及 M1–M5、I1–I3 身份绑定检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
+`lmbp-conformance` 依次扮演设备和租户后端，共 104 项检查（含 X1、X-* 扩展检查，以及 M1–M5、I1–I3 身份绑定检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 

@@ -32,4 +32,4 @@ scripts/mock-interop.sh rust                                     # conformance +
 scripts/chat-ui-e2e.sh rust
 ```
 
-截至提交时：`lmbp-conformance` 103 项全部通过、无跳过（同样不等于符合规范）。
+截至提交时：`lmbp-conformance` 全部通过、无跳过（同样不等于符合规范）。

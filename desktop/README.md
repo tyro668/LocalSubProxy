@@ -1,17 +1,7 @@
-# localsubproxy_ui
+# desktop：LocalSubProxy 桌面端（Flutter）
 
-A new Flutter project.
+macOS / Windows 配置界面。通过 FFI 加载 Go 内核（`cmd/localsubproxy_native`），接口见 [docs/desktop-status-contract.md](../docs/desktop-status-contract.md)。
 
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+- 构建：在仓库根目录运行 `./scripts/build-macos.sh` 或 `.\scripts\build-windows.ps1`（会先编译内核）；调试用 `scripts/debug-macos.sh` / `scripts/debug-windows.ps1`。
+- 测试：`flutter test`、`flutter analyze`。
+- 发布：见 [docs/release.md](../docs/release.md)。

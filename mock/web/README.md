@@ -35,7 +35,7 @@
 
 ## 运行
 
-最快的方式是 `scripts/mock-start.sh [go|node|python]`：它会自动完成下面这几步，并打印登录信息和 Connector 命令。手动步骤如下：
+最快的方式是 `scripts/mock-start.sh [go|node|python|java|rust]`：它会自动完成下面这几步，并打印登录信息和 Connector 命令。手动步骤如下：
 
 ```bash
 export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)        # 租户 API Key，登录页面时粘贴它
@@ -62,7 +62,7 @@ go run ./cmd/localsubproxy connector -pair-link 'lmbp://pair?v=1&gateway=http%3A
 ## 端到端测试
 
 ```bash
-scripts/chat-ui-e2e.sh                  # go node python；SHOTS=目录 指定截图位置，CHROME=浏览器路径
+scripts/chat-ui-e2e.sh go node python java rust；SHOTS=目录 指定截图位置，CHROME=浏览器路径
 ```
 
 对每个网关，用无头 Chrome（playwright-core）完成以下检查：

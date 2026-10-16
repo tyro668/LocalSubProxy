@@ -9,7 +9,7 @@
 
 需要 **JDK 21**（虚拟线程）。Starter 基于 **Spring Boot 3.5（Servlet 栈）**，已用内嵌 Tomcat 验证。
 
-> **成熟度（如实说明）**：`lmbp-core` 的引擎是从 `mock/java`（Node SDK 引擎的逐段移植）**抽取并重构**而来：HTTP/WebSocket 改为可插拔的传输接口，存储改为可插拔接口，并新增进程内客户端。它不与 Go 参考网关共享代码，存在真实差异（见下文“限制”）。通过共享测试向量和 `lmbp-conformance` 只说明在被检查的点上一致，不等于符合规范，见[根 README 的成熟度说明](../../README.md#各实现的成熟度如实说明)。
+> **成熟度（如实说明）**：`lmbp-core` 的引擎是从 `mock/java`（Node SDK 引擎的逐段移植）**抽取并重构**而来：HTTP/WebSocket 改为可插拔的传输接口，存储改为可插拔接口，并新增进程内客户端。它不与 Go 参考网关共享代码，存在真实差异（见下文“限制”）。通过共享测试向量和 `lmbp-conformance` 只说明在被检查的点上一致，不等于符合规范，见[各实现与成熟度](../../docs/implementations.md)。
 
 ## 模块
 
@@ -105,10 +105,10 @@ claude = Anthropic(base_url="https://saas.example.com", api_key=TENANT_API_KEY, 
 ```bash
 cd sdk/java && mvn install                              # JUnit：JOSE 共享向量（含全部负例）、存储契约（内存 / SQLite）、
                                                         # 用脚本化假设备跑配对/调用/流/取消/提前关闭/续传/截断/非法参数，starter 装配
-scripts/mock-interop.sh spring-boot spring-boot-sqlite  # 演示应用上跑 lmbp-conformance（103 项）+ Go 连接器端到端 + 官方 openai/anthropic 客户端
+scripts/mock-interop.sh spring-boot spring-boot-sqlite  # 演示应用上跑 lmbp-conformance+ Go 连接器端到端 + 官方 openai/anthropic 客户端
 ```
 
-截至提交时：演示应用在内存与 SQLite 两种存储下 `lmbp-conformance` 均为 103 项全部通过、无跳过；`scripts/verify-all.sh` 包含这两个变体和 Maven 单元测试步骤（严格模式，任何跳过都判失败）。
+截至提交时：演示应用在内存与 SQLite 两种存储下 `lmbp-conformance` 全部通过、无跳过；`scripts/verify-all.sh` 包含这两个变体和 Maven 单元测试步骤（严格模式，任何跳过都判失败）。
 
 ## 限制
 
