@@ -6,6 +6,8 @@ import 'package:window_manager/window_manager.dart';
 
 import 'native_api.dart';
 import 'status_contract.dart';
+import 'app_dialog.dart';
+export 'app_dialog.dart';
 import 'profile_workspace.dart';
 import 'tray.dart';
 
@@ -163,7 +165,7 @@ class _HomePageState extends State<HomePage> {
     final yes = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => AppDialog(
           title: Text(title),
           content: Text(message),
           actions: [
@@ -417,8 +419,9 @@ class _HomePageState extends State<HomePage> {
       context,
       DialogConfiguration<bool>(
         builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setLocal) => AlertDialog(
+          builder: (ctx, setLocal) => AppDialog(
             title: Text('「${c.title}」可用模型'),
+            maxWidth: 540,
             content: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 460),
               child: ModelChecklist(
@@ -466,6 +469,7 @@ class _HomePageState extends State<HomePage> {
           title: '远端服务连接',
           content: connectionCard,
           maxWidth: 800,
+          scrollContent: false,
         ),
       ),
     ).future;
@@ -619,6 +623,7 @@ class _HomePageState extends State<HomePage> {
         ? 1
         : 0;
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (recovery != null && !recoveryDismissed) ...[
@@ -639,16 +644,22 @@ class _HomePageState extends State<HomePage> {
           ),
           const Gap(16),
         ],
+        // Step 3 manages its own scrolling (fixed header/footer, list
+        // scrolls); the pairing steps scroll as a whole.
         if (step == 3)
-          _connectStepPane(step)
+          Flexible(child: _connectStepPane(step))
         else
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SizedBox(width: 140, child: _StepRail(current: step)),
-              const Gap(24),
-              Expanded(child: _connectStepPane(step)),
-            ],
+          Flexible(
+            child: ScrollArea(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(width: 140, child: _StepRail(current: step)),
+                  const Gap(24),
+                  Expanded(child: _connectStepPane(step)),
+                ],
+              ),
+            ),
           ),
       ],
     );
@@ -769,57 +780,21 @@ class _HomePageState extends State<HomePage> {
           ],
         );
       case 3: // 连接列表：every paired SaaS
-        final ds = DesktopStatus.parse(status);
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(child: ConnectionSummaryHeader(status: ds)),
-                Tooltip(
-                  tooltip: (context) =>
-                      const TooltipContainer(child: Text('刷新')),
-                  child: IconButton.ghost(
-                    density: ButtonDensity.icon,
-                    icon: const Icon(LucideIcons.refreshCw),
-                    onPressed: busy ? null : () => refresh(),
-                  ),
-                ),
-                const Gap(6),
-                OutlineButton(
-                  size: ButtonSize.small,
-                  onPressed: busy
-                      ? null
-                      : () => setState(() {
-                          adding = true;
-                          remoteUrl.clear();
-                        }),
-                  leading: const Icon(LucideIcons.plus, size: 14),
-                  child: const Text('添加连接'),
-                ),
-              ],
-            ),
-            const Gap(14),
-            for (final c in ds.connections) ...[
-              _ConnectionTile(
-                adapters: adapters,
-                c: c,
-                busy: busy,
-                onToggle: () => connectionAction(
-                  c,
-                  c.paused ? 'connection_connect' : 'connection_disconnect',
-                ),
-                onRevoke: () => connectionAction(c, 'connection_revoke'),
-                onModels: () => editPolicy(c),
-              ),
-              const Gap(10),
-            ],
-            _StatRow(
-              '设备',
-              '${status?['device_name'] ?? status?['device_id'] ?? ''}',
-            ),
-            _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
-          ],
+        return ConnectionsPanel(
+          status: status,
+          adapters: adapters,
+          busy: busy,
+          onRefresh: () => refresh(),
+          onAdd: () => setState(() {
+            adding = true;
+            remoteUrl.clear();
+          }),
+          onToggle: (c) => connectionAction(
+            c,
+            c.paused ? 'connection_connect' : 'connection_disconnect',
+          ),
+          onRevoke: (c) => connectionAction(c, 'connection_revoke'),
+          onModels: editPolicy,
         );
       default: // 输入地址
         return Column(
@@ -892,11 +867,9 @@ class _HomePageState extends State<HomePage> {
         trailingAlignment: Alignment.center,
         leading: _TypeMark(type),
         title: Text(name).medium().singleLine().ellipsis,
-        subtitle: Text(subtitle.toString())
-            .small()
-            .muted()
-            .singleLine()
-            .ellipsis,
+        subtitle: Text(
+          subtitle.toString(),
+        ).small().muted().singleLine().ellipsis,
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1129,12 +1102,14 @@ class _DialogRelay extends StatefulWidget {
     required this.title,
     required this.content,
     this.maxWidth = 420,
+    this.scrollContent = true,
   });
 
   final _HomePageState host;
   final String title;
   final Widget Function() content;
   final double maxWidth;
+  final bool scrollContent;
 
   @override
   State<_DialogRelay> createState() => _DialogRelayState();
@@ -1158,22 +1133,122 @@ class _DialogRelayState extends State<_DialogRelay> {
   }
 
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: BoxConstraints(maxWidth: widget.maxWidth),
-    child: AlertDialog(
-      title: Row(
-        children: [
-          Expanded(child: Text(widget.title)),
-          IconButton.ghost(
-            density: ButtonDensity.icon,
-            icon: const Icon(LucideIcons.x),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-        ],
-      ),
-      content: SingleChildScrollView(child: widget.content()),
-    ),
+  Widget build(BuildContext context) => DialogFrame(
+    title: widget.title,
+    maxWidth: widget.maxWidth,
+    scrollContent: widget.scrollContent,
+    child: widget.content(),
   );
+}
+
+/// Dialog chrome shared by the overlay dialogs.
+class DialogFrame extends StatelessWidget {
+  const DialogFrame({
+    super.key,
+    required this.title,
+    required this.child,
+    this.maxWidth = 420,
+    this.scrollContent = true,
+  });
+
+  final String title;
+  final Widget child;
+  final double maxWidth;
+  final bool scrollContent;
+
+  @override
+  Widget build(BuildContext context) => AppDialog(
+    title: Text(title),
+    maxWidth: maxWidth,
+    scrollContent: scrollContent,
+    content: child,
+  );
+}
+
+/// 连接列表 page of the connection dialog: summary header, one tile per
+/// paired SaaS, device/task footer.
+class ConnectionsPanel extends StatelessWidget {
+  const ConnectionsPanel({
+    super.key,
+    required this.status,
+    required this.adapters,
+    required this.busy,
+    required this.onRefresh,
+    required this.onAdd,
+    required this.onToggle,
+    required this.onRevoke,
+    required this.onModels,
+  });
+
+  final Map<String, dynamic>? status;
+  final List<Map<String, dynamic>> adapters;
+  final bool busy;
+  final VoidCallback onRefresh;
+  final VoidCallback onAdd;
+  final void Function(ConnectionInfo) onToggle;
+  final void Function(ConnectionInfo) onRevoke;
+  final void Function(ConnectionInfo) onModels;
+
+  @override
+  Widget build(BuildContext context) {
+    final ds = DesktopStatus.parse(status);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: ConnectionSummaryHeader(status: ds)),
+            Tooltip(
+              tooltip: (context) => const TooltipContainer(child: Text('刷新')),
+              child: IconButton.ghost(
+                density: ButtonDensity.icon,
+                icon: const Icon(LucideIcons.refreshCw),
+                onPressed: busy ? null : onRefresh,
+              ),
+            ),
+            const Gap(6),
+            OutlineButton(
+              size: ButtonSize.small,
+              onPressed: busy ? null : onAdd,
+              leading: const Icon(LucideIcons.plus, size: 14),
+              child: const Text('添加连接'),
+            ),
+          ],
+        ),
+        const Gap(14),
+        // Only the list scrolls; summary/actions above and device/task
+        // below stay visible however many SaaS are paired.
+        Flexible(
+          child: ScrollArea(
+            scrollKey: const ValueKey('connection-list'),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final c in ds.connections) ...[
+                  _ConnectionTile(
+                    adapters: adapters,
+                    c: c,
+                    busy: busy,
+                    onToggle: () => onToggle(c),
+                    onRevoke: () => onRevoke(c),
+                    onModels: () => onModels(c),
+                  ),
+                  const Gap(10),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const Gap(4),
+        _StatRow(
+          '设备',
+          '${status?['device_name'] ?? status?['device_id'] ?? ''}',
+        ),
+        _StatRow('任务', '${status?['running_tasks'] ?? 0} 个'),
+      ],
+    );
+  }
 }
 
 class LabeledField extends StatelessWidget {
@@ -1365,8 +1440,9 @@ class _AdapterDialogState extends State<AdapterDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final creating = widget.existing == null;
-    return AlertDialog(
+    return AppDialog(
       title: Text(creating ? '添加适配器' : '编辑适配器'),
+      maxWidth: 540,
       content: DefaultTextStyle(
         style: theme.typography.small.copyWith(
           color: theme.colorScheme.foreground,
