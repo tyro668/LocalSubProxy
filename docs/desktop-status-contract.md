@@ -33,7 +33,7 @@ only unique per gateway, so always address a connection by `id`.
     {
       "id": "b_7f3a91", "saas_name": "Acme Chat", "issuer": "https://gw.acme.example", "tenant": "acme",
       "device_id": "dev_01HZX8", "display_url": "https://chat.acme.example", "remote_url": "", "server_url": "https://gw.acme.example",
-      "state": "online", "connected": true, "remote_connected": true, "gateway_connected": true,
+      "state": "online", "connected": true, "remote_connected": true, "gateway_connected": true, "discovery": "ok",
       "transport": "wss", "e2ee": true, "running_tasks": 2, "max_concurrency": 2,
       "allow": ["ollama/*", "openai/gpt-4o-mini"], "paused": false, "last_error": "", "paired_at": "2026-10-01T09:12:00Z"
     },
@@ -59,6 +59,10 @@ only unique per gateway, so always address a connection by `id`.
   - `error` (the key file could not be opened, or a broken binding — see
     below; `last_error` says why. It can always be revoked and re-paired.)
   - `unknown` (UI only: the last status refresh failed, see `stale`)
+- `state` is decided by the LMBP session alone. `discovery` is display-only:
+  `ok` / `unavailable` (the optional `/.well-known/localsubproxy` probe of
+  `remote_url` succeeded / failed) or `none` (no `remote_url`). A missing
+  discovery document never makes a connection look offline.
 - `allow` uses `adapter/model`, `adapter/*` or `*`. An empty list denies
   everything. New pairings start empty, and the user picks models on the
   consent screen.

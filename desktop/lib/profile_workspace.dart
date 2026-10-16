@@ -7,14 +7,18 @@ import 'app_dialog.dart';
 
 import 'native_api.dart';
 import 'status_contract.dart';
+import 'tokens.dart';
+import 'ui_kit.dart';
 
-const _headerHeight = 44.0;
-const _purple = Color(0xFF4D25D8);
-const _border = Color(0xFFDFE3ED);
-const _ink = Color(0xFF202637);
-const _muted = Color(0xFF6F7689);
-const _soft = Color(0xFFF1ECFF);
-const _green = Color(0xFF148653);
+/// Result of the last connection test of a scheme (this session only).
+class SchemeTest {
+  const SchemeTest(this.ok, this.ms, this.at, this.message, this.models);
+  final bool ok;
+  final int ms;
+  final DateTime at;
+  final String message;
+  final List<String> models;
+}
 
 class ProfileWorkspace extends StatefulWidget {
   const ProfileWorkspace({
@@ -25,7 +29,11 @@ class ProfileWorkspace extends StatefulWidget {
     this.status,
     this.onConnectionTap,
     this.onUsageTap,
+    this.usage = const {},
   });
+
+  /// Total tokens of the last 7 days per scheme id (usage_stats by adapter).
+  final Map<String, int> usage;
 
   final NativeApi api;
   final List<Map<String, dynamic>> adapters;
@@ -73,6 +81,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   Timer? loginPoll;
   String? highlightedID;
   final List<Map<String, dynamic>> pending = [];
+  final Map<String, SchemeTest> lastTests = {};
+  SchemeTest? editorTest;
+  bool advancedOpen = false;
 
   List<Map<String, dynamic>> get schemes => [...pending, ...widget.adapters];
 
@@ -177,6 +188,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     setState(() {
       dirty = true;
       testStatus = null;
+      editorTest = null;
     });
   }
 
@@ -217,6 +229,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     skipModelProbe = a['skip_model_probe'] == true;
     dirty = false;
     testStatus = null;
+    editorTest = null;
+    advancedOpen = false;
     error = null;
     providerModels = [];
     codexConnected = a['auth_state'] != 'required' && a['health'] == 'ready';
@@ -244,6 +258,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       pending.insert(0, draft);
       highlightedID = draft['id'] as String;
     });
+    load(draft);
   }
 
   Future<void> selectScheme(Map<String, dynamic> scheme) async {
@@ -257,27 +272,47 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     });
   }
 
-  Future<bool> confirm(String title, String message, String action) async {
+  Future<bool> confirm(
+    String title,
+    String message,
+    String action, {
+    bool destructive = false,
+    Widget? content,
+    double maxWidth = 440,
+  }) async {
     final result = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
         builder: (ctx) => AppDialog(
           title: Text(title),
-          content: Text(message),
+          maxWidth: maxWidth,
+          content: content ?? Text(message),
           actions: [
-            OutlineButton(
+            AppButton(
+              label: '取消',
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消'),
             ),
-            PrimaryButton(
+            AppButton(
+              label: action,
+              variant: destructive
+                  ? ButtonVariant.destructive
+                  : ButtonVariant.primary,
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: Text(action),
             ),
           ],
         ),
       ),
     ).future;
     return result == true;
+  }
+
+  /// Connections whose allow list covers any model of scheme [a].
+  List<ConnectionInfo> affectedConnections(Map<String, dynamic> a) {
+    final models = (a['models'] as List?)?.cast<String>() ?? const <String>[];
+    return [
+      for (final c in DesktopStatus.parse(widget.status).connections)
+        if (models.any((m) => c.allows('${a['id']}/$m'))) c,
+    ];
   }
 
   Future<bool> allowDiscard() async {
@@ -312,8 +347,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   Future<void> deleteProfile(Map<String, dynamic> a) async {
     if (!await confirm(
           '删除方案',
-          '确定删除 ${a['name']}？此操作会从远端服务可用模型中移除该方案。',
-          '删除',
+          '',
+          '删除方案',
+          destructive: true,
+          content: DeleteSchemeMessage(
+            name: '${a['name'] ?? a['id']}',
+            affected: [for (final c in affectedConnections(a)) c.title],
+          ),
         ) ||
         !mounted)
       return;
@@ -340,44 +380,76 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     }
   }
 
-  Future<void> options(Map<String, dynamic> a) async {
-    await showOverlay<void>(
-      context,
-      DialogConfiguration<void>(
-        builder: (ctx) => AppDialog(
-          title: Text(a['name'] as String? ?? '方案'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              OutlineButton(
-                onPressed: () {
-                  Navigator.of(ctx).pop();
-                  renameProfile(a);
-                },
-                child: const Text('重命名方案'),
-              ),
-              const Gap(10),
-              OutlineButton(
-                onPressed: () {
-                  Navigator.of(ctx).pop();
-                  setDefault(a);
-                },
-                child: const Text('设为默认方案'),
-              ),
-              const Gap(10),
-              OutlineButton(
-                onPressed: () {
-                  Navigator.of(ctx).pop();
-                  deleteProfile(a);
-                },
-                child: const Text('删除方案'),
-              ),
-            ],
-          ),
-        ),
+  /// ⋮ menu anchored to the row button (not a modal dialog).
+  Future<void> options(Map<String, dynamic> a, BuildContext anchor) async {
+    String? picked;
+    await showDropdown<void>(
+      context: anchor,
+      alignment: Alignment.topRight,
+      anchorAlignment: Alignment.bottomRight,
+      offset: const Offset(0, 4),
+      builder: (ctx) => SchemeMenu(
+        onSelected: (v) {
+          picked = v;
+          closeOverlay(ctx);
+        },
       ),
     ).future;
+    if (!mounted) return;
+    switch (picked) {
+      case 'rename':
+        await renameProfile(a);
+      case 'default':
+        await setDefault(a);
+      case 'test':
+        await testSaved(a);
+      case 'delete':
+        await deleteProfile(a);
+    }
+  }
+
+  /// 测试连接 from the menu: tests the stored configuration of a scheme.
+  Future<void> testSaved(Map<String, dynamic> a) async {
+    if (a['draft'] == true) {
+      openEditor(a);
+      return;
+    }
+    final sw = Stopwatch()..start();
+    try {
+      final r = await testAdapterAsync(adapterEditBody(a, {}));
+      if (!mounted) return;
+      setState(() => lastTests['${a['id']}'] = _record(r, sw));
+    } catch (e) {
+      if (mounted) {
+        setState(
+          () => lastTests['${a['id']}'] = SchemeTest(
+            false,
+            sw.elapsedMilliseconds,
+            DateTime.now(),
+            '$e',
+            const [],
+          ),
+        );
+      }
+    }
+  }
+
+  SchemeTest _record(Map<String, dynamic> r, Stopwatch sw) {
+    final ok = r['health'] == 'ready';
+    final models = ((r['models'] as List?) ?? const [])
+        .map((e) => '$e')
+        .toList();
+    return SchemeTest(
+      ok,
+      sw.elapsedMilliseconds,
+      DateTime.now(),
+      ok
+          ? (models.isEmpty
+                ? '模型可用'
+                : '发现 ${models.length} 个模型：${models.join('、')}')
+          : (r['auth_state'] == 'required' ? '需要登录' : '请检查地址、密钥和模型 ID'),
+      models,
+    );
   }
 
   Future<void> renameProfile(Map<String, dynamic> a) async {
@@ -387,15 +459,30 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       DialogConfiguration<bool>(
         builder: (ctx) => AppDialog(
           title: const Text('重命名方案'),
-          content: SizedBox(width: 360, child: TextField(controller: input)),
-          actions: [
-            OutlineButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消'),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                appTextField(context, controller: input),
+                const SizedBox(height: 4),
+                Text(
+                  '名称不区分大小写，不能与其他方案重复',
+                  style: AppText.xs.copyWith(color: AppTokens.of(context).fg3),
+                ),
+              ],
             ),
-            PrimaryButton(
+          ),
+          actions: [
+            AppButton(
+              label: '取消',
+              onPressed: () => Navigator.of(ctx).pop(false),
+            ),
+            AppButton(
+              label: '确定',
+              variant: ButtonVariant.primary,
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('确定'),
             ),
           ],
         ),
@@ -592,6 +679,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           '断开 Codex 订阅',
           '将退出本机 Codex CLI 的登录状态，其他使用此登录的应用也会受到影响。',
           '断开连接',
+          destructive: true,
         ) ||
         !mounted)
       return;
@@ -679,11 +767,16 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       testStatus = '正在测试连接…';
       testPassed = false;
     });
+    final sw = Stopwatch()..start();
     try {
       final draft = body();
       final result = await testAdapterAsync(draft);
       if (!mounted) return;
       setState(() {
+        editorTest = _record(result, sw);
+        if (selectedID != null && !creating) {
+          lastTests[selectedID!] = editorTest!;
+        }
         testPassed = result['health'] == 'ready';
         testStatus = testPassed
             ? '连接成功，模型可用'
@@ -693,7 +786,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       if (mounted)
         setState(() {
           testStatus = '连接测试失败';
-          error = '$e';
+          editorTest = SchemeTest(
+            false,
+            sw.elapsedMilliseconds,
+            DateTime.now(),
+            '$e',
+            const [],
+          );
         });
     } finally {
       if (mounted) setState(() => working = false);
@@ -748,106 +847,119 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         _ => 'OpenAI 兼容协议',
       };
 
-  Widget _separator() => const ColoredBox(
-    color: _border,
-    child: SizedBox(height: 1, width: double.infinity),
-  );
-
-  Widget _statusDot(bool active, {double size = 10}) => Container(
-    width: size,
-    height: size,
-    decoration: BoxDecoration(
-      color: active ? _green : const Color(0xFF9AA2B2),
-      shape: BoxShape.circle,
-    ),
-  );
-
-  Widget _tableCell(String value, {bool bold = false}) => Text(
-    value,
-    maxLines: 1,
-    overflow: TextOverflow.ellipsis,
-    style: TextStyle(
-      color: _ink,
-      fontSize: 13,
-      fontWeight: bold ? FontWeight.w600 : FontWeight.w500,
-    ),
-  );
+  AppTokens get t => AppTokens.of(context);
 
   Widget _schemeRow(Map<String, dynamic> adapter) {
     final active = adapter['id'] == highlightedID;
-    final name = '${adapter['name'] ?? adapter['id']}';
+    final h = schemeHealth(adapter);
+    final editingDraft =
+        adapter['draft'] == true && editorOpen && selectedID == adapter['id'];
+    final name = editingDraft && name_.isNotEmpty
+        ? name_
+        : '${adapter['name'] ?? adapter['id']}';
+    final off = adapter['enabled'] != true;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => selectScheme(adapter),
       child: Container(
-        height: 62,
-        color: active ? _soft : const Color(0xFFFFFFFF),
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        child: Row(
-          children: [
-            Expanded(
-              flex: 4,
-              child: Row(
-                children: [
-                  Flexible(child: _tableCell(name, bold: true)),
-                  if (adapter['is_default'] == true) ...[
+        key: ValueKey('scheme-row-${adapter['id']}'),
+        height: AppSize.row,
+        decoration: BoxDecoration(
+          color: active ? t.brand50 : t.surface,
+          border: Border(
+            left: BorderSide(color: active ? t.brand : t.transparent, width: 3),
+            bottom: BorderSide(color: t.border),
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(21, 0, 24, 0),
+        child: Opacity(
+          opacity: off ? 0.55 : 1,
+          child: Row(
+            children: [
+              Expanded(
+                flex: 4,
+                child: Row(
+                  children: [
+                    StatusDot(h.dot),
                     const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEAE3FF),
-                        borderRadius: BorderRadius.circular(5),
-                      ),
-                      child: const Text(
-                        '默认',
-                        style: TextStyle(
-                          color: _purple,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
+                    Flexible(
+                      child: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.sm.copyWith(
+                          color: t.fg,
+                          fontWeight: AppText.medium,
                         ),
                       ),
                     ),
+                    if (adapter['is_default'] == true) ...[
+                      const SizedBox(width: 8),
+                      const StatusBadge('默认', tone: Tone.brand),
+                    ],
+                    if (h.badge != null) ...[
+                      const SizedBox(width: 8),
+                      StatusBadge(h.badge!, tone: h.badgeTone),
+                    ],
+                    if (adapter['draft'] == true) ...[
+                      const SizedBox(width: 8),
+                      const StatusBadge('草稿'),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(flex: 5, child: _tableCell(_providerLabel(adapter))),
-            SizedBox(
-              width: 40,
-              child: IconButton.ghost(
-                density: ButtonDensity.icon,
-                icon: const Icon(LucideIcons.ellipsisVertical, size: 18),
-                onPressed: () => options(adapter),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 5,
+                child: Row(
+                  children: [
+                    TypeMark(adapter['type'] as String?),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        _providerLabel(adapter),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.sm.copyWith(color: t.fg2),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              Builder(
+                builder: (anchor) => AppIconButton(
+                  key: ValueKey('scheme-menu-${adapter['id']}'),
+                  icon: LucideIcons.ellipsisVertical,
+                  tooltip: '更多操作',
+                  onPressed: () => options(adapter, anchor),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _leftFooter() {
+  String get name_ => name.text.trim();
+
+  Widget _statusBar() {
     final ds = DesktopStatus.parse(widget.status);
-    final paired = widget.status?['paired'] == true;
-    final connected = ds.multi
-        ? ds.anyConnected
-        : widget.status?['connected'] == true;
+    final paired = ds.paired;
+    final bar = barStatus(ds);
+    final tone = toneOf(bar.level);
+    final c = ToneColors.of(context, tone);
     final device =
         '${widget.status?['device_name'] ?? widget.status?['device_id'] ?? '本机设备'}';
-    final count = widget.status?['running_tasks'] ?? 0;
-    final statusLabel = ds.multi || ds.stale
-        ? ds.label
-        : (connected ? '已连接' : '未连接');
+    final count = ds.stale ? '—' : '${widget.status?['running_tasks'] ?? 0}';
+    final pillFg = tone == Tone.neutral ? t.neutral : c.fg;
     return Container(
-      height: 70,
-      padding: const EdgeInsets.symmetric(horizontal: 22),
-      decoration: const BoxDecoration(
-        color: Color(0xFFFFFFFF),
-        border: Border(top: BorderSide(color: _border)),
+      key: const ValueKey('status-bar'),
+      height: AppSize.statusBar,
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.page),
+      decoration: BoxDecoration(
+        color: t.surface,
+        border: Border(top: BorderSide(color: t.border)),
       ),
       child: Row(
         children: [
@@ -857,65 +969,42 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               behavior: HitTestBehavior.opaque,
               onTap: widget.onConnectionTap,
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 7,
-                ),
+                key: ValueKey('status-pill-${bar.level.name}'),
+                height: 32,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
-                  color: connected
-                      ? const Color(0xFFECFDF5)
-                      : const Color(0xFFF6F5FF),
-                  border: Border.all(
-                    color: connected
-                        ? const Color(0xFFA7F3D0)
-                        : const Color(0xFFD8CEFF),
-                  ),
-                  borderRadius: BorderRadius.circular(8),
+                  color: c.bg,
+                  border: Border.all(color: c.border),
+                  borderRadius: BorderRadius.circular(AppRadius.control),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _statusDot(connected),
+                    if (bar.level == StatusLevel.warn ||
+                        bar.level == StatusLevel.error)
+                      Icon(LucideIcons.triangleAlert, size: 16, color: pillFg)
+                    else
+                      StatusDot(tone),
                     const SizedBox(width: 8),
                     Text(
-                      statusLabel,
-                      style: TextStyle(
-                        color: connected ? _green : _ink,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                      bar.label,
+                      style: AppText.sm.copyWith(
+                        color: pillFg,
+                        fontWeight: AppText.semibold,
                       ),
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 8),
                     Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: paired ? const Color(0xFFFFFFFF) : _purple,
-                        borderRadius: BorderRadius.circular(6),
-                        border: paired
-                            ? Border.all(color: const Color(0xFFD8CEFF))
-                            : null,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            LucideIcons.link,
-                            size: 13,
-                            color: paired ? _purple : const Color(0xFFFFFFFF),
-                          ),
-                          const SizedBox(width: 5),
-                          Text(
-                            paired ? '连接详情  ›' : '立即连接  ›',
-                            style: TextStyle(
-                              color: paired ? _purple : const Color(0xFFFFFFFF),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
+                      width: 1,
+                      height: 16,
+                      color: pillFg.withValues(alpha: 0.25),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      paired ? '连接详情 ›' : '立即连接 ›',
+                      style: AppText.sm.copyWith(
+                        color: pillFg,
+                        fontWeight: AppText.medium,
                       ),
                     ),
                   ],
@@ -924,173 +1013,272 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             ),
           ),
           const SizedBox(width: 16),
-          Container(width: 1, height: 22, color: _border),
+          const Hairline(vertical: true, length: 20),
           const SizedBox(width: 16),
-          const Icon(LucideIcons.monitor, size: 16, color: _muted),
-          const SizedBox(width: 8),
+          Icon(LucideIcons.monitor, size: 16, color: t.fg2),
+          const SizedBox(width: 6),
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 240),
             child: Text(
               device,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: _ink, fontSize: 13),
+              style: AppText.sm.copyWith(color: t.fg2),
             ),
           ),
-          const SizedBox(width: 14),
-          Container(width: 1, height: 22, color: _border),
-          const SizedBox(width: 14),
-          const Icon(LucideIcons.list, size: 16, color: _muted),
-          const SizedBox(width: 7),
-          Text('$count 个任务', style: const TextStyle(color: _ink, fontSize: 13)),
+          const SizedBox(width: 16),
+          const Hairline(vertical: true, length: 20),
+          const SizedBox(width: 16),
+          Icon(LucideIcons.list, size: 16, color: t.fg2),
+          const SizedBox(width: 6),
+          Text('$count 个任务', style: AppText.sm.copyWith(color: t.fg2)),
           const Spacer(),
-          OutlineButton(
-            size: ButtonSize.small,
+          AppButton(
+            label: '用量统计',
+            icon: LucideIcons.chartColumn,
+            variant: ButtonVariant.ghost,
             onPressed: widget.onUsageTap,
-            leading: const Icon(LucideIcons.chartColumn, size: 14),
-            child: const Text('用量统计'),
           ),
         ],
       ),
     );
   }
 
-  Widget _leftPane() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      SizedBox(
-        height: _headerHeight,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Row(
-            children: [
-              Image.asset(
-                'assets/brand/localsubproxy_mark.png',
-                width: 28,
-                height: 28,
-              ),
-              const SizedBox(width: 10),
-              const Expanded(
-                child: Text(
-                  '配置方案',
-                  style: TextStyle(
-                    color: _ink,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-              PrimaryButton(
-                onPressed: addScheme,
-                leading: const Icon(LucideIcons.plus, size: 16),
-                child: const Text('添加方案'),
-              ),
-            ],
-          ),
-        ),
-      ),
-      _separator(),
-      Container(
-        height: 46,
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        color: const Color(0xFFFAFBFD),
-        child: Row(
-          children: [
-            Expanded(flex: 4, child: _tableCell('方案名称', bold: true)),
-            const SizedBox(width: 12),
-            Expanded(flex: 5, child: _tableCell('服务', bold: true)),
-            SizedBox(width: 40, child: _tableCell('操作', bold: true)),
-          ],
-        ),
-      ),
-      _separator(),
-      Expanded(
-        child: schemes.isEmpty
-            ? const Center(
-                child: Text(
-                  '还没有模型方案，点击右上角添加。',
-                  style: TextStyle(color: _muted, fontSize: 13),
-                ),
-              )
-            : ListView.separated(
-                itemCount: schemes.length,
-                separatorBuilder: (_, _) => _separator(),
-                itemBuilder: (_, index) => _schemeRow(schemes[index]),
-              ),
-      ),
-    ],
-  );
-
-  Widget _formField(String label, Widget child) => Padding(
-    padding: const EdgeInsets.only(bottom: 18),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget _paneHeader({
+    required Widget title,
+    List<Widget> actions = const [],
+  }) => Container(
+    height: AppSize.header,
+    padding: const EdgeInsets.symmetric(horizontal: AppSpace.page),
+    decoration: BoxDecoration(
+      border: Border(bottom: BorderSide(color: t.border)),
+    ),
+    child: Row(
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: _ink,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 8),
-        child,
+        Expanded(child: title),
+        for (final a in actions) ...[const SizedBox(width: 12), a],
       ],
     ),
   );
 
-  Widget _providerSelect() => Select<String>(
-    value: provider,
-    constraints: const BoxConstraints(minWidth: 280),
-    itemBuilder: (context, value) => Text(switch (value) {
-      'codex' => 'OpenAI Codex（订阅）',
-      'openai' => 'OpenAI 兼容协议',
-      'anthropic' => 'Anthropic 兼容协议',
-      _ => '旧版 Ollama（仅现有方案）',
-    }),
-    onChanged: changeProvider,
-    popup: const SelectPopup(
-      items: SelectItemList(
-        children: [
-          SelectItemButton(value: 'codex', child: Text('OpenAI Codex（订阅）')),
-          SelectItemButton(value: 'openai', child: Text('OpenAI 兼容协议')),
-          SelectItemButton(value: 'anthropic', child: Text('Anthropic 兼容协议')),
+  Widget _title(String s) => Text(s, style: AppText.lg.copyWith(color: t.fg));
+
+  Widget _leftPane() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _paneHeader(
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(AppRadius.control),
+              child: Image.asset(
+                'assets/brand/localsubproxy_mark.png',
+                width: 28,
+                height: 28,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Flexible(child: _title('配置方案')),
+          ],
+        ),
+        actions: [
+          AppButton(
+            label: '添加方案',
+            icon: LucideIcons.plus,
+            variant: ButtonVariant.primary,
+            onPressed: addScheme,
+          ),
         ],
+      ),
+      if (schemes.isEmpty)
+        Expanded(
+          child: EmptyState(
+            icon: LucideIcons.layers,
+            title: '添加第一个模型方案',
+            message:
+                '方案描述本机可用的模型：Codex 订阅、OpenAI 兼容或 Anthropic 兼容接口。远端服务只能调用你授权的方案。',
+            action: AppButton(
+              key: const ValueKey('empty-add-scheme'),
+              label: '添加方案',
+              icon: LucideIcons.plus,
+              variant: ButtonVariant.primary,
+              onPressed: addScheme,
+            ),
+          ),
+        )
+      else ...[
+        Container(
+          height: AppSize.tableHeader,
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
+          decoration: BoxDecoration(
+            color: t.subtle,
+            border: Border(bottom: BorderSide(color: t.border)),
+          ),
+          child: Row(
+            children: [
+              Expanded(flex: 4, child: _th('方案名称')),
+              const SizedBox(width: 12),
+              Expanded(flex: 5, child: _th('服务')),
+              const SizedBox(width: AppSize.button),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: schemes.length,
+            itemBuilder: (_, index) => _schemeRow(schemes[index]),
+          ),
+        ),
+      ],
+    ],
+  );
+
+  Widget _th(String s) => Text(
+    s,
+    style: AppText.xs.copyWith(color: t.fg2, fontWeight: AppText.medium),
+  );
+
+  Widget _field(String label, Widget child, {String? hint, String? error}) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              label,
+              style: AppText.sm.copyWith(
+                color: t.fg,
+                fontWeight: AppText.medium,
+              ),
+            ),
+            const SizedBox(height: 6),
+            child,
+            if (error != null) ...[
+              const SizedBox(height: 4),
+              Text(error, style: AppText.xs.copyWith(color: t.danger)),
+            ] else if (hint != null) ...[
+              const SizedBox(height: 4),
+              Text(hint, style: AppText.xs.copyWith(color: t.fg3)),
+            ],
+          ],
+        ),
+      );
+
+  Widget _providerSelect() => _fieldSelect(
+    Select<String>(
+      expandIcon: Icon(
+        LucideIcons.chevronDown,
+        size: 16,
+        color: AppTokens.of(context).fg2,
+      ),
+      value: provider,
+      constraints: const BoxConstraints(minHeight: AppSize.input),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      borderRadius: BorderRadius.circular(AppRadius.control),
+      popupWidthConstraint: PopoverConstraint.anchorMinSize,
+      itemBuilder: (context, value) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TypeMark(switch (value) {
+            'codex' => 'codex_app_server',
+            'anthropic' => 'anthropic_compatible',
+            'legacy_ollama' => 'ollama_http',
+            _ => 'openai_compatible',
+          }),
+          const SizedBox(width: 8),
+          Text(switch (value) {
+            'codex' => 'OpenAI Codex（订阅）',
+            'openai' => 'OpenAI 兼容协议',
+            'anthropic' => 'Anthropic 兼容协议',
+            _ => '旧版 Ollama（仅现有方案）',
+          }, style: AppText.md.copyWith(color: t.fg)),
+        ],
+      ),
+      onChanged: changeProvider,
+      popup: const SelectPopup(
+        items: SelectItemList(
+          children: [
+            SelectItemButton(value: 'codex', child: Text('OpenAI Codex（订阅）')),
+            SelectItemButton(value: 'openai', child: Text('OpenAI 兼容协议')),
+            SelectItemButton(value: 'anthropic', child: Text('Anthropic 兼容协议')),
+          ],
+        ),
       ),
     ),
   );
 
+  static const _customItem = '__custom_model__';
+
+  List<String> get modelChoices => provider == 'codex'
+      ? codexModels
+      : <String>{...providerModels, ...?editorTest?.models}.toList();
+
+  /// Selects drawn like the text fields: white surface, hairline border
+  /// (the default outline style tints the background grey).
+  Widget _fieldSelect(Widget select) {
+    final theme = Theme.of(context);
+    final t = AppTokens.of(context);
+    return Theme(
+      data: theme.copyWith(
+        colorScheme: () => theme.colorScheme.copyWith(
+          input: () => t.surface,
+          border: () => t.checkboxBorder,
+        ),
+      ),
+      child: select,
+    );
+  }
+
   Widget _modelSelect() {
-    final fetched = provider == 'codex' ? codexModels : providerModels;
-    if (fetched.isEmpty) {
-      return TextField(
-        controller: model,
-        placeholder: Text(provider == 'codex' ? '输入模型 ID' : '输入供应商提供的模型 ID'),
-      );
-    }
     final choices = <String>{
       if (model.text.isNotEmpty) model.text,
-      ...fetched,
+      ...modelChoices,
     }.toList();
-    return Select<String>(
-      value: model.text.isEmpty ? null : model.text,
-      placeholder: const Text('选择模型'),
-      constraints: const BoxConstraints(minWidth: 230),
-      popupWidthConstraint: PopoverConstraint.anchorMinSize,
-      popupConstraints: const BoxConstraints(maxHeight: 280, minWidth: 230),
-      itemBuilder: (context, value) => Text(value),
-      onChanged: (value) {
-        if (value == null || value == model.text) return;
-        model.text = value;
-        markDirty();
-      },
-      popup: SelectPopup.noVirtualization(
-        items: SelectItemList(
-          children: [
-            for (final choice in choices)
-              SelectItemButton(value: choice, child: Text(choice)),
-          ],
+    if (modelChoices.isEmpty) {
+      return appTextField(
+        context,
+        controller: model,
+        placeholder: provider == 'codex' ? '输入模型 ID' : '输入供应商提供的模型 ID',
+      );
+    }
+    return _fieldSelect(
+      Select<String>(
+        expandIcon: Icon(
+          LucideIcons.chevronDown,
+          size: 16,
+          color: AppTokens.of(context).fg2,
+        ),
+        value: model.text.isEmpty ? null : model.text,
+        placeholder: const Text('选择模型'),
+        constraints: const BoxConstraints(minHeight: AppSize.input),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        popupWidthConstraint: PopoverConstraint.anchorMinSize,
+        popupConstraints: const BoxConstraints(maxHeight: 280, minWidth: 230),
+        itemBuilder: (context, value) => Text(
+          value == _customItem ? '+ 自定义模型…' : value,
+          style: AppText.md.copyWith(color: t.fg),
+        ),
+        onChanged: (value) {
+          if (value == null || value == model.text) return;
+          if (value == _customItem) {
+            _customModel();
+            return;
+          }
+          model.text = value;
+          markDirty();
+        },
+        popup: SelectPopup.noVirtualization(
+          items: SelectItemList(
+            children: [
+              for (final choice in choices)
+                SelectItemButton(value: choice, child: Text(choice)),
+              const SelectItemButton(
+                value: _customItem,
+                child: Text('+ 自定义模型…'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1105,19 +1293,21 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           title: const Text('自定义模型'),
           content: SizedBox(
             width: 380,
-            child: TextField(
+            child: appTextField(
+              ctx,
               controller: input,
-              placeholder: const Text('输入供应商提供的模型 ID'),
+              placeholder: '输入供应商提供的模型 ID',
             ),
           ),
           actions: [
-            OutlineButton(
+            AppButton(
+              label: '取消',
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消'),
             ),
-            PrimaryButton(
+            AppButton(
+              label: '确定',
+              variant: ButtonVariant.primary,
               onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('确定'),
             ),
           ],
         ),
@@ -1128,10 +1318,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   }
 
   Widget _reasoningSelect() => Container(
-    height: 38,
+    height: AppSize.button,
+    padding: const EdgeInsets.all(2),
     decoration: BoxDecoration(
-      border: Border.all(color: _border),
-      borderRadius: BorderRadius.circular(7),
+      color: t.surface,
+      border: Border.all(color: t.border),
+      borderRadius: BorderRadius.circular(AppRadius.control),
     ),
     child: Row(
       children: [
@@ -1148,23 +1340,19 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 reasoning = item.$1;
                 dirty = true;
                 testStatus = null;
+                editorTest = null;
               }),
               child: Container(
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: reasoning == item.$1
-                      ? _purple
-                      : const Color(0xFFFFFFFF),
-                  borderRadius: BorderRadius.circular(6),
+                  color: reasoning == item.$1 ? t.brand : null,
+                  borderRadius: BorderRadius.circular(AppRadius.badge),
                 ),
                 child: Text(
                   item.$2,
-                  style: TextStyle(
-                    color: reasoning == item.$1
-                        ? const Color(0xFFFFFFFF)
-                        : _muted,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                  style: AppText.xs.copyWith(
+                    color: reasoning == item.$1 ? t.brandFg : t.fg2,
+                    fontWeight: AppText.medium,
                   ),
                 ),
               ),
@@ -1174,205 +1362,442 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     ),
   );
 
-  Widget _editorFields() => SingleChildScrollView(
-    padding: const EdgeInsets.fromLTRB(26, 24, 26, 28),
-    child: Column(
+  String get _advancedSummary {
+    String v(TextEditingController c) =>
+        c.text.trim().isEmpty ? '自动' : c.text.trim();
+    final parts = ['上下文窗口 ${v(contextWindow)}', '最大输出 ${v(maxTokens)}'];
+    if (provider != 'anthropic' && provider != 'legacy_ollama') {
+      parts.add('思考强度 ${_reasoningLabel(reasoning)}');
+    }
+    return parts.join(' · ');
+  }
+
+  static String _reasoningLabel(String? r) => switch (r) {
+    'low' => '低',
+    'medium' => '中',
+    'high' => '高',
+    _ => '关闭',
+  };
+
+  Widget _testAlert() {
+    final r = editorTest;
+    if (r == null) return const SizedBox.shrink();
+    final failedCall = !r.ok && r.models.isEmpty && testStatus == '连接测试失败';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: AppAlert(
+        key: const ValueKey('test-result'),
+        tone: r.ok ? Tone.success : Tone.danger,
+        inline: true,
+        title: r.ok ? '连接测试通过' : (failedCall ? '连接测试失败' : '连接不可用'),
+        message: '${r.ms} ms · ${r.message}',
+      ),
+    );
+  }
+
+  Widget _editorFields() {
+    final codex = provider == 'codex';
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _formField(
-          '方案名称',
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: name,
-                placeholder: const Text('默认：模型名，重名时加 _2、_3'),
-                onChanged: (_) => setState(() => nameTouched = true),
-              ),
-              if (nameError != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  nameError!,
-                  style: const TextStyle(
-                    color: Color(0xFFDC2626),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        _formField('API 提供商', _providerSelect()),
-        if (provider == 'codex') ...[
-          Padding(
-            padding: const EdgeInsets.only(bottom: 18),
-            child: Row(
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _statusDot(codexConnected),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    codexConnected
-                        ? '本地 Codex 已连接'
-                        : checkingCodex
-                        ? '正在检查本机 Codex 登录态…'
-                        : '本地 Codex 尚未连接',
-                    style: TextStyle(
-                      color: codexConnected ? _green : _muted,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                _testAlert(),
+                if (error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: AppAlert(
+                      key: const ValueKey('editor-error'),
+                      tone: Tone.danger,
+                      message: error,
+                    ),
+                  ),
+                const SectionLabel('基本信息', top: 0),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: _field(
+                        '方案名称',
+                        appTextField(
+                          context,
+                          controller: name,
+                          placeholder: '默认：模型名，重名时加 _2、_3',
+                          onChanged: (_) => setState(() => nameTouched = true),
+                        ),
+                        error: nameError,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(child: _field('服务', _providerSelect())),
+                  ],
+                ),
+                const SectionLabel('连接', top: 4),
+                if (codex) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Row(
+                      children: [
+                        StatusDot(codexConnected ? Tone.success : Tone.neutral),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            codexConnected
+                                ? '本地 Codex 已连接'
+                                : checkingCodex
+                                ? '正在检查本机 Codex 登录态…'
+                                : '本地 Codex 尚未连接',
+                            style: AppText.sm.copyWith(
+                              color: codexConnected ? t.success : t.fg2,
+                              fontWeight: AppText.medium,
+                            ),
+                          ),
+                        ),
+                        AppButton(
+                          label: codexConnected ? '断开连接' : '连接订阅',
+                          variant: ButtonVariant.ghost,
+                          small: true,
+                          onPressed: working
+                              ? null
+                              : (codexConnected ? logoutCodex : connectCodex),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (loginPending) ...[
+                    Text(
+                      '请在浏览器完成登录，然后等待自动检测。',
+                      style: AppText.xs.copyWith(color: t.fg2),
+                    ),
+                    if (loginURL != null)
+                      SelectableText(
+                        loginURL!,
+                        style: AppText.xs.copyWith(color: t.brand),
+                      ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        AppButton(label: '检查登录', onPressed: checkLogin),
+                        const SizedBox(width: 8),
+                        AppButton(label: '取消', onPressed: cancelLogin),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  _field(
+                    'Codex CLI 路径',
+                    appTextField(
+                      context,
+                      controller: codexPath,
+                      placeholder: 'codex',
+                    ),
+                  ),
+                ] else ...[
+                  _field(
+                    'API 地址',
+                    appTextField(
+                      context,
+                      controller: baseURL,
+                      placeholder: 'https://example.com/v1',
+                    ),
+                  ),
+                  if (provider != 'legacy_ollama')
+                    _field(
+                      'API 密钥',
+                      appTextField(
+                        context,
+                        controller: apiKey,
+                        placeholder: hasReusableKey
+                            ? '已保存密钥，留空则保留'
+                            : '输入 API 密钥',
+                        password: true,
+                      ),
+                    ),
+                ],
+                const SectionLabel('模型', top: 4),
+                _field(
+                  '模型',
+                  Row(
+                    children: [
+                      Expanded(child: _modelSelect()),
+                      const SizedBox(width: 8),
+                      AppButton(
+                        label: fetchingModels || checkingCodex
+                            ? '获取中…'
+                            : '获取模型',
+                        icon: LucideIcons.refreshCw,
+                        variant: ButtonVariant.ghost,
+                        onPressed: working || fetchingModels || checkingCodex
+                            ? null
+                            : fetchModels,
+                      ),
+                      AppButton(
+                        label: '自定义模型',
+                        icon: LucideIcons.pencil,
+                        variant: ButtonVariant.ghost,
+                        onPressed: working ? null : _customModel,
+                      ),
+                    ],
+                  ),
+                  hint: modelChoices.isNotEmpty
+                      ? (codex
+                            ? '列表来自本机 Codex CLI；最后一项可输入自定义模型 ID'
+                            : '列表来自 /v1/models；最后一项可输入自定义模型 ID')
+                      : (codex ? null : '点击“获取模型”可从服务商列表中选择，也可直接输入模型 ID'),
+                ),
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: t.border)),
+                  ),
+                  padding: const EdgeInsets.only(top: 12),
+                  child: GestureDetector(
+                    key: const ValueKey('advanced-toggle'),
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => setState(() => advancedOpen = !advancedOpen),
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: SizedBox(
+                        height: 32,
+                        child: Row(
+                          children: [
+                            Icon(
+                              advancedOpen
+                                  ? LucideIcons.chevronDown
+                                  : LucideIcons.chevronRight,
+                              size: 16,
+                              color: t.fg2,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              '高级',
+                              style: AppText.sm.copyWith(
+                                color: t.fg,
+                                fontWeight: AppText.semibold,
+                              ),
+                            ),
+                            Flexible(
+                              child: Text(
+                                ' · $_advancedSummary',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.sm.copyWith(color: t.fg2),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),
-                GhostButton(
-                  onPressed: working
-                      ? null
-                      : (codexConnected ? logoutCodex : connectCodex),
-                  child: Text(codexConnected ? '断开连接' : '连接订阅'),
-                ),
+                if (advancedOpen) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: _field(
+                          '上下文窗口',
+                          appTextField(
+                            context,
+                            controller: contextWindow,
+                            placeholder: '自动检测',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _field(
+                          '最大输出 Token',
+                          appTextField(
+                            context,
+                            controller: maxTokens,
+                            placeholder: '自动检测',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (provider != 'anthropic' && provider != 'legacy_ollama')
+                    _field('思考强度', _reasoningSelect()),
+                  if (type == 'openai_compatible' ||
+                      type == 'anthropic_compatible')
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: AppCheckbox(
+                              key: const ValueKey('skip-model-probe'),
+                              checked: skipModelProbe,
+                              onChanged: (v) => setState(() {
+                                skipModelProbe = v;
+                                dirty = true;
+                              }),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '跳过模型列表探测',
+                                  style: AppText.sm.copyWith(
+                                    color: t.fg,
+                                    fontWeight: AppText.medium,
+                                  ),
+                                ),
+                                Text(
+                                  '服务能正常推理但没有 /models 接口时勾选：不再用模型列表判断是否可用，方案会直接上报给已连接的服务。',
+                                  style: AppText.xs.copyWith(color: t.fg3),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
               ],
             ),
           ),
-          if (loginPending) ...[
-            const Text(
-              '请在浏览器完成登录，然后等待自动检测。',
-              style: TextStyle(color: _muted, fontSize: 12),
-            ),
-            if (loginURL != null)
-              SelectableText(
-                loginURL!,
-                style: const TextStyle(color: _purple, fontSize: 11),
-              ),
-            Row(
-              children: [
-                OutlineButton(onPressed: checkLogin, child: const Text('检查登录')),
-                const SizedBox(width: 8),
-                OutlineButton(onPressed: cancelLogin, child: const Text('取消')),
-              ],
-            ),
-            const SizedBox(height: 18),
-          ],
-          _formField(
-            'Codex CLI 路径',
-            TextField(controller: codexPath, placeholder: const Text('codex')),
-          ),
-        ] else ...[
-          _formField(
-            'API 地址',
-            TextField(
-              controller: baseURL,
-              placeholder: const Text('https://example.com/v1'),
-            ),
-          ),
-          if (provider != 'legacy_ollama')
-            _formField(
-              'API 密钥',
-              TextField(
-                controller: apiKey,
-                placeholder: Text(hasReusableKey ? '已保存密钥，留空则保留' : '输入 API 密钥'),
-                features: const [InputFeature.passwordToggle()],
-              ),
-            ),
-        ],
-        const SizedBox(height: 4),
-        _separator(),
-        const SizedBox(height: 22),
-        _formField(
-          '模型',
-          Row(
-            children: [
-              Expanded(child: _modelSelect()),
-              const SizedBox(width: 8),
-              GhostButton(
-                onPressed: fetchingModels || checkingCodex ? null : fetchModels,
-                leading: const Icon(LucideIcons.refreshCw, size: 15),
-                child: Text(
-                  fetchingModels || checkingCodex ? '获取中…' : '获取模型',
-                ),
-              ),
-              GhostButton(
-                onPressed: _customModel,
-                leading: const Icon(LucideIcons.pencil, size: 15),
-                child: const Text('自定义模型'),
-              ),
-            ],
-          ),
         ),
-        _formField(
-          '上下文窗口',
-          TextField(controller: contextWindow, placeholder: const Text('自动检测')),
-        ),
-        _formField(
-          '最大输出 Token',
-          TextField(controller: maxTokens, placeholder: const Text('自动检测')),
-        ),
-        if (provider != 'anthropic' && provider != 'legacy_ollama')
-          _formField('思考强度', _reasoningSelect()),
-        if (error != null)
-          Text(
-            error!,
-            style: const TextStyle(color: Color(0xFFB33535), fontSize: 12),
-          ),
+        _actionBar(),
       ],
-    ),
-  );
+    );
+  }
 
-  Widget _readOnlyField(String label, String value) => Padding(
-    padding: const EdgeInsets.only(bottom: 18),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: _muted,
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
+  Widget _actionBar() {
+    final r = editorTest;
+    final testing = working && testStatus == '正在测试连接…';
+    final (String label, Color color) = testing
+        ? ('正在测试…', t.fg2)
+        : r == null
+        ? ('尚未测试', t.fg3)
+        : r.ok
+        ? ('✓ 已通过', t.success)
+        : ('✗ 未通过', t.danger);
+    return Container(
+      key: const ValueKey('editor-action-bar'),
+      height: AppSize.actionBar,
+      padding: const EdgeInsets.symmetric(horizontal: AppSpace.page),
+      decoration: BoxDecoration(
+        color: t.surface,
+        border: Border(top: BorderSide(color: t.border)),
+      ),
+      child: Row(
+        children: [
+          AppButton(
+            label: '测试连接',
+            icon: LucideIcons.play,
+            onPressed: working ? null : test,
           ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          value.isEmpty ? '—' : value,
-          style: const TextStyle(color: _ink, fontSize: 14),
-        ),
-      ],
-    ),
-  );
+          const SizedBox(width: 8),
+          Text(label, style: AppText.xs.copyWith(color: color)),
+          const Spacer(),
+          AppButton(label: '取消', onPressed: working ? null : closeEditor),
+          const SizedBox(width: 8),
+          AppButton(
+            label: working && !testing ? '处理中…' : '保存',
+            variant: ButtonVariant.primary,
+            onPressed: working ? null : save,
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _detailView(Map<String, dynamic> scheme) {
     final models = (scheme['models'] as List?)?.cast<String>() ?? [];
-    final modelName = models.isEmpty ? '未设置' : models.first;
-    final contextWindow = (scheme['context_window'] as int? ?? 0) == 0
-        ? '自动检测'
-        : '${scheme['context_window']}';
-    final maxTokens = (scheme['max_output_tokens'] as int? ?? 0) == 0
-        ? '自动检测'
-        : '${scheme['max_output_tokens']}';
-    final reasoning = switch (scheme['reasoning_effort']) {
-      'low' => '低',
-      'medium' => '中',
-      'high' => '高',
-      'off' => '关闭',
-      _ => '关闭',
-    };
+    Widget auto(String v) => Text(v, style: AppText.sm.copyWith(color: t.fg3));
+    Widget val(String v) => Text(v.isEmpty ? '—' : v);
+    final cw = (scheme['context_window'] as int? ?? 0);
+    final mt = (scheme['max_output_tokens'] as int? ?? 0);
     final codex = scheme['type'] == 'codex_app_server';
+    final h = schemeHealth(scheme);
+    final usage = widget.usage['${scheme['id']}'];
+    final last = lastTests['${scheme['id']}'];
+    String hm(DateTime d) =>
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(26, 24, 26, 28),
+      padding: const EdgeInsets.all(AppSpace.page),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _readOnlyField('方案名称', '${scheme['name'] ?? scheme['id']}'),
-          _readOnlyField('服务', _providerLabel(scheme)),
-          if (codex)
-            _readOnlyField('Codex CLI 路径', '${scheme['codex_bin'] ?? 'codex'}')
-          else
-            _readOnlyField('API 地址', '${scheme['base_url'] ?? ''}'),
-          _readOnlyField('模型', modelName),
-          _readOnlyField('上下文窗口', contextWindow),
-          _readOnlyField('最大输出 Token', maxTokens),
-          if (scheme['type'] != 'anthropic_compatible' &&
-              scheme['type'] != 'ollama_http')
-            _readOnlyField('思考强度', reasoning),
+          const SectionLabel('基本信息', top: 0),
+          KvTable([
+            ('方案名称', val('${scheme['name'] ?? scheme['id']}')),
+            (
+              '服务',
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TypeMark(scheme['type'] as String?),
+                  const SizedBox(width: 8),
+                  Text(_providerLabel(scheme)),
+                ],
+              ),
+            ),
+            ('状态', StatusBadge(h.detail, tone: h.dot, dot: true)),
+            if (codex)
+              (
+                'Codex CLI 路径',
+                Text(
+                  '${scheme['codex_bin'] ?? 'codex'}',
+                  style: monoStyle(AppText.sm.copyWith(color: t.fg)),
+                ),
+              )
+            else ...[
+              ('API 地址', val('${scheme['base_url'] ?? ''}')),
+              if (scheme['type'] != 'ollama_http')
+                (
+                  'API 密钥',
+                  scheme['has_api_key'] == true
+                      ? const Text('已保存')
+                      : auto('未设置'),
+                ),
+            ],
+            ('模型', models.isEmpty ? auto('未设置') : val(models.join('、'))),
+            if (scheme['type'] != 'anthropic_compatible' &&
+                scheme['type'] != 'ollama_http')
+              (
+                '思考强度',
+                val(_reasoningLabel(scheme['reasoning_effort'] as String?)),
+              ),
+          ]),
+          const SectionLabel('高级'),
+          KvTable([
+            ('上下文窗口', cw == 0 ? auto('自动检测') : val('$cw')),
+            ('最大输出 Token', mt == 0 ? auto('自动检测') : val('$mt')),
+          ]),
+          const SectionLabel('运行情况'),
+          KvTable([
+            (
+              '近 7 天用量',
+              usage == null || usage == 0
+                  ? auto('暂无记录')
+                  : Text('${fmtTokens(usage)} tokens'),
+            ),
+            (
+              '最近测试',
+              last == null
+                  ? auto('本次运行尚未测试')
+                  : Text(
+                      last.ok
+                          ? '✓ 通过 · ${last.ms} ms · ${hm(last.at)}'
+                          : '✗ 未通过 · ${last.message} · ${hm(last.at)}',
+                      style: AppText.sm.copyWith(
+                        color: last.ok ? t.success : t.danger,
+                      ),
+                    ),
+            ),
+          ]),
         ],
       ),
     );
@@ -1381,75 +1806,32 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   Widget _rightPane() => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      SizedBox(
-        height: _headerHeight,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Row(
-            children: [
-              Text(
-                editorOpen ? '编辑方案' : '方案详情',
-                style: const TextStyle(
-                  color: _ink,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              if (!editorOpen && highlighted != null) ...[
-                const Spacer(),
-                PrimaryButton(
-                  onPressed: () => openEditor(highlighted!),
-                  leading: const Icon(LucideIcons.pencil, size: 16),
-                  child: const Text('编辑'),
-                ),
-              ],
-              if (editorOpen) ...[
-                const SizedBox(width: 16),
-                OutlineButton(
-                  onPressed: working ? null : test,
-                  leading: const Icon(LucideIcons.play, size: 16),
-                  child: const Text('测试连接'),
-                ),
-                const SizedBox(width: 8),
-                _statusDot(testPassed, size: 8),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    testStatus ?? '尚未测试',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: _muted, fontSize: 12),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                OutlineButton(
-                  onPressed: working ? null : closeEditor,
-                  child: const Text('取消'),
-                ),
-                const SizedBox(width: 8),
-                PrimaryButton(
-                  onPressed: working ? null : save,
-                  child: Text(working ? '处理中…' : '保存'),
-                ),
-                IconButton.ghost(
-                  density: ButtonDensity.icon,
-                  icon: const Icon(LucideIcons.x, size: 16),
-                  onPressed: closeEditor,
-                ),
-              ],
-            ],
-          ),
-        ),
+      _paneHeader(
+        title: Row(children: [_title(editorOpen ? '编辑方案' : '方案详情')]),
+        actions: [
+          // right-aligned, as in the design
+          if (editorOpen && (dirty || creating))
+            const StatusBadge(
+              '未保存',
+              key: ValueKey('unsaved-badge'),
+              tone: Tone.warning,
+            ),
+          if (!editorOpen && highlighted != null)
+            AppButton(
+              label: '编辑',
+              icon: LucideIcons.pencil,
+              onPressed: () => openEditor(highlighted!),
+            ),
+        ],
       ),
-      _separator(),
       Expanded(
         child: editorOpen
             ? _editorFields()
             : highlighted == null
-            ? const Center(
+            ? Center(
                 child: Text(
-                  '选择左侧方案查看详情，或添加新方案。',
-                  style: TextStyle(color: _muted, fontSize: 13),
+                  schemes.isEmpty ? '添加方案后在这里查看详情' : '选择左侧方案查看详情，或添加新方案。',
+                  style: AppText.sm.copyWith(color: t.fg2),
                 ),
               )
             : _detailView(highlighted!),
@@ -1460,26 +1842,292 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, size) {
-      final leftWidth = size.maxWidth * (size.maxWidth < 1100 ? 0.45 : 0.52);
+      final leftWidth = size.maxWidth * (size.maxWidth < 1100 ? 0.45 : 0.5);
       return ColoredBox(
-        color: const Color(0xFFFFFFFF),
+        color: t.bg,
         child: Column(
           children: [
             Expanded(
               child: Row(
                 children: [
                   SizedBox(width: leftWidth, child: _leftPane()),
-                  const SizedBox(width: 1, child: ColoredBox(color: _border)),
+                  const Hairline(vertical: true),
                   Expanded(child: _rightPane()),
                 ],
               ),
             ),
-            _leftFooter(),
+            _statusBar(),
           ],
         ),
       );
     },
   );
+}
+
+/// Scheme health for the list dot, badge and detail status.
+class SchemeHealth {
+  const SchemeHealth(
+    this.dot,
+    this.detail, {
+    this.badge,
+    this.badgeTone = Tone.neutral,
+  });
+  final Tone dot;
+  final String detail;
+  final String? badge;
+  final Tone badgeTone;
+}
+
+SchemeHealth schemeHealth(Map<String, dynamic> a) {
+  if (a['draft'] == true) return const SchemeHealth(Tone.neutral, '未保存');
+  if (a['enabled'] != true) {
+    return const SchemeHealth(Tone.neutral, '已停用', badge: '已停用');
+  }
+  if (a['auth_state'] == 'required') {
+    return const SchemeHealth(
+      Tone.warning,
+      '需要登录',
+      badge: '需要登录',
+      badgeTone: Tone.warning,
+    );
+  }
+  return switch (a['health']) {
+    'ready' => SchemeHealth(
+      Tone.success,
+      a['type'] == 'codex_app_server' ? '可用 · 已登录' : '可用',
+    ),
+    'unavailable' => const SchemeHealth(
+      Tone.danger,
+      '不可用',
+      badge: '不可用',
+      badgeTone: Tone.danger,
+    ),
+    'storage_full' => const SchemeHealth(
+      Tone.danger,
+      '存储已满',
+      badge: '存储已满',
+      badgeTone: Tone.danger,
+    ),
+    _ => const SchemeHealth(Tone.neutral, '检测中'),
+  };
+}
+
+Tone toneOf(StatusLevel l) => switch (l) {
+  StatusLevel.ok => Tone.success,
+  StatusLevel.warn => Tone.warning,
+  StatusLevel.error => Tone.danger,
+  StatusLevel.off => Tone.neutral,
+};
+
+String fmtTokens(num n) {
+  String trim(double v) {
+    final s = v.toStringAsFixed(n >= 1000000 ? 2 : 1);
+    var r = s;
+    while (r.contains('.') && (r.endsWith('0') || r.endsWith('.'))) {
+      r = r.substring(0, r.length - 1);
+    }
+    return r;
+  }
+
+  if (n >= 1000000) return '${trim(n / 1000000)}M';
+  if (n >= 1000) return '${trim(n / 1000)}k';
+  return '$n';
+}
+
+/// Outlined 36px text field from the tokens.
+Widget appTextField(
+  BuildContext context, {
+  Key? key,
+  required TextEditingController controller,
+  String? placeholder,
+  ValueChanged<String>? onChanged,
+  ValueChanged<String>? onSubmitted,
+  bool password = false,
+  bool clear = false,
+  bool enabled = true,
+}) {
+  final t = AppTokens.of(context);
+  return TextField(
+    key: key,
+    controller: controller,
+    enabled: enabled,
+    onChanged: onChanged,
+    onSubmitted: onSubmitted,
+    filled: false,
+    // white field with a hairline border (the default tints it grey)
+    decoration: BoxDecoration(
+      color: enabled ? t.surface : t.subtle,
+      borderRadius: BorderRadius.circular(AppRadius.control),
+      border: Border.all(color: t.checkboxBorder),
+    ),
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    style: AppText.md.copyWith(color: t.fg),
+    placeholder: placeholder == null
+        ? null
+        : Text(placeholder, style: AppText.md.copyWith(color: t.fg3)),
+    features: [
+      if (password) const InputFeature.passwordToggle(),
+      if (clear) const InputFeature.clear(),
+    ],
+  );
+}
+
+/// Anchored ⋮ menu of a scheme row.
+class SchemeMenu extends StatelessWidget {
+  const SchemeMenu({super.key, required this.onSelected});
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    Widget item(String v, IconData icon, String label, {bool danger = false}) =>
+        _MenuItem(
+          key: ValueKey('menu-$v'),
+          icon: icon,
+          label: label,
+          color: danger ? t.danger : null,
+          onTap: () => onSelected(v),
+        );
+    return Container(
+      key: const ValueKey('scheme-menu'),
+      width: 184,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(AppRadius.control),
+        border: Border.all(color: t.border),
+        boxShadow: [
+          BoxShadow(
+            color: t.shadow,
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          item('rename', LucideIcons.pencil, '重命名'),
+          item('default', LucideIcons.star, '设为默认方案'),
+          item('test', LucideIcons.play, '测试连接'),
+          Container(
+            height: 1,
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            color: t.border,
+          ),
+          item('delete', LucideIcons.trash2, '删除方案', danger: true),
+        ],
+      ),
+    );
+  }
+}
+
+class _MenuItem extends StatefulWidget {
+  const _MenuItem({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.color,
+  });
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final Color? color;
+
+  @override
+  State<_MenuItem> createState() => _MenuItemState();
+}
+
+class _MenuItemState extends State<_MenuItem> {
+  bool hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => hover = true),
+      onExit: (_) => setState(() => hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: hover ? t.mutedBg : null,
+            borderRadius: BorderRadius.circular(AppRadius.badge),
+          ),
+          child: Row(
+            children: [
+              Icon(widget.icon, size: 16, color: widget.color ?? t.fg2),
+              const SizedBox(width: 8),
+              Text(
+                widget.label,
+                style: AppText.sm.copyWith(color: widget.color ?? t.fg),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Body of the 删除方案 confirmation: red icon, name, impact, irreversible.
+class DeleteSchemeMessage extends StatelessWidget {
+  const DeleteSchemeMessage({
+    super.key,
+    required this.name,
+    required this.affected,
+  });
+  final String name;
+  final List<String> affected;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final impact = affected.isEmpty
+        ? '目前没有远端服务被授权使用它。此操作不可撤销。'
+        : '已授权它的 ${affected.length} 个远端服务（${affected.join('、')}）将不能再调用这个模型。此操作不可撤销。';
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: t.danger50, shape: BoxShape.circle),
+          child: Icon(LucideIcons.trash2, size: 20, color: t.danger),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text.rich(
+                TextSpan(
+                  children: [
+                    const TextSpan(text: '确定删除方案 '),
+                    TextSpan(
+                      text: name,
+                      style: const TextStyle(fontWeight: AppText.semibold),
+                    ),
+                    const TextSpan(text: '？'),
+                  ],
+                ),
+                style: AppText.sm.copyWith(color: t.fg),
+              ),
+              const SizedBox(height: 4),
+              Text(impact, style: AppText.sm.copyWith(color: t.fg2)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 /// Converts an AdapterView (list_adapters output) into an edit body. The view

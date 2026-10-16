@@ -1,0 +1,233 @@
+name: desktop-release
+
+on:
+  push:
+    tags: ['v*']
+    # CI 分支：只构建、不发布，便于在合并前验证打包流程
+    branches: ['ci-*', 'ci/**']
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'scripts/build-*'
+      - 'packaging/**'
+      - '.github/workflows/desktop-release.yml'
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run quick unit tests (go test -short ./internal/..., flutter test) before packaging'
+        type: boolean
+        default: true
+      version:
+        description: 'Version for build-name (default: pubspec version)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: '1.24.x' # >= 1.24.6 (govulncheck stdlib fixes)
+  FLUTTER_VERSION: '3.47.7'
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.v.outputs.name }}
+      number: ${{ steps.v.outputs.number }}
+      run_tests: ${{ steps.v.outputs.run_tests }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TESTS: ${{ inputs.run_tests }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            name="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            name="${INPUT_VERSION#v}"
+          else
+            name=$(sed -n 's/^version: *\([^+]*\).*/\1/p' desktop/pubspec.yaml)
+          fi
+          case "$name" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::version '$name' is not semver (x.y.z[-pre])"; exit 1 ;;
+          esac
+          tests=true
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$INPUT_TESTS" = false ] && tests=false
+          {
+            echo "name=$name"
+            echo "number=$GITHUB_RUN_NUMBER"
+            echo "run_tests=$tests"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$name build=$GITHUB_RUN_NUMBER tests=$tests"
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter --version && go version
+      - name: Pub get
+        working-directory: desktop
+        run: flutter pub get
+      - name: Quick tests
+        if: needs.version.outputs.run_tests == 'true'
+        run: |
+          go test -short ./internal/...
+          (cd desktop && flutter test)
+      - name: Import signing certificate
+        id: cert
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ] || [ -z "$MACOS_SIGN_IDENTITY" ]; then
+            echo "No signing secrets: ad-hoc signing"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass=$(openssl rand -hex 16)
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$kc_pass" "$keychain" >/dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+      - name: Build, sign and package
+        env:
+          BUILD_NAME: ${{ needs.version.outputs.name }}
+          BUILD_NUMBER: ${{ needs.version.outputs.number }}
+          PACKAGE: '1'
+          USE_LIPO_SHIM: '1'
+          MACOS_KEYCHAIN: ${{ steps.cert.outputs.keychain }}
+          MACOS_SIGN_IDENTITY: ${{ steps.cert.outputs.keychain != '' && secrets.MACOS_SIGN_IDENTITY || '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -n "$MACOS_SIGN_IDENTITY" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            export NOTARIZE=1
+          fi
+          ./scripts/build-macos.sh
+          lipo -archs desktop/build/macos/Build/Products/Release/LocalSubProxy.app/Contents/Frameworks/liblocalsubproxy.dylib
+      - name: Clean up keychain
+        if: always() && steps.cert.outputs.keychain != ''
+        run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalSubProxy-${{ needs.version.outputs.name }}-macos
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Ensure toolchain (gcc for CGO, Inno Setup)
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            choco install mingw -y --no-progress
+            "C:\ProgramData\mingw64\mingw64\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+      - run: |
+          gcc --version
+          go version
+          flutter --version
+      - name: Pub get
+        working-directory: desktop
+        run: flutter pub get
+      - name: Quick tests
+        if: needs.version.outputs.run_tests == 'true'
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go test -short ./internal/... ./cmd/...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location desktop; flutter test; $code = $LASTEXITCODE; Pop-Location; exit $code
+      - name: Decode signing certificate
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+        run: |
+          if ($env:WINDOWS_CERT_PFX) {
+            $path = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+            [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+            "WINDOWS_CERT_PFX_PATH=$path" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          } else { Write-Output 'No signing secrets: unsigned build' }
+      - name: Build and package
+        env:
+          CGO_ENABLED: '1'
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: ./scripts/build-windows.ps1 -BuildName '${{ needs.version.outputs.name }}' -BuildNumber '${{ needs.version.outputs.number }}' -Package
+      - name: Remove certificate
+        if: always()
+        run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP 'cert.pfx')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalSubProxy-${{ needs.version.outputs.name }}-windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: |
+          ls -la dist
+          (cd dist && sha256sum ./* > SHA256SUMS.txt)
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: LocalSubProxy ${{ needs.version.outputs.name }}
+          prerelease: ${{ contains(needs.version.outputs.name, '-') }}
+          generate_release_notes: true
+          files: dist/*

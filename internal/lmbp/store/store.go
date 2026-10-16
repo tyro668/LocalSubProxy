@@ -135,7 +135,8 @@ type Store interface {
 	FinishTask(ctx context.Context, e Event, state string) error
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 
-	// Purge deletes finished tasks (and their events) and expired device
+	// Purge deletes finished tasks (with their events and idempotency
+	// records: never a key whose task is gone) and expired device
 	// authorizations older than the cutoff. Returns removed task count.
 	Purge(ctx context.Context, cutoff time.Time) (int, error)
 	Close() error

@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -14,6 +14,9 @@ import (
 // started and its pid in exited (pidfile).
 func fakeCodex(t *testing.T) (bin, gate, started, exited string) {
 	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("fake Codex App Server is a #! python script; not executable on Windows")
+	}
 	d := t.TempDir()
 	bin, gate = filepath.Join(d, "codex"), filepath.Join(d, "gate")
 	started, exited = filepath.Join(d, "started"), filepath.Join(d, "exited")
@@ -105,7 +108,7 @@ func waitGone(t *testing.T, pidfile string) {
 	}
 	pid, _ := strconv.Atoi(string(b))
 	for i := 0; i < 500; i++ {
-		if syscall.Kill(pid, 0) != nil {
+		if !processAlive(pid) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

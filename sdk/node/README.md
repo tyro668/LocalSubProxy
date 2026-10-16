@@ -8,7 +8,7 @@
 WebSocket 会话、JOSE、续传、流控、大图分块、E2EE 透传全部在 SDK 内部。TypeScript 编写，ESM，自带类型声明。需要 Node ≥ 18.17。
 
 > **成熟度**：本 SDK 是 LMBP 网关的**独立重新实现**，不与 Go 参考网关共享代码，存在真实的行为差异。例如 JWKS 返回 `application/json`（Go 为 `application/jwk-set+json`）；`Store` 接口是同步的；默认参数和时间单位（毫秒）也不同。
-> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[根 README 的成熟度说明](../../README.md#各实现的成熟度如实说明)。
+> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[各实现与成熟度](../../docs/implementations.md)。
 
 ## 安装
 
@@ -83,7 +83,7 @@ const claude = new Anthropic({ baseURL: 'https://saas.example.com', apiKey: TENA
 
 ```bash
 cd sdk/node && npm test                              # SDK 单元测试（协议、配对、存储、框架、进程内客户端）
-scripts/mock-interop.sh node node-sqlite express     # lmbp-conformance（99 项） + 连接器端到端 + 官方客户端
+scripts/mock-interop.sh node node-sqlite express     # lmbp-conformance + 连接器端到端 + 官方客户端
 ```
 
 ## 限制

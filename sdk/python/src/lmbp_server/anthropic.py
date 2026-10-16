@@ -77,7 +77,7 @@ def to_openai(inp: dict) -> dict:
             continue
         if not isinstance(content, list):
             raise ValueError(f"messages.{i}.content: must be a string or an array of blocks")
-        parts, calls, results, text = [], [], [], []
+        parts, calls, results, text, tool_images = [], [], [], [], []
         for j, b in enumerate(content):
             typ = b.get("type") if isinstance(b, dict) else None
             if typ == "text":
@@ -102,10 +102,32 @@ def to_openai(inp: dict) -> dict:
                 if role != "user":
                     raise ValueError(f"messages.{i}: tool_result blocks belong to user messages")
                 c = b.get("content")
+                tid = str(b.get("tool_use_id") or "")
                 if isinstance(c, list):
-                    c = "\n".join(str(z.get("text") or "") for z in c if isinstance(z, dict) and z.get("type") == "text")
-                elif not isinstance(c, str):
+                    # Every block is converted or the request is rejected; images
+                    # follow the tool results as image_url parts of the next user message.
+                    ts = []
+                    for k, z in enumerate(c):
+                        zt = z.get("type") if isinstance(z, dict) else None
+                        if zt == "text":
+                            ts.append(str(z.get("text") or ""))
+                        elif zt == "image":
+                            src = z.get("source") or {}
+                            if src.get("type") == "base64":
+                                url = f"data:{src.get('media_type') or ''};base64,{src.get('data') or ''}"
+                            elif src.get("type") == "url":
+                                url = str(src.get("url") or "")
+                            else:
+                                raise ValueError(f"messages.{i}.content.{j}.content.{k}: source.type: base64 or url required")
+                            tool_images.append({"type": "image_url", "image_url": {"url": url}})
+                            ts.append(f"[image {len(tool_images)} from tool result {tid}: attached in the next user message]")
+                        else:
+                            raise ValueError(f"messages.{i}.content.{j}.content.{k}: unsupported tool_result content type {zt} (text and image are supported)")
+                    c = "\n".join(ts)
+                elif c is None:
                     c = ""
+                elif not isinstance(c, str):
+                    raise ValueError(f"messages.{i}.content.{j}.content: must be a string or an array of blocks")
                 if b.get("is_error") is True:
                     c = "Error: " + c
                 results.append({"role": "tool", "tool_call_id": str(b.get("tool_use_id") or ""), "content": c})
@@ -114,6 +136,8 @@ def to_openai(inp: dict) -> dict:
             else:
                 raise ValueError(f"messages.{i}.content.{j}: unsupported block type {typ}")
         msgs.extend(results)
+        if tool_images:
+            parts = [{"type": "text", "text": "Images returned by the tool results above:"}, *tool_images, *parts]
         if role == "assistant":
             if not text and not calls:
                 continue

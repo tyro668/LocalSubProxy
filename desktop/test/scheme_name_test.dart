@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:localsubproxy_ui/main.dart';
 import 'package:localsubproxy_ui/status_contract.dart';
@@ -73,6 +74,17 @@ void main() {
     expect(defaultSchemeName('gpt-6.1-sol', ['x']), 'gpt-6.1-sol');
     expect(defaultSchemeName('gpt-6.1-sol', ['GPT-6.1-SOL ']), 'gpt-6.1-sol_2');
     expect(defaultSchemeName('m', ['M', 'm_2', 'm_4']), 'm_3');
+  });
+
+  test('review9 P2-3: default names fit 100 UTF-8 bytes, suffix kept whole', () {
+    final m = '模' * 60; // 180 bytes
+    final first = defaultSchemeName(m, const []);
+    final second = defaultSchemeName(m, [first]);
+    expect(utf8.encode(first).length, lessThanOrEqualTo(maxSchemeNameBytes));
+    expect(utf8.encode(second).length, lessThanOrEqualTo(maxSchemeNameBytes));
+    expect(second.endsWith('_2'), isTrue);
+    expect(schemeNameError('名' * 34, const []), isNotNull); // 102 bytes
+    expect(schemeNameError('名' * 33, const []), isNull); // 99 bytes
   });
 
   test('duplicate names are rejected inline (trimmed, case-insensitive)', () {

@@ -51,6 +51,9 @@ def state_of(ev):
     return "CANCELLED" if (ev.get("data") or {}).get("code") == "CANCELLED" else "FAILED"
 
 
+MAX_RECLAIMED = 1024  # late-frame reclaim records per device session (same bound as Node/Go)
+
+
 def is_terminal(t):
     return t in ("task.done", "task.error")
 
@@ -243,6 +246,7 @@ class DState:
         self.tasks: dict[str, Task] = {}
         self.slots = 0
         self.slot_wait: list[asyncio.Future] = []
+        self.reclaimed: dict[str, int] = {}  # locally ended task id -> highest seq ACKed (bounded, oldest first)
         self.dropped = False
 
     def connected(self):
@@ -273,6 +277,15 @@ class DState:
             if isinstance(e, asyncio.CancelledError):
                 raise
             return False
+
+    def reclaim(self, tid, acked):
+        """Remember a locally ended task so its late frames (including its
+        terminal frame) are ACKed and the device's reliable buffer and flow
+        credit come back. Bounded; the oldest record is dropped first."""
+        self.reclaimed.pop(tid, None)
+        self.reclaimed[tid] = acked
+        while len(self.reclaimed) > MAX_RECLAIMED:
+            del self.reclaimed[next(iter(self.reclaimed))]
 
     def release(self):
         self.slots -= 1
@@ -423,6 +436,7 @@ class Task:
                 self.g.store.finish_task(self.id, ev, state)
             except Exception as e:  # noqa: BLE001
                 self.g.log(f"lmbp: task {self.id}: persisting terminal event and state for seq {inp['seq']} failed: {e} (not acknowledged)")
+                self.store_failed = True  # never ACK frames that were not persisted
                 self.send_cancel("internal_error")
                 return self.commit_local("INTERNAL", "gateway could not persist task output")
             _hook(self, "device-terminal-committed")
@@ -441,6 +455,7 @@ class Task:
         self.maybe_ack()
 
     def persist_failed(self, seq, what, e):
+        self.store_failed = True  # never ACK frames that were not persisted
         self.g.log(f"lmbp: task {self.id}: persisting {what} for seq {seq} failed: {e} (not acknowledged)")
         self.cancel("internal_error")
         self.fail_local("INTERNAL", "gateway could not persist task output")
@@ -500,6 +515,18 @@ class Task:
         if ds is not None:
             if from_device:
                 self.maybe_ack()
+            elif not getattr(self, "store_failed", False):
+                # Ended here while the device may still be sending: ACK what
+                # arrived so far and remember the task (bounded) so later
+                # frames, including its terminal frame, are ACKed too. Same
+                # rule as the Node and Go gateways. Never after a failed write:
+                # unpersisted frames are not ACKed.
+                late = self.recv_seq()
+                if late > self.acked:
+                    self.acked = late
+                    ds.control(envelope("task.ack", task_id=self.id, data={"seq": late}))
+                if not getattr(self, "dev_terminal", False):
+                    ds.reclaim(self.id, late)
             ds.tasks.pop(self.id, None)
             ds.out.forget(self.id)
             if ds.inb is not None:
@@ -1183,11 +1210,26 @@ class Gateway:
     def on_device_data(self, ds, inp, size):
         tid = inp.get("task_id")
         t = ds.tasks.get(tid)
+        seq = inp.get("seq") if L.is_int(inp.get("seq")) else 0
         if t is None:
+            acked = ds.reclaimed.get(tid)
+            if acked is not None:
+                # Ended here (cancel, timeout, slow consumer, ...) while the
+                # device was still running: ACK its late frames so its
+                # reliable buffer and flow credit come back. The decided
+                # outcome is not touched.
+                if seq > acked:
+                    ds.reclaimed[tid] = seq
+                if is_terminal(inp.get("type")):
+                    ds.reclaimed.pop(tid, None)
+                if seq > acked:
+                    ds.control(envelope("task.ack", task_id=tid, data={"seq": seq}))
+                return True
             ds.control(envelope("task.cancel", task_id=tid, data={"reason": "unknown_task"}))
             return True
-        seq = inp.get("seq") if L.is_int(inp.get("seq")) else 0
         v = ds.inb.accept(tid, seq, size)
+        if v == L.ACCEPTED and is_terminal(inp.get("type")):
+            t.dev_terminal = True
         if v == L.DUPLICATE:
             t.maybe_ack()  # the device may have missed our ack
             return True

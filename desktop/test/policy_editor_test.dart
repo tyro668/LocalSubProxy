@@ -78,9 +78,11 @@ void main() {
         ),
       ),
     );
-    expect(find.text('ollama/qwen3  · 已由通配授权'), findsOneWidget);
-    expect(find.text('codex/gpt-5  · 方案已停用（授权保留）'), findsOneWidget);
-    await tester.tap(find.text('ollama/qwen3  · 已由通配授权'));
+    // notes render as badges next to the model id
+    expect(find.text('ollama/qwen3'), findsOneWidget);
+    expect(find.text('已由通配授权'), findsOneWidget);
+    expect(find.text('已停用（授权保留）'), findsOneWidget);
+    await tester.tap(find.text('ollama/qwen3'));
     await tester.pumpAndSettle();
     expect(selected, {
       'ollama/*',
@@ -89,8 +91,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(selected, isEmpty);
     expect(
-      find.text('ollama/qwen3'),
-      findsOneWidget,
+      find.text('已由通配授权'),
+      findsNothing,
       reason: 'unlocked after the wildcard is removed',
     );
   });

@@ -116,7 +116,7 @@ func AnthropicToOpenAI(in map[string]any) (map[string]any, error) {
 		if !ok {
 			return nil, fmt.Errorf("messages.%d.content: must be a string or an array of blocks", i)
 		}
-		var parts, calls, results []any
+		var parts, calls, results, toolImages []any
 		var text []string
 		for j, y := range blocks {
 			b, _ := y.(map[string]any)
@@ -126,17 +126,9 @@ func AnthropicToOpenAI(in map[string]any) (map[string]any, error) {
 				parts = append(parts, map[string]any{"type": "text", "text": t})
 				text = append(text, t)
 			case "image":
-				src, _ := b["source"].(map[string]any)
-				var url string
-				switch src["type"] {
-				case "base64":
-					mtp, _ := src["media_type"].(string)
-					d, _ := src["data"].(string)
-					url = "data:" + mtp + ";base64," + d
-				case "url":
-					url, _ = src["url"].(string)
-				default:
-					return nil, fmt.Errorf("messages.%d.content.%d.source.type: base64 or url required", i, j)
+				url, err := anthropicImageURL(b)
+				if err != nil {
+					return nil, fmt.Errorf("messages.%d.content.%d.%v", i, j, err)
 				}
 				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": url}})
 			case "tool_use":
@@ -157,17 +149,35 @@ func AnthropicToOpenAI(in map[string]any) (map[string]any, error) {
 				id, _ := b["tool_use_id"].(string)
 				var content string
 				switch c := b["content"].(type) {
+				case nil:
 				case string:
 					content = c
 				case []any:
+					// Every block is converted or the request is rejected: an
+					// image never disappears silently. OpenAI-style tool
+					// messages carry text only, so images follow the tool
+					// results as image_url parts of the next user message.
 					var ts []string
-					for _, z := range c {
-						if zm, _ := z.(map[string]any); zm["type"] == "text" {
+					for k, z := range c {
+						zm, _ := z.(map[string]any)
+						switch zm["type"] {
+						case "text":
 							t, _ := zm["text"].(string)
 							ts = append(ts, t)
+						case "image":
+							u, err := anthropicImageURL(zm)
+							if err != nil {
+								return nil, fmt.Errorf("messages.%d.content.%d.content.%d: %v", i, j, k, err)
+							}
+							toolImages = append(toolImages, map[string]any{"type": "image_url", "image_url": map[string]any{"url": u}})
+							ts = append(ts, fmt.Sprintf("[image %d from tool result %s: attached in the next user message]", len(toolImages), id))
+						default:
+							return nil, fmt.Errorf("messages.%d.content.%d.content.%d: unsupported tool_result content type %v (text and image are supported)", i, j, k, zm["type"])
 						}
 					}
 					content = strings.Join(ts, "\n")
+				default:
+					return nil, fmt.Errorf("messages.%d.content.%d.content: must be a string or an array of blocks", i, j)
 				}
 				if b["is_error"] == true {
 					content = "Error: " + content
@@ -180,6 +190,9 @@ func AnthropicToOpenAI(in map[string]any) (map[string]any, error) {
 			}
 		}
 		msgs = append(msgs, results...)
+		if len(toolImages) > 0 {
+			parts = append(append([]any{map[string]any{"type": "text", "text": "Images returned by the tool results above:"}}, toolImages...), parts...)
+		}
 		switch {
 		case role == "assistant":
 			if len(text) == 0 && len(calls) == 0 {
@@ -568,4 +581,20 @@ func anthropicModels(w http.ResponseWriter, data []map[string]any) {
 		first, last = data[0]["id"], data[len(data)-1]["id"]
 	}
 	writeJSON(w, 200, map[string]any{"data": out, "has_more": false, "first_id": first, "last_id": last})
+}
+
+// anthropicImageURL converts an Anthropic image block's source to an
+// OpenAI-compatible image URL (data: URL for base64).
+func anthropicImageURL(b map[string]any) (string, error) {
+	src, _ := b["source"].(map[string]any)
+	switch src["type"] {
+	case "base64":
+		mtp, _ := src["media_type"].(string)
+		d, _ := src["data"].(string)
+		return "data:" + mtp + ";base64," + d, nil
+	case "url":
+		u, _ := src["url"].(string)
+		return u, nil
+	}
+	return "", fmt.Errorf("source.type: base64 or url required")
 }

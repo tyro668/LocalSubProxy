@@ -2,7 +2,8 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | 草案（Draft），协议版本 1.0 |
+| 状态 | 正式版（Final），协议版本 1.0 |
+| 发布日期 | 2026-10-16 |
 | 线上标识 | WebSocket 子协议 `lmbp`；信封字段 `v: 1`（主版本）；元数据 `protocol_versions: ["1.0"]`；配对链接 `lmbp://pair?v=1` |
 | 机器可读契约 | [`spec/schemas/`](../spec/schemas)（JSON Schema 2020-12）、[`spec/asyncapi.yaml`](../spec/asyncapi.yaml)（AsyncAPI 3.0）、[`spec/openapi.yaml`](../spec/openapi.yaml)（OpenAPI 3.1） |
 | 测试向量 | [`spec/testvectors/vectors.json`](../spec/testvectors/vectors.json) |
@@ -270,7 +271,7 @@
 
 ### 6.5 OpenAI 兼容接口
 认证方式同 §6.4。错误使用 OpenAI 错误对象：`{"error":{"message","type":"lmbp_error","code"}}`。
-- `GET /v1/models`：只列出该终端用户**在线**设备上的模型，`id` 格式为 `<device_id>/<model>`。
+- `GET /v1/models`：只列出该终端用户**在线**设备上的模型，`id` 格式为 `<device_id>/<model>`；条目 MAY 含 `display_name`（来自设备 `hello`/`models.update` 的 `model_names`，见 §16.1）。
 - `POST /v1/chat/completions`：不含 data: URI 时请求体 SHOULD ≤ 1 MiB，含图片/音频时 ≤ 48 MiB（§16.3）；不认识的 OpenAI 字段 MUST 忽略。支持 `tools`/`tool_choice`（§16）、内容片段数组（§16.2）、`lmbp_e2ee`（§17），以及请求头 `Idempotency-Key`、`Last-Event-ID`（§14.4）。
   - `stream: false`：返回一个 `chat.completion` 对象。
   - `stream: true`：返回 `text/event-stream`。第一个事件 SHOULD 是 `delta: {role: "assistant", content: ""}`；每个 `task.delta` 对应一个 `chat.completion.chunk` 事件；结束时发送带 `finish_reason`（以及 `usage`，如有）的块，然后发送 `data: [DONE]`。中途出错时 MUST 发送 `data: {"error":{...}}` 后关闭连接，MUST NOT 再发送 `[DONE]`。网关 SHOULD 每 15 秒发送一次注释行 `: keep-alive`。
@@ -549,7 +550,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
   [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lmbp-conformance` 依次扮演设备和租户后端，共 63 项检查（含 X1、X-* 扩展检查，以及 M1–M5、I1–I3 身份绑定检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
+`lmbp-conformance` 依次扮演设备和租户后端，共 104 项检查（含 X1、X-* 扩展检查，以及 M1–M5、I1–I3 身份绑定检查），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 
@@ -606,7 +607,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 ### 16.1 tools
 - `hello`/`models.update` 的 `model_capabilities` 为每个模型声明 `tools`、`vision`、`audio` 中的若干项。`GET /v1/models` MUST 返回每个模型的 `capabilities`。
-- `hello`/`models.update` 可选携带 `model_names`：`{模型 id: 显示名}`（显示名 1..128 字符，例如桌面端的方案名）。仅用于展示：网关 SHOULD 在 `GET /v1/models` 条目中以 `display_name` 返回（Anthropic 形状的 `display_name` 也用它，缺省为 id），在设备列表中以 `model_names` 返回；请求 MUST 仍使用模型 id。网关 MUST 忽略未出现在 `models` 中的条目；未携带时行为与旧版一致。
+- `hello`/`models.update` 可选携带 `model_names`：`{模型 id: 显示名}`（显示名 1..128 字符，例如桌面端的方案名）。本字段属于协议 1.0：仅用于展示，网关 SHOULD 在 `GET /v1/models` 条目中以 `display_name` 返回（Anthropic 形状的 `display_name` 也用它，缺省为 id），在设备列表中以 `model_names` 返回；请求 MUST 仍使用模型 id。网关 MUST 忽略未出现在 `models` 中的条目；省略该字段时不返回显示名。
 - 请求带 `tools` 而目标模型未声明 `tools`、或设备未协商 `tools` 能力时，网关 MUST 返回 400 `CAPABILITY_UNSUPPORTED`，MUST NOT 下发任务。
 - `tools`、`tool_choice` 原样放入签名的 `task.run`。设备在 `task.delta.tool_calls` 中按 OpenAI 流式格式回报（`index` 区分调用，`arguments` 可分片），以 `finish_reason: "tool_calls"` 结束。网关 MUST 透传为 SSE `delta.tool_calls`；非流式响应 MUST 按 `index` 合并成 `message.tool_calls`。
 - 后续请求中的 `role: "assistant"`+`tool_calls` 和 `role: "tool"`+`tool_call_id` 消息 MUST 原样转给设备。

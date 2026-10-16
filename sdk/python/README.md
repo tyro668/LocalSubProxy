@@ -8,7 +8,7 @@
 WebSocket 会话、JOSE、续传、流控、大图分块、E2EE 透传全部在 SDK 内部。纯 ASGI（不依赖 aiohttp），带类型标注（`py.typed`）。需要 Python ≥ 3.10。
 
 > **成熟度**：本 SDK 是 LMBP 网关的**独立重新实现**（纯 ASGI，自带 HTTP/SSE 渲染），不与 Go 参考网关共享代码，存在真实的行为差异。例如 `Store` 是同步 Protocol，时间参数以秒为单位，WebSocket 依赖 uvicorn 的 `websockets` 实现。
-> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[根 README 的成熟度说明](../../README.md#各实现的成熟度如实说明)。
+> 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[各实现与成熟度](../../docs/implementations.md)。
 
 ## 安装
 
@@ -82,7 +82,7 @@ claude = Anthropic(base_url="https://saas.example.com", api_key=TENANT_API_KEY, 
 
 ```bash
 cd sdk/python && python3 -m venv .venv && .venv/bin/pip install -e '.[test]' && .venv/bin/pytest
-scripts/mock-interop.sh python python-sqlite fastapi   # lmbp-conformance（99 项） + 连接器端到端 + 官方客户端
+scripts/mock-interop.sh python python-sqlite fastapi   # lmbp-conformance + 连接器端到端 + 官方客户端
 ```
 
 ## 限制

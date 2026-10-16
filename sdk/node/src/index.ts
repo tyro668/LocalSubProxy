@@ -78,18 +78,30 @@ export class LMBPServer {
   /**
    * Fastify plugin: `await app.register(lsp.fastifyPlugin)`. Registers the
    * protocol routes and the WebSocket upgrade on app.server.
+   *
+   * The protocol routes need the raw request body, so they live in their own
+   * encapsulated child context with raw-Buffer parsers. The host app's
+   * content-type parsers (application/json, text/plain, ...) are never
+   * removed or replaced: its own routes keep parsing bodies as before.
    */
   readonly fastifyPlugin = Object.assign(async (app: any) => {
-    app.addContentTypeParser('*', { parseAs: 'buffer' }, (_r: unknown, body: Buffer, done: (e: null, b: Buffer) => void) => done(null, body));
-    app.removeContentTypeParser?.(['application/json', 'text/plain']);
-    app.addContentTypeParser(['application/json', 'text/plain'], { parseAs: 'buffer' }, (_r: unknown, body: Buffer, done: (e: null, b: Buffer) => void) => done(null, body));
-    const route = (req: any, reply: any) => {
-      reply.hijack();
-      const raw = req.raw;
-      raw.body = req.body ?? Buffer.alloc(0);
-      this.handler(raw, reply.raw);
-    };
-    for (const p of PATHS) app.route({ method: ['GET', 'POST', 'HEAD', 'OPTIONS'], url: p, handler: route });
+    const raw = (_r: unknown, body: Buffer, done: (e: null, b: Buffer) => void) => done(null, body);
+    await app.register(async (scope: any) => {
+      // Encapsulated: these parser changes stay inside this child context.
+      scope.removeAllContentTypeParsers?.();
+      scope.addContentTypeParser('*', { parseAs: 'buffer' }, raw);
+      if (!scope.removeAllContentTypeParsers) {
+        scope.removeContentTypeParser?.(['application/json', 'text/plain']);
+        scope.addContentTypeParser(['application/json', 'text/plain'], { parseAs: 'buffer' }, raw);
+      }
+      const route = (req: any, reply: any) => {
+        reply.hijack();
+        const r = req.raw;
+        r.body = req.body ?? Buffer.alloc(0);
+        this.handler(r, reply.raw);
+      };
+      for (const p of PATHS) scope.route({ method: ['GET', 'POST', 'HEAD', 'OPTIONS'], url: p, handler: route });
+    });
     app.addHook('onReady', async () => { this.attach(app.server); });
   }, { [Symbol.for('skip-override')]: true });
 

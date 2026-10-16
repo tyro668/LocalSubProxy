@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 // Desktop status contract (docs/desktop-status-contract.md): the kernel's
 // `status` JSON lists every paired SaaS in connections[]; the flat fields
 // mirror the primary (first) connection for older UI code.
@@ -44,15 +46,28 @@ class ConnectionInfo {
   String get title =>
       saasName.isNotEmpty ? saasName : (tenant.isNotEmpty ? tenant : id);
 
+  /// Chinese label for the badge; never the raw kernel string.
   String get stateLabel => switch (state) {
     'online' => '在线',
     'connecting' => '连接中',
-    'disconnected' => '已断开',
-    'revoked' => '已被吊销',
-    'error' => '异常',
+    'disconnected' || 'paused' => paused || state == 'paused' ? '已暂停' : '已断开',
+    'revoked' => '已吊销',
+    'error' => '错误',
     'unknown' => '状态未知',
-    _ => state,
+    _ => connected ? '在线' : '状态未知',
   };
+
+  /// Colour level of the state badge/dot. Green only when the LMBP session
+  /// is actually up (`connected`).
+  StatusLevel get level => connected
+      ? StatusLevel.ok
+      : switch (state) {
+          'connecting' => StatusLevel.warn,
+          'error' || 'revoked' => StatusLevel.error,
+          _ => StatusLevel.off,
+        };
+
+  bool get failed => !connected && (state == 'error' || state == 'revoked');
 
   bool allows(String model) {
     final adapter = model.split('/').first;
@@ -92,7 +107,11 @@ class DesktopStatus {
     required this.runningTasks,
     this.stale = false,
     this.cleanupWarning,
+    this.cleanupPending = 0,
   });
+
+  /// Number of revoked connections whose key files are not deleted yet.
+  final int cleanupPending;
 
   /// Kernel `warning` while revoked connections still have undeleted key
   /// files (`cleanup_pending`); kept until a retry at startup succeeds.
@@ -133,6 +152,9 @@ class DesktopStatus {
         multi: true,
         stale: stale,
         cleanupWarning: warning,
+        cleanupPending: s?['cleanup_pending'] is List
+            ? (s!['cleanup_pending'] as List).length
+            : 0,
         runningTasks: running,
         connections: raw.whereType<Map>().map((e) {
           final m = e.cast<String, dynamic>();
@@ -164,6 +186,79 @@ class DesktopStatus {
       ],
     );
   }
+}
+
+/// Colour level shared by the status bar pill, connection badges and the
+/// connection dialog summary: ok = green, warn = amber, error = red,
+/// off = grey.
+enum StatusLevel { ok, warn, error, off }
+
+/// The status bar pill: label and colour from the per-connection states
+/// (same source as the connection dialog), never from "paired" alone.
+class BarStatus {
+  const BarStatus(this.level, this.label, {this.errors = 0});
+  final StatusLevel level;
+  final String label;
+  final int errors;
+}
+
+BarStatus barStatus(DesktopStatus ds) {
+  if (ds.stale) return const BarStatus(StatusLevel.off, '状态未知');
+  if (!ds.multi) {
+    return ds.anyConnected
+        ? const BarStatus(StatusLevel.ok, '已连接')
+        : const BarStatus(StatusLevel.off, '未连接');
+  }
+  final total = ds.total;
+  if (total == 0) return const BarStatus(StatusLevel.off, '未连接');
+  final online = ds.online;
+  final errors = ds.connections.where((c) => c.failed).length;
+  final err = errors > 0 ? ' · $errors 个错误' : '';
+  if (online == total) {
+    return BarStatus(StatusLevel.ok, '全部在线 $online/$total');
+  }
+  if (online > 0) {
+    return BarStatus(
+      StatusLevel.warn,
+      '部分在线 $online/$total$err',
+      errors: errors,
+    );
+  }
+  if (errors > 0) {
+    return BarStatus(StatusLevel.error, '连接异常 0/$total$err', errors: errors);
+  }
+  if (ds.connections.any((c) => c.state == 'connecting')) {
+    return BarStatus(StatusLevel.warn, '连接中 0/$total');
+  }
+  return BarStatus(StatusLevel.off, '未连接 0/$total');
+}
+
+/// Readable kernel start error: drops the Dart "Exception: " prefix.
+String cleanError(Object e) {
+  var s = '$e'.trim();
+  for (final p in ['Exception: ', 'StateError: ', 'Bad state: ']) {
+    if (s.startsWith(p)) s = s.substring(p.length);
+  }
+  return s;
+}
+
+/// Plain-language hint for well-known kernel start failures, or null.
+({String title, String message})? kernelErrorHint(String error) {
+  final e = error.toLowerCase();
+  if (e.contains('database is locked') ||
+      e.contains('resource temporarily unavailable')) {
+    return (
+      title: '本机数据库被占用',
+      message: '可能已经有一个 LocalSubProxy 在运行。请在菜单栏或托盘中退出另一个实例后重试。',
+    );
+  }
+  if (e.contains('permission denied') || e.contains('access is denied')) {
+    return (title: '没有访问本机数据目录的权限', message: '请检查数据目录的读写权限后重试。');
+  }
+  if (e.contains('no space left')) {
+    return (title: '磁盘空间不足', message: '请清理磁盘空间后重试。');
+  }
+  return null;
 }
 
 /// One row of the per-connection model permission editor.
@@ -306,14 +401,34 @@ String allowSummary(List<String> allow, List<Map<String, dynamic>> adapters) {
 String defaultSchemeName(String model, Iterable<String> taken) {
   var m = model.trim();
   if (m.isEmpty) m = 'scheme';
-  if (m.runes.length > 90) m = String.fromCharCodes(m.runes.take(90));
   final used = {for (final t in taken) t.trim().toLowerCase()};
-  if (!used.contains(m.toLowerCase())) return m;
+  final first = _withSuffix(m, '');
+  if (!used.contains(first.toLowerCase())) return first;
   for (var n = 2; ; n++) {
-    final c = '${m}_$n';
+    final c = _withSuffix(m, '_$n');
     if (!used.contains(c.toLowerCase())) return c;
   }
 }
+
+/// Scheme name limit in UTF-8 bytes (connector.MaxSchemeNameBytes).
+const maxSchemeNameBytes = 100;
+
+/// Cuts s to at most n UTF-8 bytes at a character boundary.
+String clipSchemeNameBytes(String s, int n) {
+  var used = 0;
+  final out = StringBuffer();
+  for (final r in s.runes) {
+    final b = utf8.encode(String.fromCharCode(r)).length;
+    if (used + b > n) break;
+    used += b;
+    out.writeCharCode(r);
+  }
+  return out.toString().trim();
+}
+
+String _withSuffix(String base, String suffix) =>
+    clipSchemeNameBytes(base, maxSchemeNameBytes - utf8.encode(suffix).length) +
+    suffix;
 
 /// Inline validation for a scheme name; null when acceptable. exceptId is
 /// the scheme being edited (its own name never conflicts).
@@ -324,6 +439,9 @@ String? schemeNameError(
 }) {
   final k = name.trim().toLowerCase();
   if (k.isEmpty) return null; // the kernel fills a default
+  if (utf8.encode(name.trim()).length > maxSchemeNameBytes) {
+    return '名称过长：最多 $maxSchemeNameBytes 字节（约 33 个汉字）';
+  }
   for (final a in adapters) {
     if (exceptId != null && '${a['id']}' == exceptId) continue;
     if ('${a['name'] ?? ''}'.trim().toLowerCase() == k) {
@@ -358,7 +476,7 @@ ConnSummary connectionSummary(DesktopStatus ds) {
   if (total == 0) return const ConnSummary(ConnSummaryKind.none, '未连接');
   if (ds.stale) return const ConnSummary(ConnSummaryKind.unknown, '状态未知');
   final online = ds.online;
-  String agg(String s) => total > 1 ? '$s（$online/$total 在线）' : s;
+  String agg(String s) => total > 1 ? '$s · $online/$total 在线' : s;
   if (online == total) return ConnSummary(ConnSummaryKind.online, agg('已连接'));
   if (online > 0) return ConnSummary(ConnSummaryKind.partial, agg('部分在线'));
   final states = ds.connections.map((c) => c.state).toSet();

@@ -187,7 +187,8 @@ func (s *SQLite) SetDeviceE2EEKey(ctx context.Context, id, stmt string) error {
 func (s *SQLite) GetIdempotency(ctx context.Context, tenantID, ownerID, key string) (Idempotency, error) {
 	var i Idempotency
 	var c int64
-	err := s.db.QueryRowContext(ctx, `SELECT tenant_id,owner_id,idem_key,task_id,body_hash,created_at FROM idempotency WHERE tenant_id=? AND owner_id=? AND idem_key=?`,
+	err := s.db.QueryRowContext(ctx, `SELECT tenant_id,owner_id,idem_key,task_id,body_hash,created_at FROM idempotency WHERE tenant_id=? AND owner_id=? AND idem_key=?
+		AND EXISTS(SELECT 1 FROM tasks WHERE tasks.id=idempotency.task_id)`,
 		tenantID, ownerID, key).Scan(&i.TenantID, &i.OwnerID, &i.Key, &i.TaskID, &i.BodyHash, &c)
 	i.CreatedAt = time.Unix(0, c)
 	return i, nf(err)
@@ -202,6 +203,11 @@ func (s *SQLite) CreateTask(ctx context.Context, t Task, i *Idempotency) error {
 	}
 	defer tx.Rollback()
 	if i != nil {
+		// A dangling record (its task is gone) does not hold the key.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE tenant_id=? AND owner_id=? AND idem_key=?
+			AND NOT EXISTS(SELECT 1 FROM tasks WHERE tasks.id=idempotency.task_id)`, i.TenantID, i.OwnerID, i.Key); err != nil {
+			return err
+		}
 		r, err := tx.ExecContext(ctx, `INSERT INTO idempotency(tenant_id,owner_id,idem_key,task_id,body_hash,created_at) VALUES(?,?,?,?,?,?)
 			ON CONFLICT DO NOTHING`, i.TenantID, i.OwnerID, i.Key, i.TaskID, i.BodyHash, i.CreatedAt.UnixNano())
 		if err != nil {
@@ -308,6 +314,10 @@ func (s *SQLite) Purge(ctx context.Context, cutoff time.Time) (int, error) {
 	defer tx.Rollback()
 	c := cutoff.UnixNano()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE state<>'RUNNING' AND updated_at<?)`, c); err != nil {
+		return 0, err
+	}
+	// Idempotency records go with their task: never a key without its task.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE task_id IN (SELECT id FROM tasks WHERE state<>'RUNNING' AND updated_at<?)`, c); err != nil {
 		return 0, err
 	}
 	r, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE state<>'RUNNING' AND updated_at<?`, c)

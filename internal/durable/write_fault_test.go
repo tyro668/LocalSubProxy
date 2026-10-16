@@ -26,7 +26,7 @@ func TestWritePhases(t *testing.T) {
 			_ = os.WriteFile(f, []byte("old"), 0o600)
 			c.inject()
 			err := Write(f, []byte("new"))
-			syncFile, renameFile, syncDir = func(f *os.File) error { return f.Sync() }, os.Rename, func(d *os.File) error { return d.Sync() }
+			syncFile, renameFile, syncDir = func(f *os.File) error { return f.Sync() }, os.Rename, platformSyncDir
 			if err == nil || !errors.Is(err, boom) || Committed(err) != c.committed {
 				t.Fatalf("err %v committed %v", err, Committed(err))
 			}

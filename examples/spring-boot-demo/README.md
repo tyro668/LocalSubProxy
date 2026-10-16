@@ -1,12 +1,12 @@
-# Spring Boot LMBP demo
+# Spring Boot LMBP 示例
 
-Minimal SaaS using [`lmbp-spring-boot-starter`](../../sdk/java). See that README for the API.
+使用 [`lmbp-spring-boot-starter`](../../sdk/java/README.md) 的最小 SaaS，API 见该 README。
 
 ```bash
 cd ../../sdk/java && mvn -q -DskipTests install
 TENANT_API_KEY=$(openssl rand -hex 24) TENANT_PROFILE_FILE=../../mock/tenant-profiles.example.json \
-  java -jar target/spring-boot-demo-0.1.0-SNAPSHOT.jar
-# optional: LMBP_STORE=jdbc:sqlite:/tmp/lmbp.db
+  java -jar ../../examples/spring-boot-demo/target/spring-boot-demo-0.1.0-SNAPSHOT.jar
+# 可选：LMBP_STORE=jdbc:sqlite:/tmp/lmbp.db
 ```
 
-Conformance against this process: `scripts/mock-interop.sh spring-boot` (and `spring-boot-sqlite`).
+一致性测试：`scripts/mock-interop.sh spring-boot spring-boot-sqlite`。

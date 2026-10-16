@@ -52,6 +52,11 @@ Future<void> loadFonts() async {
   await load('packages/shadcn_flutter/LucideIcons', [
     '$pub/icons/LucideIcons.ttf',
   ]);
+  await load('packages/shadcn_flutter/GeistMono', [
+    // the bundled GeistMono .otf (CFF) files render as boxes in
+    // flutter_tester; a static TTF monospace stands in for screenshots
+    '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+  ]);
   // CJK-capable font as the UI family so screenshots are legible.
   await load('packages/shadcn_flutter/GeistSans', [
     '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
@@ -76,6 +81,7 @@ Future<void> openDialog(WidgetTester tester, Size size, int n) async {
                   title: '远端服务连接',
                   maxWidth: 800,
                   scrollContent: false,
+                  footer: ConnectionsPanel.footer(statusWith(n)),
                   child: ConnectionsPanel(
                     status: statusWith(n),
                     adapters: const [],
@@ -132,10 +138,10 @@ void main() {
             find.text('远端服务连接'),
             find.byIcon(LucideIcons.refreshCw),
             find.text('添加连接'),
-            find.text('设备').last,
-            find.text('任务').last,
+            find.text('测试电脑'),
+            find.text('1 个任务'),
           ]) {
-            expect(f, findsOneWidget); // footer = last 设备/任务 label
+            expect(f, findsOneWidget); // device / tasks in the dialog footer
             expect(visible(f), isTrue, reason: '$f must stay visible');
           }
           final list = find.byKey(const ValueKey('connection-list'));
@@ -162,7 +168,7 @@ void main() {
             expect(find.text('SaaS ${n - 1}'), findsOneWidget);
             expect(visible(find.text('SaaS ${n - 1}')), isTrue);
             expect(
-              visible(find.text('添加连接')) && visible(find.text('任务').last),
+              visible(find.text('添加连接')) && visible(find.text('1 个任务')),
               isTrue,
             );
           }

@@ -311,6 +311,10 @@ func (x *Connector) probeCodexAdapter(ctx context.Context, a AdapterConfig) Adap
 		h.FreeSlots = 0
 		return h
 	}
+	if _, err := resolveCodex(a.CodexBin); err != nil {
+		h.Error = err.Error() // removed, moved or not executable: the scheme stays, unavailable
+		return h
+	}
 	versionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	b, err := exec.CommandContext(versionCtx, a.CodexBin, "--version").Output()
 	cancel()

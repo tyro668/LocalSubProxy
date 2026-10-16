@@ -32,4 +32,4 @@ scripts/mock-interop.sh java # lmbp-conformance + Go 连接器端到端 + 官方
 scripts/chat-ui-e2e.sh java  # 无头浏览器跑聊天页
 ```
 
-截至提交时：`lmbp-conformance` 103 项全部通过、无跳过。通过一致性测试只说明在被检查的点上与参考实现一致，不等于符合规范。
+截至提交时：`lmbp-conformance` 全部通过、无跳过。通过一致性测试只说明在被检查的点上与参考实现一致，不等于符合规范。

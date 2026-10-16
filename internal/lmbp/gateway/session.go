@@ -44,14 +44,17 @@ type dstate struct {
 	reclaimed  map[string]int64 // task id → highest seq ACKed
 	reclaimedQ []string
 	slots      int
-	slotWait   []chan struct{}
-	dropped    bool
+	// ready: the current connection's welcome was sent and its sender and
+	// resume state are installed. Only then is the device routable. Review9 P2-6.
+	ready    bool
+	slotWait []chan struct{}
+	dropped  bool
 }
 
 func (ds *dstate) connected() bool {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
-	return ds.conn != nil && !ds.dropped
+	return ds.conn != nil && !ds.dropped && ds.ready
 }
 
 func (ds *dstate) modelList() []string {
@@ -305,6 +308,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	prevConn := ds.conn
 	ds.gen++
 	gen := ds.gen
+	ds.ready = false // not routable until welcome, sender and resume state are in place
 	ds.conn, ds.wmu = conn, wmu
 	ds.models, ds.modelCapMap, ds.modelNames, ds.caps, ds.maxConc, ds.tokenExp = hello.Models, hello.ModelCapabilities, cleanNames(hello.ModelNames, hello.Models), caps, conc, claims.Exp
 	ds.issuer = iss
@@ -336,6 +340,9 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenOut := ds.resumeToken
 	ds.mu.Unlock()
+	if handshakeHook != nil {
+		handshakeHook(dev.ID)
+	}
 	if prevConn != nil {
 		_ = prevConn.Close()
 	}
@@ -388,6 +395,11 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	} else {
 		g.cfg.Logger.Printf("device %s (tenant %s) online, models=%v caps=%v conc=%d", dev.ID, dev.TenantID, hello.Models, caps, conc)
 	}
+	ds.mu.Lock()
+	if ds.gen == gen {
+		ds.ready = true // now new requests may be routed here
+	}
+	ds.mu.Unlock()
 	closed := make(chan struct{})
 	defer func() {
 		close(closed)
@@ -496,6 +508,10 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// handshakeHook, when set by a test, runs after the session state is
+// installed and before the welcome is sent and the sender attached.
+var handshakeHook func(deviceID string)
 
 // activateHook runs after the hello re-check, before the session is
 // registered (tests).

@@ -10,10 +10,10 @@
 | `fakemodel/` | 一个假的模型：OpenAI 兼容 `/v1` 与 Ollama 原生 `/api/chat`、`/api/tags`，都支持流式输出 |
 | `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
 | `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
-| `node/` | Node.js 版完整网关（与参考网关等价，通过 63 项 `lmbp-conformance`），见 [node/README.md](node/README.md) |
-| `python/` | Python（aiohttp）版完整网关，同上，见 [python/README.md](python/README.md) |
-| `java/` | Java 版模拟网关：只依赖 JDK 21，状态仅在内存（无 `--db`），通过 `lmbp-conformance`（103 项），见 [java/README.md](java/README.md) |
-| `rust/` | Rust 版模拟网关：标准库线程 + 少量 crate，状态仅在内存（无 `--db`），通过 `lmbp-conformance`（103 项），见 [rust/README.md](rust/README.md) |
+| `node/` | Node.js 版完整网关（`sdk/node` 的命令行外壳），通过 `lmbp-conformance`，见 [node/README.md](node/README.md) |
+| `python/` | Python 版完整网关（`sdk/python` 的命令行外壳，ASGI + uvicorn），同上，见 [python/README.md](python/README.md) |
+| `java/` | Java 版模拟网关：只依赖 JDK 21，状态仅在内存（无 `--db`），通过 `lmbp-conformance`，见 [java/README.md](java/README.md) |
+| `rust/` | Rust 版模拟网关：标准库线程 + 少量 crate，状态仅在内存（无 `--db`），通过 `lmbp-conformance`，见 [rust/README.md](rust/README.md) |
 | `web/` | 各网关共用的模拟 SaaS 聊天页（`/`、`/chat`）：配对、设备、流式对话、图片、停止、用量与耗时，见 [web/README.md](web/README.md) |
 | `external/` | 用真实 Go 连接器对任意外部网关做端到端测试（`LMBP_EXTERNAL_GATEWAY`）；`scripts/mock-interop.sh` 一键跑各实现（`go node python java rust` 及 SDK 变体） |
 

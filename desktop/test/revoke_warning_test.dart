@@ -70,7 +70,13 @@ void shellTests() {
     );
     expect(find.text('输入地址'), findsOneWidget, reason: 'pairing page shown');
     expect(find.byKey(const ValueKey('cleanup-warning')), findsOneWidget);
+    // banner counts cleanup_pending; the raw kernel text is in 查看详情
+    expect(find.textContaining('有 1 个已撤销连接'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cleanup-warning-details')));
+    await tester.pumpAndSettle();
     expect(find.textContaining('permission denied'), findsOneWidget);
+    await tester.tap(find.text('知道了'));
+    await tester.pumpAndSettle();
     // cleared once a retry at start succeeds
     await tester.pumpWidget(
       page({'paired': false, 'connections': []}, const Text('输入地址')),
