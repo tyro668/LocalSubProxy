@@ -46,6 +46,8 @@ export interface TaskRecord {
   model: string;
   state: string;
   events: TaskEvent[];
+  /** The task was end-to-end encrypted: replays render its frames sealed. */
+  e2ee?: boolean;
 }
 
 export interface Store {
@@ -58,6 +60,10 @@ export interface Store {
 
   putDevice(d: Device): void;
   getDevice(id: string): Device | undefined;
+  /** Optional: set only e2eeKey, and only while the device is active; returns
+   * false otherwise. Without it the gateway does a synchronous re-read +
+   * putDevice (safe in one process, not across processes). */
+  setDeviceE2EEKey?(id: string, key: string): boolean;
   listDevices(tenant: string, owner?: string): Device[];
 
   /** Records are keyed by the (tenant, owner, key) triple; implementations MUST NOT join the parts ambiguously. */
@@ -207,6 +213,11 @@ export class SqliteStore implements Store {
   }
   putDevice(d: Device) {
     this.db.prepare('INSERT OR REPLACE INTO lmbp_devices (id, tenant, owner, doc) VALUES (?, ?, ?, ?)').run(d.id, d.tenant, d.owner, enc({ ...d, created: d.created.toISOString() }));
+  }
+  setDeviceE2EEKey(id: string, key: string) {
+    // field-only and conditional: a revoked record is never rewritten
+    const r = this.db.prepare("UPDATE lmbp_devices SET doc = json_set(doc, '$.e2eeKey', ?) WHERE id = ? AND json_extract(doc, '$.status') = 'active'").run(key, id);
+    return (r as { changes: number }).changes > 0;
   }
   private dev(doc: string): Device { const d = dec<any>(doc); d.created = new Date(d.created); return d; }
   getDevice(id: string) {

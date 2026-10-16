@@ -20,17 +20,19 @@
 #      stores, connector) and the examples/go-nethttp module
 #   2. Node SDK (sdk/node) and the Node mock (mock/node)
 #   3. Python SDK (sdk/python) and the Python mock (mock/python), the Java
-#      mock (mock/java, JDK only) and the Rust mock (mock/rust) self-tests
+#      SDK (sdk/java: lmbp-core + lmbp-spring-boot-starter, Maven/JUnit, plus
+#      the examples/spring-boot-demo build), the Java mock (mock/java, JDK
+#      only) and the Rust mock (mock/rust) self-tests
 #   4. spec/validate.sh: JSON Schema/OpenAPI/AsyncAPI, JOSE vectors in
 #      Go/Node/Python, Python/Node/Rust protocol-example skeletons
 #   5. scripts/mock-interop.sh over every gateway variant (go node python
-#      java rust, node-sqlite python-sqlite, sdk-go sdk-go-sqlite, express fastapi):
+#      java rust, node-sqlite python-sqlite, sdk-go sdk-go-sqlite, express fastapi,
+#      spring-boot spring-boot-sqlite):
 #      lmbp-conformance + Go connector e2e + official openai/anthropic clients
 #   6. scripts/chat-ui-e2e.sh: headless-browser chat page on go/node/python/java/rust
 #
-# Not in the matrix (no code to run, by design): there is no Java *SDK* (the
-# Java mock gateway is tested; the integration guide's Java snippets are
-# illustrative); the Flutter desktop shell
+# Not in the matrix (no code to run, by design): the integration guide's Java
+# snippets are illustrative (the Java SDK in sdk/java is tested); the Flutter desktop shell
 # (desktop/) is not part of LMBP. Passing this matrix shows the
 # implementations agree with each other and with the shared vectors; it is
 # not a proof of protocol compliance.
@@ -47,7 +49,7 @@ need() {
   for c in "$@"; do command -v "$c" >/dev/null || missing+=("$c"); done
   if [ ${#missing[@]} -gt 0 ]; then echo "missing toolchain: ${missing[*]} (required; nothing is skipped)"; exit 1; fi
 }
-need go node npm python3 cargo java javac jar openssl curl "${CHROME:-google-chrome}"
+need go node npm python3 cargo java javac jar mvn openssl curl "${CHROME:-google-chrome}"
 
 skipped() { # log -> prints skip evidence, returns 0 if any
   grep -nE -e '--- SKIP' -e '^# (skipped|todo) [1-9]' -e '(^|[^0-9])[1-9][0-9]* skipped' -e '^SKIP ' -e '(^|[^A-Za-z])SKIP(PED)?:' -e '# SKIP' "$1" | grep -v 'test name does not match pattern' | head -5
@@ -82,10 +84,11 @@ step "Node SDK (sdk/node)" bash -c 'cd sdk/node && { [ -d node_modules ] || npm 
 step "Node mock (mock/node)" bash -c 'cd mock/node && { [ -d node_modules ] || npm ci --no-audit --no-fund; } && ../../scripts/strict-test.py node test/'
 step "Python SDK (sdk/python)" bash -c 'cd sdk/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -e ".[test]"; }; } && ../../scripts/strict-test.py pytest .venv/bin/python -q'
 step "Python mock (mock/python)" bash -c 'cd mock/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }; } && ../../scripts/strict-test.py unittest .venv/bin/python test_web'
+step "Java SDK (sdk/java: core + Spring Boot starter + demo, Maven)" $ST maven sdk/java lmbp-core lmbp-spring-boot-starter -- -q install
 step "Java mock (mock/java, JDK only)" $ST selftest mock/java/test.sh
 step "Rust mock (mock/rust)" bash -c 'cd mock/rust && ../../scripts/strict-test.py cargo --release'
 step "spec/validate.sh (schemas, JOSE vectors, skeletons incl. Rust)" spec/validate.sh
-step "mock-interop: conformance + connector e2e + official clients" scripts/mock-interop.sh go node python java rust node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi
+step "mock-interop: conformance + connector e2e + official clients" scripts/mock-interop.sh go node python java rust node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi spring-boot spring-boot-sqlite
 step "chat UI e2e (headless Chrome; go node python java rust)" scripts/chat-ui-e2e.sh go node python java rust
 
 echo

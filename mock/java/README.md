@@ -2,7 +2,7 @@
 
 LMBP 网关（[docs/lmbp-spec.md](../../docs/lmbp-spec.md)）的 Java 版模拟实现，**只依赖 JDK 21**（`javac`、`jar`、`java`），没有任何第三方库。它是 Node SDK 引擎（`sdk/node/src/engine/gateway.js`）的逐段移植：配对与同意（含 `CONSENT_DENIED`）、iss/aud 身份绑定、JWKS 与 `/.well-known/lmbp`（含 `signed_metadata`）、WebSocket 子协议 `lmbp`、按字节的流控、断线续传、`Idempotency-Key`、E2EE 透传、Problem Details 错误、帧大小与 Schema 限制、单一终态裁决、按模型的参数能力表、OpenAI 与 Anthropic 接口，以及共用的聊天页（`mock/web`）。
 
-用来给连接器、SaaS 后端或其他语言的实现做互通测试，**不是 Java SDK，也不面向生产**。
+用来给连接器、SaaS 后端或其他语言的实现做互通测试；**不是面向生产的网关**。生产用 Java SDK 见 [`sdk/java`](../../sdk/java)（从本模拟网关抽取并重构）。
 
 ## 运行
 

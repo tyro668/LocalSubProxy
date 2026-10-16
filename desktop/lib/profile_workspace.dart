@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'native_api.dart';
+import 'status_contract.dart';
 
 const _headerHeight = 44.0;
 const _purple = Color(0xFF4D25D8);
@@ -270,10 +271,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     }
     if (!await allowDiscard() || !mounted) return;
     try {
-      final body = <String, dynamic>{...a, 'is_default': true};
-      body.remove('has_api_key');
-      body.remove('health');
-      body.remove('auth_state');
+      final body = adapterEditBody(a, {'is_default': true});
       await updateAdapterAsync(body);
       await widget.onChanged();
     } catch (e) {
@@ -389,10 +387,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       return;
     }
     try {
-      final body = <String, dynamic>{...a, 'name': next};
-      body.remove('has_api_key');
-      body.remove('health');
-      body.remove('auth_state');
+      final body = adapterEditBody(a, {'name': next});
       await updateAdapterAsync(body);
       await widget.onChanged();
     } catch (e) {
@@ -571,7 +566,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       'max_output_tokens': int.tryParse(maxTokens.text.trim()) ?? 0,
       'reasoning_effort': reasoning,
       'is_default': isDefault,
-      'enabled': true,
+      'enabled': creating ? true : (selected?['enabled'] ?? true),
       'skip_model_probe': skipModelProbe,
     };
   }
@@ -751,15 +746,17 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   }
 
   Widget _leftFooter() {
+    final ds = DesktopStatus.parse(widget.status);
     final paired = widget.status?['paired'] == true;
-    final connected = widget.status?['connected'] == true;
-    final saasName = '${widget.status?['saas_name'] ?? ''}'.trim();
+    final connected = ds.multi
+        ? ds.anyConnected
+        : widget.status?['connected'] == true;
     final device =
         '${widget.status?['device_name'] ?? widget.status?['device_id'] ?? '本机设备'}';
     final count = widget.status?['running_tasks'] ?? 0;
-    final statusLabel = connected
-        ? (saasName.isEmpty ? '已连接' : '已连接 · $saasName')
-        : (paired ? '连接中断' : '未连接远端服务');
+    final statusLabel = ds.multi || ds.stale
+        ? ds.label
+        : (connected ? '已连接' : '未连接');
     return Container(
       height: 70,
       padding: const EdgeInsets.symmetric(horizontal: 22),
@@ -826,7 +823,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                           ),
                           const SizedBox(width: 5),
                           Text(
-                            paired ? '连接详情' : '立即连接',
+                            paired ? '连接详情  ›' : '立即连接  ›',
                             style: TextStyle(
                               color: paired
                                   ? _purple
@@ -1376,4 +1373,41 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       );
     },
   );
+}
+
+/// Converts an AdapterView (list_adapters output) into an edit body. The view
+/// carries computed, display-only values (effective capabilities incl. param
+/// markers, effective concurrency, health…); only the stored configuration
+/// may be sent back, so the kernel never persists derived data.
+Map<String, dynamic> adapterEditBody(
+  Map<String, dynamic> view,
+  Map<String, dynamic> changes,
+) {
+  const editable = {
+    'id',
+    'type',
+    'name',
+    'provider',
+    'base_url',
+    'codex_bin',
+    'models',
+    'context_window',
+    'max_output_tokens',
+    'reasoning_effort',
+    'is_default',
+    'enabled',
+    'skip_model_probe',
+  };
+  final body = <String, dynamic>{
+    for (final e in view.entries)
+      if (editable.contains(e.key)) e.key: e.value,
+  };
+  if (view.containsKey('configured_capabilities')) {
+    body['capabilities'] = view['configured_capabilities'] ?? <String>[];
+  }
+  if (view.containsKey('configured_concurrency')) {
+    body['concurrency'] = view['configured_concurrency'] ?? 0;
+  }
+  body.addAll(changes);
+  return body;
 }

@@ -13,46 +13,76 @@ import (
 	"path/filepath"
 )
 
+// WriteError tells how far a failed Write got. Committed is false when the
+// old file is untouched (any failure before or in the rename) and true when
+// the new file already replaced it but the directory sync failed, so the
+// replacement is visible yet its durability is uncertain.
+type WriteError struct {
+	Phase     string // create, write, sync, close, rename, dirsync
+	Committed bool
+	Err       error
+}
+
+func (e *WriteError) Error() string { return e.Phase + " " + e.Err.Error() }
+func (e *WriteError) Unwrap() error { return e.Err }
+
+// Committed reports whether a Write error happened after the rename.
+func Committed(err error) bool {
+	var we *WriteError
+	return errors.As(err, &we) && we.Committed
+}
+
+// Fault injection points (tests).
+var (
+	renameFile = os.Rename
+	syncDir    = func(d *os.File) error { return d.Sync() }
+	syncFile   = func(f *os.File) error { return f.Sync() }
+)
+
 // Write replaces a snapshot only after the new file and its directory are synced.
 func Write(path string, data []byte) error {
+	fail := func(phase string, err error) error { return &WriteError{Phase: phase, Err: err} }
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+		return fail("create", err)
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".snapshot-*")
 	if err != nil {
-		return err
+		return fail("create", err)
 	}
 	defer os.Remove(f.Name())
 	if err = f.Chmod(0600); err != nil {
 		f.Close()
-		return err
+		return fail("create", err)
 	}
 	if _, err = f.Write(data); err != nil {
 		f.Close()
-		return err
+		return fail("write", err)
 	}
-	if err = f.Sync(); err != nil {
+	if err = syncFile(f); err != nil {
 		f.Close()
-		return err
+		return fail("sync", err)
 	}
 	if err = f.Close(); err != nil {
-		return err
+		return fail("close", err)
 	}
-	if err = os.Rename(f.Name(), path); err != nil {
-		return err
+	if err = renameFile(f.Name(), path); err != nil {
+		return fail("rename", err)
 	}
 	d, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
+	if err == nil {
+		err = syncDir(d)
+		d.Close()
 	}
-	defer d.Close()
-	return d.Sync()
+	if err != nil {
+		return &WriteError{Phase: "dirsync", Committed: true, Err: err}
+	}
+	return nil
 }
 
 func WriteJSON(path string, value any) error {
 	b, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return &WriteError{Phase: "encode", Err: err}
 	}
 	return Write(path, b)
 }

@@ -315,3 +315,42 @@ func TestE2EConcurrencyQueue(t *testing.T) {
 		t.Fatalf("queued requests failed: %d/8 ok", ok.Load())
 	}
 }
+
+// Review7 #6: an E2EE task that succeeded is replayed (idempotency key)
+// after the in-memory hub is gone, as after a restart: the replay must still
+// carry the sealed frames, not render them as cleartext / empty.
+func TestE2EEReplayAfterRestartStaysSealed(t *testing.T) {
+	r := newRig(t, lmbp.Flow{}, 0, 0)
+	_, m := r.api(t, "GET", "/lmbp/v1/tenant/devices", nil, nil)
+	d := m["devices"].([]any)[0].(map[string]any)
+	pkb, _ := json.Marshal(d["public_key"])
+	var pk lmbp.JWK
+	_ = json.Unmarshal(pkb, &pk)
+	devPub, _ := lmbp.UnB64(pk.X)
+	xpub, kid, err := lmbp.VerifyE2EEKey(devPub, r.jkt, r.devID, d["e2ee_key"].(string), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	respKey := make([]byte, 32)
+	_, _ = rand.Read(respKey)
+	pt, _ := json.Marshal(lmbp.E2EERequest{RID: "r_9", Iat: time.Now().Unix(), Model: "echo", Messages: []lmbp.Message{{Role: "user", Content: lmbp.Text("sealed hi")}}, ResponseKey: lmbp.B64(respKey)})
+	jwe, _ := lmbp.SealJWE(xpub, kid, pt)
+	body := map[string]any{"model": r.model("echo"), "lmbp_e2ee": jwe}
+	hdr := map[string]string{"Idempotency-Key": "e2ee-replay-1"}
+	code, first := r.api(t, "POST", "/v1/chat/completions", body, hdr)
+	if code != 200 || first["lmbp_e2ee"] == nil {
+		t.Fatalf("first: %d %v", code, first)
+	}
+	r.g.mu.Lock()
+	r.g.tasks = map[string]*gtask{} // restart: only storage is left
+	r.g.mu.Unlock()
+	code, again := r.api(t, "POST", "/v1/chat/completions", body, hdr)
+	if code != 200 || again["lmbp_e2ee"] == nil {
+		t.Fatalf("replay after restart lost E2EE: %d %v", code, again)
+	}
+	fb, _ := json.Marshal(first["lmbp_e2ee"])
+	ab, _ := json.Marshal(again["lmbp_e2ee"])
+	if string(fb) != string(ab) {
+		t.Fatalf("replay differs:\n%s\n%s", fb, ab)
+	}
+}

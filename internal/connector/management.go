@@ -1,14 +1,18 @@
 package connector
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/durable"
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 )
 
 // AdapterView is the local UI representation. It never contains an API key.
@@ -31,28 +35,43 @@ type AdapterView struct {
 	Concurrency     int      `json:"concurrency"`
 	Health          string   `json:"health"`
 	AuthState       string   `json:"auth_state"`
+	// edit-side values (what is stored); Capabilities/Concurrency above are
+	// the computed effective values for display only.
+	ConfiguredCapabilities []string `json:"configured_capabilities"`
+	ConfiguredConcurrency  int      `json:"configured_concurrency"`
 }
 
 func viewAdapter(a AdapterConfig) AdapterView {
-	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a)}
+	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a), ConfiguredCapabilities: append([]string(nil), a.Capabilities...), ConfiguredConcurrency: a.Concurrency}
 }
 
+// Status is the device-wide status. connections[] lists every paired SaaS;
+// the flat connection fields mirror the primary (first) connection for
+// clients that predate multi-SaaS support (docs/desktop-status-contract.md).
 func (x *Connector) Status() map[string]any {
 	x.mu.Lock()
-	running, remoteOK, gatewayOK, lastErr, recovery := len(x.running), x.remoteOK, x.gatewayOK, x.lastErr, x.recovery
+	running, recovery := len(x.running), x.recovery
+	conns := make([]map[string]any, 0, len(x.order))
+	online := 0
+	for _, id := range x.order {
+		c := x.linkStatusLocked(x.links[id])
+		if c["connected"] == true {
+			online++
+		}
+		conns = append(conns, c)
+	}
 	x.mu.Unlock()
-	deviceID, gatewayURL, transport, e2ee, issuer, saasName, tenant := "", "", "offline", false, "", "", ""
-	if id := x.cfg.Identity; id != nil {
-		deviceID, gatewayURL, e2ee, issuer, saasName, tenant = id.DeviceID, id.GatewayURL, id.E2EEKey != "", id.Issuer, id.SaaSName, id.Tenant
-		transport = "wss"
-		if strings.HasPrefix(gatewayURL, "http://") {
-			transport = "ws"
+	st := map[string]any{"protocol": "lmbp", "last_error": "", "device_id": "", "device_name": localDeviceName(), "server_url": "",
+		"issuer": "", "saas_name": "", "tenant": "", "audit": x.cfg.Audit != nil,
+		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": "offline", "e2ee": false,
+		"connected": false, "remote_connected": false, "gateway_connected": false,
+		"connections": conns, "connections_total": len(conns), "connections_online": online}
+	if len(conns) > 0 {
+		p := conns[0]
+		for _, k := range []string{"last_error", "device_id", "server_url", "issuer", "saas_name", "tenant", "transport", "e2ee", "connected", "remote_connected", "gateway_connected"} {
+			st[k] = p[k]
 		}
 	}
-	st := map[string]any{"protocol": "lmbp", "last_error": lastErr, "device_id": deviceID, "device_name": localDeviceName(), "server_url": gatewayURL,
-		"issuer": issuer, "saas_name": saasName, "tenant": tenant, "audit": x.cfg.Audit != nil,
-		"running_tasks": running, "max_concurrency": x.cfg.MaxConcurrency, "transport": transport, "e2ee": e2ee,
-		"connected": remoteOK && gatewayOK, "remote_connected": remoteOK, "gateway_connected": gatewayOK}
 	if recovery != nil {
 		st["adapter_recovery"] = recovery
 	}
@@ -81,6 +100,7 @@ func (x *Connector) ListAdapters() []AdapterView {
 }
 
 func (x *Connector) saveAdaptersLocked() error {
+	x.cfgVer++ // memory changed (saved or rolled back after this)
 	if x.cfg.AdapterFile == "" {
 		return errors.New("adapter file not configured")
 	}
@@ -92,19 +112,83 @@ func (x *Connector) saveAdaptersLocked() error {
 	if err != nil {
 		return err
 	}
-	return durable.Write(x.cfg.AdapterFile, b)
+	if x.adaptersBlocked != nil {
+		return x.adaptersBlocked
+	}
+	err = writeAdapterFile(x.cfg.AdapterFile, b)
+	if err == nil {
+		x.lastSaved = b
+		return nil
+	}
+	if !durable.Committed(err) {
+		return err // old file intact; the caller rolls back memory
+	}
+	// Renamed but the directory sync failed: read it back.
+	if got, rerr := readAdapterFile(x.cfg.AdapterFile); rerr == nil && bytes.Equal(got, b) {
+		x.lastSaved, x.storageWarning = b, "adapters.enc saved but its directory could not be synced: "+err.Error()
+		return nil // committed: memory keeps the change
+	}
+	// Unverifiable: put the previous content back so the caller's
+	// rollback matches the disk; if even that fails, refuse further
+	// adapter changes until restart (memory and disk may differ).
+	restore := func() error { return writeAdapterFile(x.cfg.AdapterFile, x.lastSaved) }
+	if x.lastSaved == nil { // there was no file before
+		restore = func() error { return os.Remove(x.cfg.AdapterFile) }
+	}
+	if rerr := restore(); rerr == nil {
+		return err
+	}
+	x.adaptersBlocked = fmt.Errorf("adapters.enc state is uncertain after a failed save (%v); restart LocalSubProxy before changing adapters", err)
+	return x.adaptersBlocked
 }
 
+// AdapterStorageWarning is set when adapters.enc was committed but its
+// directory could not be synced.
+func (x *Connector) AdapterStorageWarning() string {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.storageWarning
+}
+
+// Injected in tests (adapters.enc commit phases).
+var (
+	writeAdapterFile = durable.Write
+	readAdapterFile  = os.ReadFile
+)
+
 func (x *Connector) activeAdapterLocked(id string) bool {
-	for _, a := range x.running {
-		if a == id {
+	for _, r := range x.running {
+		if r.adapter == id {
 			return true
 		}
 	}
 	return false
 }
 
+var errCoreStopped = errors.New("LocalSubProxy core stopped; retry")
+
+// beginMutLocked admits an adapter change; Shutdown waits for it, and a
+// change on a stopped core never touches adapters.enc (a newer core may own
+// it by now).
+func (x *Connector) beginMutLocked() error {
+	if x.closed {
+		return errCoreStopped
+	}
+	x.muts.Add(1)
+	return nil
+}
+
+// mutHook runs in UpdateAdapter after validation, before re-locking (tests).
+var mutHook func()
+
 func (x *Connector) CreateAdapter(a AdapterConfig) (AdapterView, error) {
+	x.mu.Lock()
+	if err := x.beginMutLocked(); err != nil {
+		x.mu.Unlock()
+		return AdapterView{}, err
+	}
+	x.mu.Unlock()
+	defer x.muts.Done()
 	if err := validateAdapter(&a); err != nil {
 		return AdapterView{}, err
 	}
@@ -143,11 +227,103 @@ func (x *Connector) CreateAdapter(a AdapterConfig) (AdapterView, error) {
 }
 
 func (x *Connector) UpdateAdapter(a AdapterConfig) (AdapterView, error) {
+	return x.updateAdapter(a.ID, func(AdapterConfig) (AdapterConfig, error) { return a, nil })
+}
+
+// viewOnlyKeys are AdapterView fields that are derived, never configuration.
+var viewOnlyKeys = []string{"has_api_key", "health", "auth_state", "configured_capabilities", "configured_concurrency"}
+
+// MergeAdapterPatch applies a partial edit to old: keys absent from patch keep
+// their stored value, view-only keys are ignored, and capabilities computed
+// for display (e.g. param markers) are never persisted as configuration.
+func MergeAdapterPatch(old AdapterConfig, patch json.RawMessage) (AdapterConfig, error) {
+	var p map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &p); err != nil {
+		return AdapterConfig{}, err
+	}
+	for _, k := range viewOnlyKeys {
+		delete(p, k)
+	}
+	if raw, ok := p["capabilities"]; ok {
+		var caps []string
+		if err := json.Unmarshal(raw, &caps); err != nil {
+			return AdapterConfig{}, err
+		}
+		if !sameStrings(caps, capsOf(old)) { // unchanged effective view: keep stored config
+			kept := []string{}
+			for _, c := range caps {
+				if c == lmbp.ModelCapTools || c == lmbp.ModelCapVision || c == lmbp.ModelCapAudio {
+					kept = append(kept, c)
+				}
+			}
+			old.Capabilities = kept
+		}
+		delete(p, "capabilities")
+	}
+	if raw, ok := p["concurrency"]; ok {
+		var n int
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return AdapterConfig{}, err
+		}
+		if n != adapterSlots(old) {
+			old.Concurrency = n
+		}
+		delete(p, "concurrency")
+	}
+	base, err := json.Marshal(old)
+	if err != nil {
+		return AdapterConfig{}, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return AdapterConfig{}, err
+	}
+	for k, v := range p {
+		m[k] = v
+	}
+	merged, _ := json.Marshal(m)
+	var out AdapterConfig
+	if err := json.Unmarshal(merged, &out); err != nil {
+		return AdapterConfig{}, err
+	}
+	out.ID = old.ID
+	return out, nil
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// PatchAdapter merges a partial edit onto the stored adapter atomically.
+func (x *Connector) PatchAdapter(id string, patch json.RawMessage) (AdapterView, error) {
+	return x.updateAdapter(id, func(old AdapterConfig) (AdapterConfig, error) { return MergeAdapterPatch(old, patch) })
+}
+
+func (x *Connector) updateAdapter(id string, build func(AdapterConfig) (AdapterConfig, error)) (AdapterView, error) {
 	x.mu.Lock()
-	old, exists := x.adapters[a.ID]
+	if err := x.beginMutLocked(); err != nil {
+		x.mu.Unlock()
+		return AdapterView{}, err
+	}
+	defer x.muts.Done()
+	ver := x.cfgVer
+	old, exists := x.adapters[id]
 	if !exists {
 		x.mu.Unlock()
 		return AdapterView{}, errors.New("adapter not found")
+	}
+	a, err := build(old)
+	if err != nil {
+		x.mu.Unlock()
+		return AdapterView{}, err
 	}
 	if x.activeAdapterLocked(a.ID) {
 		x.mu.Unlock()
@@ -163,7 +339,15 @@ func (x *Connector) UpdateAdapter(a AdapterConfig) (AdapterView, error) {
 	if err := validateAdapter(&a); err != nil {
 		return AdapterView{}, err
 	}
+	if mutHook != nil {
+		mutHook()
+	}
 	x.mu.Lock()
+	if x.cfgVer != ver {
+		// deleted or edited while validating: never write back a stale copy
+		x.mu.Unlock()
+		return AdapterView{}, errors.New("adapter list changed meanwhile; reload and retry")
+	}
 	if x.activeAdapterLocked(a.ID) {
 		x.mu.Unlock()
 		return AdapterView{}, errors.New("adapter has an active task")
@@ -179,7 +363,7 @@ func (x *Connector) UpdateAdapter(a AdapterConfig) (AdapterView, error) {
 		}
 	}
 	x.adapters[a.ID] = a
-	err := x.saveAdaptersLocked()
+	err = x.saveAdaptersLocked()
 	if err != nil {
 		x.adapters[a.ID] = old
 		for id, isDefault := range previousDefaults {
@@ -198,6 +382,11 @@ func (x *Connector) UpdateAdapter(a AdapterConfig) (AdapterView, error) {
 
 func (x *Connector) DeleteAdapter(id string) error {
 	x.mu.Lock()
+	if err := x.beginMutLocked(); err != nil {
+		x.mu.Unlock()
+		return err
+	}
+	defer x.muts.Done()
 	old, exists := x.adapters[id]
 	if !exists {
 		x.mu.Unlock()

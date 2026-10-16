@@ -18,6 +18,10 @@ import (
 
 var ErrOutboxClosed = errors.New("outbox closed")
 
+// ErrFrameTooLarge: the final encoded frame exceeds MaxFrameBytes. Such a
+// frame is never enqueued (no seq, no credit); the sender must split or fail.
+var ErrFrameTooLarge = errors.New("encoded frame exceeds max_frame_bytes")
+
 type outFrame struct {
 	seq int64
 	raw []byte
@@ -51,6 +55,7 @@ type Outbox struct {
 	tasks    map[string]*outTask
 	waiters  []*waiter
 	write    func([]byte) error
+	writeGen uint64     // generation of write (AttachOwned / Detach)
 	wmu      sync.Mutex // serializes flush so frames go out in seq order
 	closed   bool
 }
@@ -70,12 +75,36 @@ func (o *Outbox) SetFlow(f *Flow) {
 // Existing tasks are paused on attach until Retransmit is called for them,
 // so a resumed stream is always delivered gap-free and in order.
 func (o *Outbox) Attach(write func([]byte) error) {
+	o.AttachOwned(write)
+}
+
+// AttachOwned installs write and returns its generation; only Detach with
+// that generation removes it, so an old connection closing late can never
+// clear a newer connection's sender (install and clear are atomic under
+// o.mu).
+func (o *Outbox) AttachOwned(write func([]byte) error) uint64 {
 	o.mu.Lock()
+	o.writeGen++
+	gen := o.writeGen
 	o.write = write
 	for _, t := range o.tasks {
 		t.written = -1
 	}
 	o.mu.Unlock()
+	return gen
+}
+
+// Detach removes the sender installed as gen, if it is still the current one.
+func (o *Outbox) Detach(gen uint64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.writeGen != gen {
+		return // a newer connection owns the outbox now
+	}
+	o.write = nil
+	for _, t := range o.tasks {
+		t.written = -1
+	}
 }
 
 // flush writes, in seq order, the task's frames that the current connection
@@ -152,6 +181,12 @@ func (o *Outbox) wakeLocked() {
 		t := o.task(w.task)
 		seq := t.nextSeq + 1
 		raw := w.mk(seq)
+		if len(raw) > MaxFrameBytes { // checked on the final wire bytes
+			o.waiters = o.waiters[1:]
+			w.err = ErrFrameTooLarge
+			close(w.ch)
+			continue
+		}
 		if !o.fitsLocked(w.task, len(raw)) {
 			return // strict FIFO: later waiters do not overtake
 		}
@@ -293,6 +328,24 @@ func (o *Outbox) Forget(taskID string) {
 }
 
 // Close fails all blocked and future sends.
+// Usage reports unacknowledged frames and bytes over all tasks (the
+// connection window in use).
+func (o *Outbox) Usage() (frames, bytes int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, t := range o.tasks {
+		frames += len(t.unacked)
+	}
+	return frames, o.connUsed
+}
+
+// Waiting reports how many sends are queued for flow credit.
+func (o *Outbox) Waiting() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.waiters)
+}
+
 func (o *Outbox) Close() {
 	o.mu.Lock()
 	o.closed = true

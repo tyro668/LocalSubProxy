@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -35,12 +37,17 @@ type Config struct {
 }
 
 type Client struct {
-	cfg   Config
-	id    Identity
-	key   ed25519.PrivateKey
-	gw    ed25519.PublicKey
-	xpriv []byte
-	xpub  []byte
+	cfg Config
+	// quit closes when Run stops for good; pending terminal frames that
+	// still wait for flow credit give up only then.
+	quit     chan struct{}
+	quitOnce sync.Once
+	runDone  <-chan struct{} // Done of the current Run ctx (under mu)
+	id       Identity
+	key      ed25519.PrivateKey
+	gw       ed25519.PublicKey
+	xpriv    []byte
+	xpub     []byte
 
 	mu          sync.Mutex
 	tasks       map[string]*ctask
@@ -49,7 +56,12 @@ type Client struct {
 	in          *lmbp.Inbound        // gateway→device data frames
 	resumeToken string
 	resumeUntil time.Time
-	maxConc     int
+	maxConc     int        // effective: min(want, gateway cap)
+	wantConc    int        // what this device declares (SetMaxConcurrency)
+	gwConc      int        // cap from the last welcome (0: none)
+	live        bool       // welcome received on the current session
+	pendingAnn  bool       // ModelsChanged requested before the welcome
+	annMu       sync.Mutex // serializes models.update build+send
 	caps        []string
 	resumes     int
 
@@ -66,6 +78,11 @@ type ctask struct {
 	blobs    map[string]*bytes.Buffer
 	started  bool
 	finished bool
+	// terminal is set once task.done / task.error is enqueued. Task state
+	// is reclaimed only after that AND every frame up to it is acked; an
+	// ACK of the last content chunk alone must not reclaim it (the
+	// terminal frame would then be re-sent from seq 1 and be dropped).
+	terminal bool
 	cancel   context.CancelFunc
 }
 
@@ -95,7 +112,7 @@ func New(cfg Config, id Identity) (*Client, error) {
 	if cfg.Capabilities == nil {
 		cfg.Capabilities = lmbp.Capabilities
 	}
-	c := &Client{cfg: cfg, id: id, key: k, gw: g, tasks: map[string]*ctask{}, seen: map[string]time.Time{}, out: lmbp.NewOutbox(), in: lmbp.NewInbound(cfg.Flow), maxConc: cfg.MaxConcurrency}
+	c := &Client{quit: make(chan struct{}), cfg: cfg, id: id, key: k, gw: g, tasks: map[string]*ctask{}, seen: map[string]time.Time{}, out: lmbp.NewOutbox(), in: lmbp.NewInbound(cfg.Flow), maxConc: cfg.MaxConcurrency, wantConc: cfg.MaxConcurrency}
 	if id.E2EEKey != "" {
 		if x, err := lmbp.UnB64(id.E2EEKey); err == nil {
 			if pub, err := lmbp.X25519Public(x); err == nil {
@@ -162,15 +179,21 @@ var ErrRevoked = errors.New("device credential rejected (revoked or unknown); pa
 // Run keeps one session alive with backoff until ctx ends or the device is
 // revoked. The first reconnect is immediate so that resume can succeed.
 func (c *Client) Run(ctx context.Context, ready chan<- error) error {
+	defer c.quitOnce.Do(func() { close(c.quit) })
+	c.mu.Lock()
+	c.runDone = ctx.Done()
+	c.mu.Unlock()
 	backoff := 200 * time.Millisecond
 	for ctx.Err() == nil {
 		start := time.Now()
 		err := c.session(ctx, ready)
 		c.setState(false)
 		if ctx.Err() != nil {
+			c.abortTasks()
 			return ctx.Err()
 		}
 		if errors.Is(err, ErrRevoked) || errors.Is(err, ErrGatewayIdentity) {
+			c.abortTasks()
 			return err
 		}
 		c.cfg.Logger.Printf("lmbp: session ended: %v", err)
@@ -185,6 +208,7 @@ func (c *Client) Run(ctx context.Context, ready chan<- error) error {
 			backoff *= 2
 		}
 	}
+	c.abortTasks()
 	return ctx.Err()
 }
 
@@ -225,9 +249,76 @@ func (c *Client) keyStatement() string {
 	return lmbp.SignE2EEKey(c.key, c.id.DeviceID, c.xpub, time.Now())
 }
 
+// handshakeHook runs after hello is sent, before the welcome is read (tests).
+var handshakeHook func()
+
+// announceHook runs after a models.update is built, before it is sent (tests).
+var announceHook func([]byte)
+
+func (c *Client) declaredConc() int { c.mu.Lock(); defer c.mu.Unlock(); return c.wantConc }
+
+// SetMaxConcurrency changes the declared parallel task limit at runtime. It
+// takes effect locally at once, is announced on the live session
+// (models.update.max_concurrency) and is used by every later hello.
+func (c *Client) SetMaxConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	c.mu.Lock()
+	c.wantConc, c.maxConc = n, n
+	if c.gwConc > 0 && c.gwConc < n {
+		c.maxConc = c.gwConc
+	}
+	c.mu.Unlock()
+	c.ModelsChanged()
+}
+
+// abortTasks cancels every running task (permanent stop: revoked or Run's
+// context ended). Transient session drops keep tasks for resume.
+func (c *Client) abortTasks() {
+	c.mu.Lock()
+	var cs []context.CancelFunc
+	for _, t := range c.tasks {
+		if t.cancel != nil && !t.finished {
+			cs = append(cs, t.cancel)
+		}
+	}
+	c.mu.Unlock()
+	for _, f := range cs {
+		f()
+	}
+}
+
+// OutboxUsage reports device→gateway frames and bytes not yet ACKed
+// (diagnostics: a leak here means the gateway stopped acknowledging).
+func (c *Client) OutboxUsage() (frames, bytes int) {
+	c.mu.Lock()
+	o := c.out
+	c.mu.Unlock()
+	return o.Usage()
+}
+
 // ModelsChanged re-announces the executor's models on the live session.
+//
+// Announcements are serialized (annMu): the config is read and sent under
+// the same lock, so a later change can never be overtaken by an earlier,
+// staler models.update.
 func (c *Client) ModelsChanged() {
-	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), MaxConcurrency: c.cfg.MaxConcurrency, E2EEKey: c.keyStatement()})
+	c.annMu.Lock()
+	defer c.annMu.Unlock()
+	c.mu.Lock()
+	live := c.live
+	if !live {
+		c.pendingAnn = true
+	}
+	c.mu.Unlock()
+	if !live { // before the welcome: the handshake re-checks and resends
+		return
+	}
+	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
+	if announceHook != nil {
+		announceHook(b)
+	}
 	_ = c.control(lmbp.Envelope{Type: lmbp.TypeModelsUpdate, Data: b})
 }
 
@@ -266,7 +357,7 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	if c.xpriv == nil {
 		caps = removeS(caps, lmbp.CapE2EE)
 	}
-	hello := lmbp.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), MaxConcurrency: c.cfg.MaxConcurrency,
+	hello := lmbp.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), MaxConcurrency: c.declaredConc(),
 		Capabilities: caps, E2EEKey: c.keyStatement(), Proof: lmbp.SignProof(c.key, c.id.DeviceID, lmbp.ProofHello, tok, time.Now())}
 	if contains(caps, lmbp.CapFlow) {
 		hello.Flow = c.cfg.Flow
@@ -288,6 +379,10 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 		return err
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	defer func() { c.mu.Lock(); c.live = false; c.mu.Unlock() }()
+	if handshakeHook != nil {
+		handshakeHook()
+	}
 	var w lmbp.Envelope
 	if err := conn.ReadJSON(&w); err != nil {
 		return err
@@ -300,10 +395,21 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 
 	c.mu.Lock()
 	c.caps = welcome.Capabilities
-	c.maxConc = c.cfg.MaxConcurrency
-	if welcome.MaxConcurrency > 0 && welcome.MaxConcurrency < c.maxConc {
-		c.maxConc = welcome.MaxConcurrency
+	// The welcome answers the hello that was sent, which may already be
+	// stale (SetMaxConcurrency during the handshake). Only a value below
+	// what that hello declared is a real gateway cap; an equal value is an
+	// echo and says nothing about the latest setting.
+	c.gwConc = 0
+	if welcome.MaxConcurrency > 0 && welcome.MaxConcurrency < hello.MaxConcurrency {
+		c.gwConc = welcome.MaxConcurrency
 	}
+	c.maxConc = c.wantConc
+	if c.gwConc > 0 && c.gwConc < c.maxConc {
+		c.maxConc = c.gwConc
+	}
+	resendConc := c.wantConc != hello.MaxConcurrency || c.pendingAnn // hello was stale
+	c.pendingAnn = false
+	c.live = true
 	var retransmit []lmbp.ResumeTask
 	if hello.Resume != nil && welcome.Resume != nil && welcome.Resume.Resumed {
 		keep := map[string]bool{}
@@ -339,9 +445,9 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	} else {
 		out.SetFlow(nil)
 	}
-	out.Attach(c.writeRaw)
+	wgen := out.AttachOwned(c.writeRaw)
 	defer func() {
-		out.Attach(nil)
+		out.Detach(wgen)
 		c.mu.Lock()
 		c.resumeUntil = time.Now().Add(resumeFor)
 		c.mu.Unlock()
@@ -357,6 +463,9 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 		c.cfg.Logger.Printf("lmbp: connected as %s (caps=%v, concurrency=%d)", c.id.DeviceID, welcome.Capabilities, c.maxConc)
 	}
 	c.setState(true)
+	if resendConc {
+		c.ModelsChanged() // announce the setting changed during the handshake
+	}
 	if ready != nil {
 		select {
 		case ready <- nil:
@@ -444,7 +553,12 @@ func (c *Client) onAck(taskID string, seq int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.out.Ack(taskID, seq)
-	if t := c.tasks[taskID]; t != nil && t.finished {
+	c.reclaimLocked(taskID)
+}
+
+// reclaimLocked forgets a task whose terminal frame is enqueued and acked.
+func (c *Client) reclaimLocked(taskID string) {
+	if t := c.tasks[taskID]; t != nil && t.terminal {
 		if n, _ := c.out.Unacked(taskID); n == 0 {
 			delete(c.tasks, taskID)
 			c.out.Forget(taskID)
@@ -452,6 +566,13 @@ func (c *Client) onAck(taskID string, seq int64) {
 		}
 	}
 }
+
+// finishHook runs between marking a task finished and enqueuing its
+// terminal frame (tests).
+var finishHook atomic.Pointer[func(taskID string)]
+
+// terminalCtxHook observes the context a terminal frame waits under (tests).
+var terminalCtxHook atomic.Pointer[func(context.Context)]
 
 // refreshLoop swaps in a new access token before the current one expires.
 func (c *Client) refreshLoop(ctx context.Context, exp int64) {
@@ -621,7 +742,9 @@ func (c *Client) maybeStart(t *ctask) {
 	}
 	go func() {
 		defer cancel()
-		emit := func(d lmbp.TaskDelta) error {
+		var tooLarge bool
+		var emit func(d lmbp.TaskDelta) error
+		emit = func(d lmbp.TaskDelta) error {
 			_, err := t.out.SendFunc(ctx, t.id, func(seq int64) lmbp.Envelope {
 				wire := d
 				if sealer != nil {
@@ -630,9 +753,28 @@ func (c *Client) maybeStart(t *ctask) {
 				b, _ := json.Marshal(wire)
 				return lmbp.Envelope{Type: lmbp.TypeTaskDelta, Data: b}
 			})
+			if errors.Is(err, lmbp.ErrFrameTooLarge) {
+				// Review7 #13: the encoded frame (after sealing) is over the
+				// limit: split it; an unsplittable piece fails the task.
+				parts, ok := splitDelta(d)
+				if !ok {
+					tooLarge = true
+					cancel()
+					return err
+				}
+				for _, p := range parts {
+					if err := emit(p); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
 			return err
 		}
 		done, fail := c.cfg.Executor.Execute(ctx, run, emit)
+		if tooLarge {
+			done, fail = nil, &lmbp.ErrorBody{Code: lmbp.ErrInternal, Message: "model output frame exceeds max_frame_bytes and cannot be split"}
+		}
 		if fail == nil && ctx.Err() != nil {
 			fail = &lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}
 		}
@@ -658,10 +800,39 @@ func (c *Client) finishSealed(t *ctask, done *lmbp.TaskDone, fail *lmbp.ErrorBod
 		return
 	}
 	t.finished = true
+	runDone := c.runDone
 	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// Callers include the WS read loop (immediate rejects, cancels during
+	// blob collection). Waiting for credit there would deadlock: the ACKs
+	// that free credit are read by that same loop. So the credit wait and
+	// the send run on their own goroutine; only "finished" is synchronous.
+	go c.sendTerminal(t, done, fail, s, runDone)
+}
+
+func (c *Client) sendTerminal(t *ctask, done *lmbp.TaskDone, fail *lmbp.ErrorBody, s *sealer, runDone <-chan struct{}) {
+	if h := finishHook.Load(); h != nil {
+		(*h)(t.id)
+	}
+	// The terminal frame waits for flow credit as long as the client runs
+	// (no deadline: giving up would leave the task finished locally with
+	// no terminal result on either side). It is dropped only on a
+	// permanent stop, or when a non-resumed reconnect resets the outbox,
+	// in which case the gateway has discarded the task too.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, _ = t.out.SendFunc(ctx, t.id, func(seq int64) lmbp.Envelope {
+	go func() { // react to Run's ctx directly, not to Run returning
+		select {
+		case <-runDone: // nil before any Run: never fires
+			cancel()
+		case <-c.quit:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	if h := terminalCtxHook.Load(); h != nil {
+		(*h)(ctx)
+	}
+	_, serr := t.out.SendFunc(ctx, t.id, func(seq int64) lmbp.Envelope {
 		if fail != nil {
 			b, _ := json.Marshal(fail)
 			return lmbp.Envelope{Type: lmbp.TypeTaskError, Data: b}
@@ -673,6 +844,71 @@ func (c *Client) finishSealed(t *ctask, done *lmbp.TaskDone, fail *lmbp.ErrorBod
 		b, _ := json.Marshal(d)
 		return lmbp.Envelope{Type: lmbp.TypeTaskDone, Data: b}
 	})
+	if errors.Is(serr, lmbp.ErrFrameTooLarge) && (fail == nil || fail.Code != lmbp.ErrInternal || fail.Message != oversizeTerminal) {
+		// never enqueue an oversized terminal: replace it with a small error
+		c.sendTerminal(t, nil, &lmbp.ErrorBody{Code: lmbp.ErrInternal, Message: oversizeTerminal}, nil, runDone)
+		return
+	}
+	if serr != nil {
+		return // not queued: kept for resume
+	}
+	// The terminal frame is queued: from now on (also if its ACK already
+	// arrived) the task can be reclaimed.
+	c.mu.Lock()
+	t.terminal = true
+	if c.tasks[t.id] == t {
+		c.reclaimLocked(t.id)
+	}
+	c.mu.Unlock()
+}
+
+const oversizeTerminal = "terminal frame exceeds max_frame_bytes"
+
+// splitDelta halves a delta: text and tool calls go to separate deltas,
+// several tool calls to one each, a long text or arguments string into two
+// rune-safe halves (the continuation keeps only the tool-call index, as in
+// OpenAI streaming). ok=false when nothing can be split further.
+func splitDelta(d lmbp.TaskDelta) ([]lmbp.TaskDelta, bool) {
+	switch {
+	case d.Text != "" && len(d.ToolCalls) > 0:
+		return []lmbp.TaskDelta{{Text: d.Text}, {ToolCalls: d.ToolCalls}}, true
+	case len(d.ToolCalls) > 1:
+		out := make([]lmbp.TaskDelta, len(d.ToolCalls))
+		for i, tc := range d.ToolCalls {
+			out[i] = lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{tc}}
+		}
+		return out, true
+	case len(d.ToolCalls) == 1:
+		tc := d.ToolCalls[0]
+		a, b, ok := halve(tc.Function.Arguments)
+		if !ok || tc.Index == nil {
+			return nil, false
+		}
+		first := tc
+		first.Function.Arguments = a
+		rest := lmbp.ToolCall{Index: tc.Index, Function: lmbp.FunctionCall{Arguments: b}}
+		return []lmbp.TaskDelta{{ToolCalls: []lmbp.ToolCall{first}}, {ToolCalls: []lmbp.ToolCall{rest}}}, true
+	default:
+		a, b, ok := halve(d.Text)
+		if !ok {
+			return nil, false
+		}
+		return []lmbp.TaskDelta{{Text: a}, {Text: b}}, true
+	}
+}
+
+func halve(s string) (string, string, bool) {
+	if len(s) < 2 {
+		return "", "", false
+	}
+	i := len(s) / 2
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	if i == 0 {
+		return "", "", false
+	}
+	return s[:i], s[i:], true
 }
 
 type sealer struct {
@@ -731,7 +967,7 @@ func (c *Client) openE2EE(run lmbp.TaskRun, blobs map[string][]byte) (lmbp.TaskR
 	}
 	run.Messages, run.Tools, run.ToolChoice, run.MaxTokens, run.Temperature = req.Messages, req.Tools, req.ToolChoice, req.MaxTokens, req.Temperature
 	run.TopP, run.Stop = req.TopP, req.Stop
-	run.Blobs, run.E2EE = nil, nil
+	run.Blobs, run.E2EE, run.Sealed = nil, nil, true
 	return run, &sealer{rid: req.RID, key: key}, nil
 }
 

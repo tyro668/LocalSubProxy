@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +42,9 @@ type gtask struct {
 	e2ee, idempotent  bool
 	ds                *dstate
 	sentRun           atomic.Bool
+	devTerminal       atomic.Bool // the device sent its terminal frame
+	aggBytes          int         // output bytes received so far (under mu)
+	storeFailed       atomic.Bool // ended because output could not be persisted: never ACK unpersisted frames
 	ctx               context.Context
 	stop              context.CancelFunc
 	mu                sync.Mutex
@@ -132,7 +137,8 @@ func (g *Gateway) finishedTask(st store.Task, reqModel string) (*gtask, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &gtask{g: g, id: st.ID, tenant: st.TenantID, owner: st.OwnerID, reqModel: reqModel, created: st.CreatedAt.Unix(), notify: make(chan struct{}), subs: map[int]int64{}, done: true}
+	t := &gtask{g: g, id: st.ID, tenant: st.TenantID, owner: st.OwnerID, reqModel: reqModel, created: st.CreatedAt.Unix(), notify: make(chan struct{}), subs: map[int]int64{}, done: true,
+		e2ee: storedE2EE(st.Request)}
 	for _, e := range evs {
 		t.events = append(t.events, event{Seq: e.Seq, Type: e.Kind, Data: e.Data})
 	}
@@ -185,6 +191,9 @@ func (t *gtask) broadcastLocked() {
 // onDeviceFrame records an accepted, in-order device data frame.
 func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 	hook(t, "device-frame")
+	if isTerminal(in.Type) {
+		t.devTerminal.Store(true)
+	}
 	t.mu.Lock()
 	if t.done || t.decided {
 		t.mu.Unlock()
@@ -195,6 +204,15 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 		t.seen = in.Seq
 	}
 	data := in.Data
+	if in.Type == lmbp.TypeTaskDelta && !t.e2ee {
+		if why := t.checkDeltaLocked(data); why != "" {
+			t.mu.Unlock()
+			t.g.cfg.Logger.Printf("lmbp: task %s: %s", t.id, why)
+			t.cancel("protocol_error")
+			t.failLocal(lmbp.ErrInternal, "device sent an invalid delta: "+why, false)
+			return
+		}
+	}
 	if in.Type == lmbp.TypeTaskDelta && !t.e2ee {
 		// Drop any e2ee field the device must not send for a cleartext task.
 		var d lmbp.TaskDelta
@@ -231,6 +249,7 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 		if err := t.g.cfg.Store.FinishTask(ctx, ev, state); err != nil {
 			t.g.cfg.Logger.Printf("lmbp: task %s: persisting terminal event and state for seq %d failed: %v (not acknowledged)", t.id, in.Seq, err)
 			t.sendCancel("internal_error")
+			t.storeFailed.Store(true)
 			t.commitLocal(lmbp.ErrInternal, "gateway could not persist task output", false)
 			return
 		}
@@ -260,6 +279,7 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 // gets INTERNAL instead of a result the gateway could not make durable.
 func (t *gtask) persistFailed(seq int64, what string, err error) {
 	t.g.cfg.Logger.Printf("lmbp: task %s: persisting %s for seq %d failed: %v (not acknowledged)", t.id, what, seq, err)
+	t.storeFailed.Store(true)
 	t.cancel("internal_error")
 	t.failLocal(lmbp.ErrInternal, "gateway could not persist task output", false)
 }
@@ -338,11 +358,14 @@ func (t *gtask) sendCancel(reason string) {
 
 // failLocal ends the task with a gateway-local terminal error, if it wins
 // the terminal decision (see decide); otherwise it does nothing.
-func (t *gtask) failLocal(code, msg string, retryable bool) {
+// failLocal reports whether this call decided the terminal outcome; false
+// means another path (device frame, timeout, cancel) already won.
+func (t *gtask) failLocal(code, msg string, retryable bool) bool {
 	if !t.decide() {
-		return
+		return false
 	}
 	t.commitLocal(code, msg, retryable)
+	return true
 }
 
 // commitLocal stores and then publishes a local terminal error. The caller
@@ -402,16 +425,36 @@ func (t *gtask) finishWith(state string, fromDevice, _ bool) {
 	t.broadcastLocked()
 	t.mu.Unlock()
 	if ds := t.ds; ds != nil {
+		var late, ackNow int64 // late: seq ACKed so far; ackNow: ACK to send now
+		reclaim := false
 		if fromDevice {
 			t.maybeAck() // release the device's resume buffer
+		} else if !t.storeFailed.Load() {
+			// Ended here (cancel, timeout, slow consumer, ...): the device
+			// may still be sending. ACK what arrived so far and remember the
+			// task so later frames are ACKed too (credit is not leaked).
+			reclaim = true
+			late = t.recvSeq()
+			t.mu.Lock()
+			if late > t.acked {
+				t.acked, ackNow = late, late
+			}
+			t.mu.Unlock()
 		}
 		ds.mu.Lock()
 		delete(ds.tasks, t.id)
+		if reclaim && !t.devTerminal.Load() {
+			ds.reclaimLocked(t.id, late)
+		}
 		in := ds.in
 		ds.mu.Unlock()
 		ds.out.Forget(t.id)
 		if in != nil {
 			in.Forget(t.id)
+		}
+		if ackNow > 0 {
+			b, _ := json.Marshal(lmbp.TaskAck{Seq: ackNow})
+			_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: t.id, Data: b})
 		}
 		if slot {
 			ds.release()
@@ -517,4 +560,46 @@ func (t *gtask) stream(ctx context.Context, after int64, keepalive func() error,
 			}
 		}
 	}
+}
+
+// Bounds on what non-streaming aggregation builds from device deltas.
+const (
+	maxToolCalls     = 128      // tool-call indexes 0..127
+	maxAggregateSize = 64 << 20 // text + tool names/arguments per task
+)
+
+// checkDeltaLocked validates a device delta before it is stored or
+// aggregated: tool-call index range and the task's total output size.
+func (t *gtask) checkDeltaLocked(data []byte) string {
+	var d lmbp.TaskDelta
+	if json.Unmarshal(data, &d) != nil {
+		return "malformed task.delta"
+	}
+	n := len(d.Text)
+	for _, c := range d.ToolCalls {
+		if c.Index != nil && (*c.Index < 0 || *c.Index >= maxToolCalls) {
+			return fmt.Sprintf("tool call index %d out of range [0,%d)", *c.Index, maxToolCalls)
+		}
+		n += len(c.Function.Name) + len(c.Function.Arguments) + len(c.ID)
+	}
+	t.aggBytes += n
+	if t.aggBytes > maxAggregateSize {
+		return "task output exceeds the aggregate size limit"
+	}
+	return ""
+}
+
+// storedE2EE restores a task's E2EE mode from its stored request (the
+// request row records {"e2ee": true} for sealed tasks; a cleartext TaskRun
+// has no e2ee member), so a replay after a restart keeps rendering sealed
+// frames as sealed.
+func storedE2EE(req []byte) bool {
+	var p struct {
+		E2EE json.RawMessage `json:"e2ee"`
+	}
+	if json.Unmarshal(req, &p) != nil {
+		return false
+	}
+	v := strings.TrimSpace(string(p.E2EE))
+	return v != "" && v != "null" && v != "false"
 }

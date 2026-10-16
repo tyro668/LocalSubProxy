@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS requests(
   images INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS requests_at ON requests(at);
 CREATE INDEX IF NOT EXISTS requests_tenant_at ON requests(tenant, at);
+CREATE INDEX IF NOT EXISTS requests_gateway_tenant_at ON requests(gateway, tenant, at);
 `
 
 // Status values.
@@ -115,6 +116,8 @@ func (l *Log) Record(ctx context.Context, r Record) error {
 // Filter narrows List and Stats. Zero values match everything.
 type Filter struct {
 	Tenant       string    `json:"tenant,omitempty"`
+	Gateway      string    `json:"gateway,omitempty"`   // issuer origin
+	SaaSName     string    `json:"saas_name,omitempty"` // display name
 	ConnectionID string    `json:"connection_id,omitempty"`
 	Model        string    `json:"model,omitempty"`
 	Status       string    `json:"status,omitempty"`
@@ -129,6 +132,12 @@ func (f Filter) where() (string, []any) {
 	add := func(c string, v any) { w = append(w, c); a = append(a, v) }
 	if f.Tenant != "" {
 		add("tenant=?", f.Tenant)
+	}
+	if f.Gateway != "" {
+		add("gateway=?", f.Gateway)
+	}
+	if f.SaaSName != "" {
+		add("saas_name=?", f.SaaSName)
 	}
 	if f.ConnectionID != "" {
 		add("connection_id=?", f.ConnectionID)
@@ -194,22 +203,27 @@ const (
 
 // Bucket is one aggregated row.
 type Bucket struct {
-	SaaS             string  `json:"saas,omitempty"`
-	SaaSName         string  `json:"saas_name,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	Adapter          string  `json:"adapter,omitempty"`
-	Day              string  `json:"day,omitempty"`
-	Hour             string  `json:"hour,omitempty"`
-	Status           string  `json:"status,omitempty"`
-	Connection       string  `json:"connection,omitempty"`
-	Requests         int64   `json:"requests"`
-	Errors           int64   `json:"errors"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
-	TotalTokens      int64   `json:"total_tokens"`
-	AvgLatencyMS     float64 `json:"avg_latency_ms"`
-	MaxLatencyMS     int64   `json:"max_latency_ms"`
-	Unmetered        int64   `json:"unmetered"` // requests without reported usage
+	SaaS       string `json:"saas,omitempty"`
+	SaaSName   string `json:"saas_name,omitempty"`
+	Gateway    string `json:"gateway,omitempty"` // with saas: one bucket per gateway + tenant
+	Model      string `json:"model,omitempty"`
+	Adapter    string `json:"adapter,omitempty"`
+	Day        string `json:"day,omitempty"`
+	Hour       string `json:"hour,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Connection string `json:"connection,omitempty"`
+	// A device id is only unique per gateway + tenant: a connection bucket
+	// is keyed by all three.
+	ConnectionGateway string  `json:"connection_gateway,omitempty"`
+	ConnectionTenant  string  `json:"connection_tenant,omitempty"`
+	Requests          int64   `json:"requests"`
+	Errors            int64   `json:"errors"`
+	PromptTokens      int64   `json:"prompt_tokens"`
+	CompletionTokens  int64   `json:"completion_tokens"`
+	TotalTokens       int64   `json:"total_tokens"`
+	AvgLatencyMS      float64 `json:"avg_latency_ms"`
+	MaxLatencyMS      int64   `json:"max_latency_ms"`
+	Unmetered         int64   `json:"unmetered"` // requests without reported usage
 }
 
 // Stats aggregates rows. Time buckets are UTC unless local is true.
@@ -232,8 +246,11 @@ func (l *Log) Stats(ctx context.Context, f Filter, groupBy []string, local bool)
 		}
 		seen[g] = true
 		dims, sel, grp = append(dims, g), append(sel, c), append(grp, c)
-		if g == BySaaS {
-			sel = append(sel, "MAX(saas_name)")
+		if g == BySaaS { // tenant ids are only unique per gateway
+			sel, grp = append(sel, "MAX(saas_name)", "gateway"), append(grp, "gateway")
+		}
+		if g == ByConn { // device ids may repeat across gateways
+			sel, grp = append(sel, "gateway", "tenant"), append(grp, "gateway", "tenant")
 		}
 	}
 	w, args := f.where()
@@ -253,7 +270,7 @@ func (l *Log) Stats(ctx context.Context, f Filter, groupBy []string, local bool)
 		for _, g := range dims {
 			switch g {
 			case BySaaS:
-				dst = append(dst, &b.SaaS, &b.SaaSName)
+				dst = append(dst, &b.SaaS, &b.SaaSName, &b.Gateway)
 			case ByModel:
 				dst = append(dst, &b.Model)
 			case ByAdapter:
@@ -265,7 +282,7 @@ func (l *Log) Stats(ctx context.Context, f Filter, groupBy []string, local bool)
 			case ByStatus:
 				dst = append(dst, &b.Status)
 			case ByConn:
-				dst = append(dst, &b.Connection)
+				dst = append(dst, &b.Connection, &b.ConnectionGateway, &b.ConnectionTenant)
 			}
 		}
 		var errs, pt, ct, maxL, unm sql.NullInt64

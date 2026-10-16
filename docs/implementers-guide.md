@@ -11,7 +11,7 @@
 | `spec/asyncapi.yaml` | WebSocket 通道和消息 |
 | `spec/testvectors/vectors.json` | 固定密钥、期望签名和 JWT、正例与反例，以及合法和非法的帧 |
 | `spec/examples/{python,node,rust}` | 关键路径的骨架代码，**都已用测试向量实际运行通过** |
-| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 31 项检查 |
+| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 63 项检查 |
 | `spec/validate.sh` | 一键校验所有契约，并运行示例骨架 |
 
 ### 代码片段的验证状态
@@ -22,7 +22,7 @@
 | Python | `spec/examples/python`：已在 Python 3.13 + cryptography 上运行，60 项全部通过 |
 | Node.js | `spec/examples/node`：已在 Node 20 上运行，只用 `node:crypto`，Schema 校验用 ajv，59 项全部通过 |
 | Rust | `spec/examples/rust`：已在 rustc 1.85 + ed25519-dalek 2 上运行，`cargo test` 通过。完整的模拟网关见 `mock/rust`（不是 SDK） |
-| Java | 下文 Java 片段（Jackson/Spring 写法）**仅为示意，未编译**，需要你自行用测试向量验证。另有可运行的 JDK-only 模拟网关 `mock/java`（不是 SDK），它的 `Lmbp.java` 用 JDK 21 自带的 EdDSA 实现了同样的 JOSE 规则，并通过 `spec/testvectors/jose.json` 与 `lmbp-conformance` |
+| Java | 现成 SDK：`sdk/java`（`lmbp-core` 引擎 + `lmbp-spring-boot-starter`，JDK 21），通过 `spec/testvectors/jose.json`（含全部负例）与 `lmbp-conformance`，见 [sdk/java/README.md](../sdk/java/README.md)。下文 Java 片段（Jackson/Spring 写法）**仍仅为示意，未编译**；自己实现时请用测试向量验证。JDK-only 模拟网关 `mock/java` 也可参考 |
 
 本文中 Go、Python、Node、Rust 的片段摘自上述已运行的文件，或是它们的精简版。
 
@@ -95,7 +95,7 @@
 ### 2.5 背压与并发
 - 每个 WebSocket 连接只能有一个写入者。各语言都需要加写锁或使用发送队列：Go 用 `sync.Mutex`；Node 的 `ws` 自带队列，但要关注 `bufferedAmount`；Python 用 `asyncio.Lock`；Rust 用 `mpsc` 通道。
 - 每个任务的缓冲区要有上限。SSE 客户端跟不上时，取消任务或断开会话，**不要无限缓冲**。Node 中 `res.write` 返回 `false` 时要等待 `drain` 事件。
-- 只要 HTTP 客户端断开，就必须发送 `task.cancel`：Node 监听 `req.on('close')`，Starlette 检查 `await request.is_disconnected()`，Go 监听 `r.Context().Done()`，Spring 用 `SseEmitter.onCompletion`/`onError`。
+- 只要 HTTP 客户端断开，就必须发送 `task.cancel`：Node 监听 `req.on('close')`，Starlette 检查 `await request.is_disconnected()`，Go 监听 `r.Context().Done()`，Spring 用 `SseEmitter.onCompletion`/`onError`（注意：Servlet 容器通常只在写入失败时才发现客户端断开，等待设备期间要定期写 SSE 注释作保活，`sdk/java` 的 Spring 适配默认每 1 秒一次）。
 
 ### 2.6 反向代理
 - Nginx 需要设置 `proxy_set_header Upgrade/Connection`、`proxy_read_timeout 75s`；SSE 需要 `proxy_buffering off`（或在响应头加 `X-Accel-Buffering: no`）。
@@ -136,12 +136,12 @@
    1. 认证租户；
    2. 解析模型路由；
    3. 检查设备并发；
-   4. 构造 `task.run` 载荷，签名后发送 `{v:2,type:"task.run",task_id,jws}`；
+   4. 构造 `task.run` 载荷，签名后发送 `{v:1,type:"task.run",task_id,jws}`；
    5. 把设备回报转换成 SSE；
    6. 客户端断开或超时时发送 `task.cancel`；
    7. 设备断线时任务失败（`DEVICE_OFFLINE`）。
 9. **吊销**：把设备状态改为 `revoked`，并关闭在线会话。
-10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 31 项全部通过。
+10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 63 项全部通过。
 
 ---
 

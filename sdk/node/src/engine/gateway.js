@@ -359,7 +359,7 @@ export class Gateway {
 
   session(ws, dev, tok, claims, iss) {
     const helloTimer = setTimeout(() => ws.terminate(), 15_000);
-    ws.once('message', (raw, isBinary) => {
+    ws.once('message', (raw, isBinary) => guard(ws, this.cfg.log, () => {
       clearTimeout(helloTimer);
       let env, hello;
       try { env = JSON.parse(raw.toString()); hello = env.data; } catch { return ws.close(); }
@@ -373,14 +373,33 @@ export class Gateway {
       } catch { return early('UNAUTHENTICATED', 'invalid key proof'); }
       let caps = intersect(Array.isArray(hello.capabilities) ? hello.capabilities : [], L.CAPABILITIES);
       if (hello.flow != null && caps.includes('flow') && !validFlow(hello.flow)) return early('BAD_REQUEST', `flow windows must be >= max_frame_bytes (${L.MAX_FRAME_BYTES}) and conn_window >= task_window`);
+      const bad = helloProblem(hello);
+      if (bad) return early('BAD_REQUEST', bad);
+      // The device may have been revoked while we awaited the hello: the
+      // upgrade-time snapshot is stale. Re-check before activating (this and
+      // attachSession run synchronously, so no revoke can slip in between).
+      const cur = this.store.getDevice(dev.id);
+      if (!cur || cur.status !== 'active') return early('UNAUTHENTICATED', 'device revoked');
+      dev = cur;
       if (hello.e2ee_key && caps.includes('e2ee')) {
         try { L.verifyE2EEKey(dev.pub, dev.id, hello.e2ee_key); } catch { return early('BAD_REQUEST', 'invalid e2ee key statement'); }
+        if (!this.saveE2EEKey(dev.id, hello.e2ee_key)) return early('UNAUTHENTICATED', 'device revoked');
         dev.e2eeKey = hello.e2ee_key;
-        this.store.putDevice(dev);
       } else caps = caps.filter((c) => c !== 'e2ee');
       const conc = Math.min(Math.max(hello.max_concurrency | 0, 1), this.cfg.maxConc);
       this.attachSession(ws, dev, claims, iss, env, hello, caps, conc);
-    });
+    }));
+  }
+
+  /** Field-only, status-conditional update of a device's E2EE key; false if
+   * the device is gone or revoked (never resurrects a revoked record). */
+  saveE2EEKey(id, key) {
+    if (typeof this.store.setDeviceE2EEKey === 'function') return this.store.setDeviceE2EEKey(id, key) !== false;
+    const cur = this.store.getDevice(id); // synchronous read-modify-write
+    if (!cur || cur.status !== 'active') return false;
+    cur.e2eeKey = key;
+    this.store.putDevice(cur);
+    return true;
   }
 
   attachSession(ws, dev, claims, iss, env, hello, caps, conc) {
@@ -428,7 +447,7 @@ export class Gateway {
     }, this.cfg.pingInterval);
     ds.lastSeen = Date.now();
     ws.on('pong', () => { ds.lastSeen = Date.now(); });
-    ws.on('message', (raw, isBinary) => {
+    ws.on('message', (raw, isBinary) => guard(ws, this.cfg.log, () => {
       ds.lastSeen = Date.now();
       if (isBinary) return ws.close(1003, 'text frames only');
       let inp;
@@ -449,7 +468,7 @@ export class Gateway {
           if (mu && Array.isArray(mu.models) && mu.models.length <= 500) {
             ds.models = mu.models; ds.modelCaps = mu.model_capabilities || {};
             if (mu.max_concurrency >= 1) { ds.maxConc = Math.min(mu.max_concurrency, this.cfg.maxConc); ds.wakeSlots(); }
-            if (mu.e2ee_key && ds.caps.includes('e2ee')) { try { L.verifyE2EEKey(dev.pub, dev.id, mu.e2ee_key); dev.e2eeKey = mu.e2ee_key; this.store.putDevice(dev); } catch { /* ignore */ } }
+            if (mu.e2ee_key && ds.caps.includes('e2ee')) { try { L.verifyE2EEKey(dev.pub, dev.id, mu.e2ee_key); if (this.saveE2EEKey(dev.id, mu.e2ee_key)) dev.e2eeKey = mu.e2ee_key; } catch { /* ignore */ } }
           }
           break;
         }
@@ -457,13 +476,18 @@ export class Gateway {
         case 'pong': break;
         default: ds.sendErr(inp.id, 'BAD_REQUEST', 'unknown message type ' + inp.type);
       }
-    });
+    }));
     ws.on('close', () => {
       clearInterval(ping);
       if (ds.gen !== gen) return; // replaced by a newer connection
       ds.out.attach(null);
       ds.ws = null;
-      if (!ds.caps.includes('resume') || ds.dropped) return this.dropDevice(dev.id, 'DEVICE_OFFLINE', 'device disconnected');
+      // only drop the registry entry this connection owns (a newer,
+      // non-resumed connection has its own DState by now)
+      if (!ds.caps.includes('resume') || ds.dropped) {
+        if (this.devs.get(dev.id) === ds) return this.dropDevice(dev.id, 'DEVICE_OFFLINE', 'device disconnected');
+        return ds.drop('DEVICE_OFFLINE', 'device disconnected');
+      }
       setTimeout(() => {
         if (ds.gen === gen && !ds.ws) {
           if (this.devs.get(dev.id) === ds) this.devs.delete(dev.id);
@@ -656,7 +680,7 @@ export class Gateway {
     let task;
     try {
       // One atomic write: a key never exists without its task.
-      this.store.createTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [] },
+      this.store.createTask({ id: taskID, tenant: a.t.id, owner: a.user, device: ds.deviceID, model, state: 'QUEUED', events: [], e2ee: !!run.e2ee },
         idemKey ? { tenant: a.t.id, owner: a.user, key: idemKey, rec: { tenant: a.t.id, owner: a.user, taskID, bodyHash } } : undefined);
     } catch (e) {
       if (e?.name === 'StoreConflict' && idemKey) { // a concurrent request took the key first
@@ -674,12 +698,19 @@ export class Gateway {
     if (!got || !ds.connected() || task.done) {
       if (got) ds.release();
       res.setHeader('X-Task-Id', taskID);
-      if (!ds.connected()) { task.failLocal('DEVICE_OFFLINE', 'device disconnected', true); return err(503, 'DEVICE_OFFLINE', 'device disconnected'); }
-      if (task.done) return this.serve(req, res, task, 0, !!r.stream, abort.signal, anthropic);
-      task.failLocal('DEVICE_BUSY', 'device is at max concurrency', true);
-      if (abort.signal.aborted) return;
-      res.setHeader('Retry-After', '2');
-      return err(429, 'DEVICE_BUSY', 'device is at max concurrency');
+      // Review7 #10/#15: report only a decided local outcome; a caller gone
+      // while queued records CANCELLED; otherwise serve the recorded winner.
+      if (!task.done) {
+        if (abort.signal.aborted) {
+          if (task.failLocal('CANCELLED', 'client disconnected while queued', false)) return;
+        } else if (!ds.connected()) {
+          if (task.failLocal('DEVICE_OFFLINE', 'device disconnected', true)) return err(503, 'DEVICE_OFFLINE', 'device disconnected');
+        } else if (task.failLocal('DEVICE_BUSY', 'device is at max concurrency', true)) {
+          res.setHeader('Retry-After', '2');
+          return err(429, 'DEVICE_BUSY', 'device is at max concurrency');
+        }
+      }
+      return this.serve(req, res, task, 0, !!r.stream, abort.signal, anthropic);
     }
     task.slot = true;
     this.setTaskState(taskID, 'RUNNING');
@@ -865,7 +896,7 @@ class Task {
   }
   static finished(g, rec, reqModel) {
     const t = Object.create(Task.prototype);
-    Object.assign(t, { g, ds: null, id: rec.id, reqModel, e2ee: false, replayed: true, created: L.now(), events: [...rec.events], waiters: [], done: true, subs: new Map(), nextSub: 0 });
+    Object.assign(t, { g, ds: null, id: rec.id, reqModel, e2ee: !!rec.e2ee, replayed: true, created: L.now(), events: [...rec.events], waiters: [], done: true, subs: new Map(), nextSub: 0 });
     // Recovery decides from a consistent terminal state: the last event is
     // terminal AND the stored state agrees (finishTask writes both
     // atomically). Otherwise (no terminal event, or a legacy row whose event
@@ -961,8 +992,9 @@ class Task {
     if (this.ds && this.sentRun) this.ds.control(envelope('task.cancel', { task_id: this.id, data: { reason } }));
   }
   failLocal(code, msg, retryable = false) {
-    if (!this.decide()) return;
+    if (!this.decide()) return false;
     this.commitLocal(code, msg, retryable);
+    return true;
   }
   // The caller holds the decision. The seq follows every device seq seen.
   commitLocal(code, msg, retryable = false) {
@@ -1175,3 +1207,38 @@ const WEB_FILES = {
 const WEB_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 export { WEB_FILES, WEB_CSP, Task, errStatus };
+
+// guard isolates a WebSocket message handler: an exception closes only the
+// offending connection instead of escaping to the process (uncaught).
+function guard(ws, log, fn) {
+  try { fn(); } catch (e) {
+    try { log(`lmbp: closing connection after handler error: ${e && e.message}`); } catch { /* logger failed */ }
+    try { ws.close(1011, 'internal error'); } catch { try { ws.terminate(); } catch { /* gone */ } }
+  }
+}
+
+const isStr = (v) => typeof v === 'string';
+const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// helloProblem validates every hello field the gateway reads, before any
+// state is touched. Returns a message, or '' when the hello is well-formed.
+function helloProblem(h) {
+  if (h.models !== undefined && (!Array.isArray(h.models) || h.models.length > 500 || !h.models.every(isStr))) return 'hello.models must be an array of <= 500 strings';
+  if (h.model_capabilities !== undefined && !isObj(h.model_capabilities)) return 'hello.model_capabilities must be an object';
+  if (h.capabilities !== undefined && (!Array.isArray(h.capabilities) || !h.capabilities.every(isStr))) return 'hello.capabilities must be an array of strings';
+  if (h.max_concurrency !== undefined && !Number.isInteger(h.max_concurrency)) return 'hello.max_concurrency must be an integer';
+  if (h.e2ee_key !== undefined && h.e2ee_key !== null && !isStr(h.e2ee_key)) return 'hello.e2ee_key must be a string';
+  if (h.flow !== undefined && h.flow !== null && !isObj(h.flow)) return 'hello.flow must be an object';
+  if (h.resume !== undefined && h.resume !== null) {
+    const r = h.resume;
+    if (!isObj(r)) return 'hello.resume must be an object';
+    if (r.token !== undefined && !isStr(r.token)) return 'hello.resume.token must be a string';
+    if (r.tasks !== undefined) {
+      if (!Array.isArray(r.tasks) || r.tasks.length > 10000) return 'hello.resume.tasks must be an array';
+      for (const t of r.tasks) {
+        if (!isObj(t) || !isStr(t.task_id) || !Number.isInteger(t.recv_seq) || t.recv_seq < 0) return 'hello.resume.tasks[] must be {task_id: string, recv_seq: integer >= 0}';
+      }
+    }
+  }
+  return '';
+}

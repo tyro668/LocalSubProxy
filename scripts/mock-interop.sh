@@ -5,7 +5,7 @@
 #   scripts/mock-interop.sh            # node python go
 #   scripts/mock-interop.sh java rust  # the dependency-free JDK / Rust ports
 #   scripts/mock-interop.sh node       # just one
-#   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi   # SDK variants
+#   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi spring-boot spring-boot-sqlite   # SDK variants
 set -euo pipefail
 cd "$(dirname "$0")/.."
 impls=("${@:-node python go}")
@@ -42,6 +42,11 @@ start() { # impl port
     rust)
       (cd mock/rust && cargo build -q --release)
       mock/rust/target/release/lmbp-mock --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json >"$tmp/$impl.log" 2>&1 & ;;
+    spring-boot|spring-boot-sqlite)   # sdk/java: lmbp-spring-boot-starter in examples/spring-boot-demo
+      (cd sdk/java && mvn -B -q -DskipTests install) >"$tmp/$impl.build" 2>&1 || { echo "$impl build failed:"; tail -40 "$tmp/$impl.build"; exit 1; }
+      store=memory; [ "$impl" = spring-boot-sqlite ] && store="jdbc:sqlite:$tmp/spring.db"
+      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LMBP_STORE=$store \
+        java -jar examples/spring-boot-demo/target/spring-boot-demo-0.1.0-SNAPSHOT.jar >"$tmp/$impl.log" 2>&1 & ;;
     express)
       (cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build)
       (cd examples/express && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
@@ -59,7 +64,7 @@ start() { # impl port
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
   pids+=($!)
-  for _ in $(seq 50); do curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && return; sleep 0.2; done
+  for _ in $(seq 150); do curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && return; sleep 0.2; done
   echo "$impl did not start:"; cat "$tmp/$impl.log"; exit 1
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -106,17 +107,7 @@ type codexRPC struct {
 	ctx              context.Context
 }
 
-func limitedEnvironment() []string {
-	allowed := map[string]bool{"HOME": true, "USER": true, "PATH": true, "TMPDIR": true, "LANG": true, "LC_ALL": true, "CODEX_HOME": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "HTTPS_PROXY": true, "HTTP_PROXY": true, "NO_PROXY": true, "https_proxy": true, "http_proxy": true, "no_proxy": true}
-	var env []string
-	for _, entry := range os.Environ() {
-		key, _, ok := strings.Cut(entry, "=")
-		if ok && allowed[key] {
-			env = append(env, entry)
-		}
-	}
-	return env
-}
+func limitedEnvironment() []string { return limitedEnvironmentFor(runtime.GOOS, os.Environ()) }
 
 func startCodex(ctx context.Context, bin string) (*codexRPC, func(), error) {
 	dir, err := os.MkdirTemp("", "localsubproxy-codex-*")
@@ -130,11 +121,14 @@ func startCodex(ctx context.Context, bin string) (*codexRPC, func(), error) {
 		"-c", "features.multi_agent=false", "-c", "features.remote_plugin=false",
 		"-c", "agents.enabled=false", "-c", "web_search=\"disabled\"",
 		"-c", "mcp_servers={}", "-c", "shell_environment_policy.inherit=\"none\""}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	spec := codexLaunch(runtime.GOOS, os.Getenv("ComSpec"), bin, args)
+	cmd := exec.CommandContext(ctx, spec.Path)
+	cmd.Args = spec.Args
 	cmd.Dir = dir
 	cmd.Env = limitedEnvironment()
 	cmd.Stderr = io.Discard
 	setProcessGroup(cmd)
+	setCmdLine(cmd, spec.CmdLine)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cleanup()

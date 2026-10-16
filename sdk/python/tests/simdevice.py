@@ -32,10 +32,12 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
+    if before_hello is not None:  # e.g. revoke while the gateway awaits the hello
+        await before_hello()
     await ws.send(json.dumps({"v": 1, "type": "hello", "id": "h1", "data": {
         "device_id": tok["device_id"], "client": "sdk-test", "models": list(models), "model_capabilities": {m: ["tools"] for m in models},
         "max_concurrency": max_concurrency, "capabilities": (["tools", "e2ee"] if x else ["tools"]) + (["flow"] if flood else []),
