@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:shadcn_flutter/shadcn_flutter.dart';
+import 'app_dialog.dart';
 
 import 'native_api.dart';
 import 'status_contract.dart';
@@ -256,7 +257,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     final result = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => AppDialog(
           title: Text(title),
           content: Text(message),
           actions: [
@@ -339,7 +340,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     await showOverlay<void>(
       context,
       DialogConfiguration<void>(
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => AppDialog(
           title: Text(a['name'] as String? ?? '方案'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -370,12 +371,6 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               ),
             ],
           ),
-          actions: [
-            OutlineButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('关闭'),
-            ),
-          ],
         ),
       ),
     ).future;
@@ -386,7 +381,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     final result = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => AppDialog(
           title: const Text('重命名方案'),
           content: SizedBox(width: 360, child: TextField(controller: input)),
           actions: [
@@ -1065,7 +1060,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     final result = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => AppDialog(
           title: const Text('自定义模型'),
           content: SizedBox(
             width: 380,

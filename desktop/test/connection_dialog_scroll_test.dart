@@ -113,7 +113,9 @@ void main() {
             reason: 'no RenderFlex overflow',
           );
           final window = Offset.zero & size;
-          final dialog = tester.getRect(find.byType(AlertDialog));
+          final dialog = tester.getRect(
+            find.byKey(const ValueKey('app-dialog')),
+          );
           expect(
             dialog.top >= 0 && dialog.bottom <= size.height,
             isTrue,
@@ -140,7 +142,7 @@ void main() {
           expect(list, findsOneWidget);
           expect(
             find.descendant(
-              of: find.byType(AlertDialog),
+              of: find.byKey(const ValueKey('app-dialog')),
               matching: find.byType(Scrollbar),
             ),
             findsWidgets,
@@ -164,7 +166,10 @@ void main() {
               isTrue,
             );
           }
-          expect(tester.getRect(find.byType(AlertDialog)).height, dialogH);
+          expect(
+            tester.getRect(find.byKey(const ValueKey('app-dialog'))).height,
+            dialogH,
+          );
           if (n == 10) {
             expect(
               pos.maxScrollExtent,

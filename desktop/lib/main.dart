@@ -6,6 +6,8 @@ import 'package:window_manager/window_manager.dart';
 
 import 'native_api.dart';
 import 'status_contract.dart';
+import 'app_dialog.dart';
+export 'app_dialog.dart';
 import 'profile_workspace.dart';
 import 'tray.dart';
 
@@ -163,7 +165,7 @@ class _HomePageState extends State<HomePage> {
     final yes = await showOverlay<bool>(
       context,
       DialogConfiguration<bool>(
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => AppDialog(
           title: Text(title),
           content: Text(message),
           actions: [
@@ -417,8 +419,9 @@ class _HomePageState extends State<HomePage> {
       context,
       DialogConfiguration<bool>(
         builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setLocal) => AlertDialog(
+          builder: (ctx, setLocal) => AppDialog(
             title: Text('「${c.title}」可用模型'),
+            maxWidth: 540,
             content: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 460),
               child: ModelChecklist(
@@ -1154,67 +1157,11 @@ class DialogFrame extends StatelessWidget {
   final bool scrollContent;
 
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: BoxConstraints(maxWidth: maxWidth),
-    child: AlertDialog(
-      title: Row(
-        children: [
-          Expanded(child: Text(title)),
-          IconButton.ghost(
-            density: ButtonDensity.icon,
-            icon: const Icon(LucideIcons.x),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-        ],
-      ),
-      // AlertDialog lays content out with unbounded height and clips it,
-      // so bound it by the window here: otherwise long content (e.g. many
-      // connections) is cut off and can never be scrolled into view.
-      content: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: (MediaQuery.sizeOf(context).height - reservedHeight).clamp(
-            120.0,
-            double.infinity,
-          ),
-        ),
-        child: scrollContent ? ScrollArea(child: child) : child,
-      ),
-    ),
-  );
-
-  /// Window height not available to dialog content: modal margin, dialog
-  /// padding, title row and gaps.
-  static const reservedHeight = 150.0;
-}
-
-/// Vertical scroll view with a visible scrollbar.
-class ScrollArea extends StatefulWidget {
-  const ScrollArea({super.key, required this.child, this.scrollKey});
-  final Widget child;
-  final Key? scrollKey;
-
-  @override
-  State<ScrollArea> createState() => _ScrollAreaState();
-}
-
-class _ScrollAreaState extends State<ScrollArea> {
-  final controller = ScrollController();
-
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Scrollbar(
-    controller: controller,
-    thumbVisibility: true,
-    child: SingleChildScrollView(
-      key: widget.scrollKey,
-      controller: controller,
-      child: widget.child,
-    ),
+  Widget build(BuildContext context) => AppDialog(
+    title: Text(title),
+    maxWidth: maxWidth,
+    scrollContent: scrollContent,
+    content: child,
   );
 }
 
@@ -1493,8 +1440,9 @@ class _AdapterDialogState extends State<AdapterDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final creating = widget.existing == null;
-    return AlertDialog(
+    return AppDialog(
       title: Text(creating ? '添加适配器' : '编辑适配器'),
+      maxWidth: 540,
       content: DefaultTextStyle(
         style: theme.typography.small.copyWith(
           color: theme.colorScheme.foreground,
