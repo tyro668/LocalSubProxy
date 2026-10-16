@@ -557,7 +557,11 @@ func toolInput(args string) any {
 func anthropicModels(w http.ResponseWriter, data []map[string]any) {
 	out := []any{}
 	for _, m := range data {
-		out = append(out, map[string]any{"type": "model", "id": m["id"], "display_name": m["id"], "created_at": "1970-01-01T00:00:00Z"})
+		dn := m["id"]
+		if n, ok := m["display_name"].(string); ok && n != "" {
+			dn = n
+		}
+		out = append(out, map[string]any{"type": "model", "id": m["id"], "display_name": dn, "created_at": "1970-01-01T00:00:00Z"})
 	}
 	var first, last any
 	if len(out) > 0 {

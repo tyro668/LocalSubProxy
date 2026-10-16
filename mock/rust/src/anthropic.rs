@@ -197,7 +197,7 @@ pub fn to_openai(inp: &Obj) -> Result<Value, String> {
 }
 
 pub fn models_list(data: &[Value]) -> Value {
-    let out: Vec<Value> = data.iter().map(|m| obj! {"type" => "model", "id" => get(m, "id").clone(), "display_name" => get(m, "id").clone(), "created_at" => "1970-01-01T00:00:00Z"}).collect();
+    let out: Vec<Value> = data.iter().map(|m| obj! {"type" => "model", "id" => get(m, "id").clone(), "display_name" => if get(m, "display_name").as_str().is_some_and(|s| !s.is_empty()) { get(m, "display_name").clone() } else { get(m, "id").clone() }, "created_at" => "1970-01-01T00:00:00Z"}).collect();
     obj! {"data" => out, "has_more" => false, "first_id" => data.first().map(|m| get(m, "id").clone()).unwrap_or(Value::Null),
         "last_id" => data.last().map(|m| get(m, "id").clone()).unwrap_or(Value::Null)}
 }

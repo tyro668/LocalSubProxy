@@ -37,6 +37,12 @@ type CapabilityReporter interface {
 	ModelCapabilities() map[string][]string
 }
 
+// NameReporter is optionally implemented by executors to advertise a
+// display name per model id (lmbp model_names).
+type NameReporter interface {
+	ModelNames() map[string]string
+}
+
 // Identity is what a paired device must persist. PrivateKey must be stored
 // securely by the caller (the desktop core encrypts it at rest).
 type Identity struct {

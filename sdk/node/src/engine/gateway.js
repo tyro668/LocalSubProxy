@@ -302,7 +302,7 @@ export class Gateway {
         public_key: L.publicJWK(d.pub), jkt: L.thumbprint(d.pub) };
       if (d.e2eeKey) item.e2ee_key = d.e2eeKey;
       const s = this.online(d.id);
-      if (s) Object.assign(item, { online: true, models: [...s.models], model_capabilities: { ...s.modelCaps }, capabilities: [...s.caps], max_concurrency: s.maxConc });
+      if (s) Object.assign(item, { online: true, models: [...s.models], model_capabilities: { ...s.modelCaps }, ...(Object.keys(s.modelNames || {}).length ? { model_names: { ...s.modelNames } } : {}), capabilities: [...s.caps], max_concurrency: s.maxConc });
       return item;
     });
     return json(res, 200, { devices: out });
@@ -410,7 +410,7 @@ export class Gateway {
     if (!resumed) this.devs.set(dev.id, ds);
     const prev = ds.ws;
     const gen = ++ds.gen;
-    Object.assign(ds, { ws, models: Array.isArray(hello.models) ? hello.models : [], modelCaps: hello.model_capabilities || {}, caps, maxConc: conc,
+    Object.assign(ds, { ws, models: Array.isArray(hello.models) ? hello.models : [], modelCaps: hello.model_capabilities || {}, modelNames: cleanNames(hello.model_names, hello.models), caps, maxConc: conc,
       tokenExp: claims.exp, issuer: iss, resumeToken: L.randomID('rt_') });
     if (!ds.inb) ds.inb = new L.Inbound(caps.includes('flow') ? this.cfg.flow : null);
     else ds.inb.resetWindows();
@@ -466,7 +466,7 @@ export class Gateway {
         case 'models.update': {
           const mu = inp.data;
           if (mu && Array.isArray(mu.models) && mu.models.length <= 500) {
-            ds.models = mu.models; ds.modelCaps = mu.model_capabilities || {};
+            ds.models = mu.models; ds.modelCaps = mu.model_capabilities || {}; ds.modelNames = cleanNames(mu.model_names, mu.models);
             if (mu.max_concurrency >= 1) { ds.maxConc = Math.min(mu.max_concurrency, this.cfg.maxConc); ds.wakeSlots(); }
             if (mu.e2ee_key && ds.caps.includes('e2ee')) { try { L.verifyE2EEKey(dev.pub, dev.id, mu.e2ee_key); if (this.saveE2EEKey(dev.id, mu.e2ee_key)) dev.e2eeKey = mu.e2ee_key; } catch { /* ignore */ } }
           }
@@ -549,7 +549,11 @@ export class Gateway {
     for (const d of this.ownDevices(a.t.id, a.user)) {
       const s = this.online(d.id);
       if (!s || d.status !== 'active') continue;
-      for (const m of s.models) data.push({ id: `${d.id}/${m}`, object: 'model', owned_by: d.name, capabilities: s.modelCaps[m] || [] });
+      for (const m of s.models) {
+        const item = { id: `${d.id}/${m}`, object: 'model', owned_by: d.name, capabilities: s.modelCaps[m] || [] };
+        if (s.modelNames && s.modelNames[m]) item.display_name = s.modelNames[m];
+        data.push(item);
+      }
     }
     if (req.headers['anthropic-version']) return json(res, 200, A.modelsList(data));
     return json(res, 200, { object: 'list', data });
@@ -865,7 +869,7 @@ const MAX_RECLAIMED = 1024;
 class DState {
   constructor(g, dev) {
     Object.assign(this, { g, deviceID: dev.id, tenant: dev.tenant, owner: dev.owner, out: new L.Outbox(), inb: null, ws: null, gen: 0,
-      models: [], modelCaps: {}, caps: [], maxConc: 1, tokenExp: 0, issuer: '', resumeToken: '', tasks: new Map(), reclaimed: new Map(), slots: 0, slotWait: [], dropped: false, lastSeen: Date.now() });
+      models: [], modelCaps: {}, modelNames: {}, caps: [], maxConc: 1, tokenExp: 0, issuer: '', resumeToken: '', tasks: new Map(), reclaimed: new Map(), slots: 0, slotWait: [], dropped: false, lastSeen: Date.now() });
   }
   connected() { return !!this.ws && !this.dropped; }
   control(e) {
@@ -1280,4 +1284,15 @@ function helloProblem(h) {
     }
   }
   return '';
+}
+
+// cleanNames keeps optional display names (model_names) only for advertised models.
+function cleanNames(names, models) {
+  const out = {};
+  if (!names || typeof names !== 'object' || Array.isArray(names) || !Array.isArray(models)) return out;
+  for (const m of models) {
+    const n = typeof names[m] === 'string' ? names[m].trim() : '';
+    if (n) out[m] = [...n].slice(0, 128).join('');
+  }
+  return out;
 }

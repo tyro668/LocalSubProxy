@@ -424,6 +424,8 @@ class _HomePageState extends State<HomePage> {
               child: ModelChecklist(
                 models: [for (final e in entries) e.id],
                 notes: {for (final e in entries) e.id: e.note},
+                labels: {for (final e in entries) e.id: e.label},
+                details: {for (final e in entries) e.id: e.detail},
                 selected: selected,
                 lockedBy: (m) => coveredByWildcard(m, selected),
                 onChanged: (m, v) =>
@@ -675,6 +677,11 @@ class _HomePageState extends State<HomePage> {
             const Gap(6),
             ModelChecklist(
               models: consentModels,
+              labels: schemeLabels(adapters),
+              details: {
+                for (final m in consentModels)
+                  if (m.contains('/')) m: m.substring(m.indexOf('/') + 1),
+              },
               selected: consentAllow,
               onChanged: (m, v) => setState(
                 () => v ? consentAllow.add(m) : consentAllow.remove(m),
@@ -803,6 +810,7 @@ class _HomePageState extends State<HomePage> {
             const Gap(14),
             for (final c in ds.connections) ...[
               _ConnectionTile(
+                adapters: adapters,
                 c: c,
                 busy: busy,
                 onToggle: () => connectionAction(
@@ -825,16 +833,11 @@ class _HomePageState extends State<HomePage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _StepHeader(
-              icon: LucideIcons.link,
-              title: '连接远端服务',
-            ),
+            const _StepHeader(icon: LucideIcons.link, title: '连接远端服务'),
             const Gap(14),
             TextField(
               controller: remoteUrl,
-              placeholder: const Text(
-                '输入服务地址（https://…）或配对链接（lmbp://pair?…）',
-              ),
+              placeholder: const Text('输入服务地址（https://…）或配对链接（lmbp://pair?…）'),
               features: const [InputFeature.clear()],
               onSubmitted: (_) {
                 if (!busy) prepareConnection();
@@ -1095,10 +1098,7 @@ class _StepHeader extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(title).medium(),
-              if (desc != null) ...[
-                const Gap(3),
-                Text(desc!).xSmall().muted(),
-              ],
+              if (desc != null) ...[const Gap(3), Text(desc!).xSmall().muted()],
             ],
           ),
         ),
@@ -1519,14 +1519,34 @@ class _ConsentView extends StatelessWidget {
 
 /// Checkbox list of local models ("adapter/model") for one SaaS.
 class ModelChecklist extends StatelessWidget {
+  Widget _label(String m, String note) {
+    final l = (labels[m] ?? '').isEmpty ? m : labels[m]!;
+    final main = Text(note.isEmpty ? l : '$l  · $note').small();
+    final d = details[m] ?? '';
+    if (d.isEmpty || d == l) return main;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [main, Text(d).xSmall().muted()],
+    );
+  }
+
   const ModelChecklist({
     super.key,
     required this.models,
     required this.selected,
     required this.onChanged,
     this.notes = const {},
+    this.labels = const {},
+    this.details = const {},
     this.lockedBy,
   });
+
+  /// Display only: scheme name per stored id (falls back to the id).
+  final Map<String, String> labels;
+
+  /// Display only: small secondary text per id (e.g. the upstream model).
+  final Map<String, String> details;
 
   final List<String> models;
   final Set<String> selected;
@@ -1560,7 +1580,7 @@ class ModelChecklist extends StatelessWidget {
                   onChanged: locked
                       ? null
                       : (v) => onChanged(m, v == CheckboxState.checked),
-                  trailing: Text(note.isEmpty ? m : '$m  · $note').small(),
+                  trailing: _label(m, note),
                 );
               },
             ),
@@ -1574,6 +1594,7 @@ class ModelChecklist extends StatelessWidget {
 class _ConnectionTile extends StatelessWidget {
   const _ConnectionTile({
     required this.c,
+    this.adapters = const [],
     required this.busy,
     required this.onToggle,
     required this.onRevoke,
@@ -1581,6 +1602,7 @@ class _ConnectionTile extends StatelessWidget {
   });
 
   final ConnectionInfo c;
+  final List<Map<String, dynamic>> adapters;
   final bool busy;
   final VoidCallback onToggle;
   final VoidCallback onRevoke;
@@ -1594,11 +1616,7 @@ class _ConnectionTile extends StatelessWidget {
         : (c.state == 'revoked' || c.state == 'error')
         ? theme.colorScheme.destructive
         : theme.colorScheme.mutedForeground;
-    final allow = c.allow.isEmpty
-        ? '未授权任何模型'
-        : c.allow.contains('*')
-        ? '全部本机模型'
-        : c.allow.join(', ');
+    final allow = allowSummary(c.allow, adapters);
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: theme.colorScheme.border),

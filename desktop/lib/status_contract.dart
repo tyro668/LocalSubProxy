@@ -168,7 +168,13 @@ class DesktopStatus {
 
 /// One row of the per-connection model permission editor.
 class PolicyEntry {
-  const PolicyEntry(this.id, this.note);
+  const PolicyEntry(this.id, this.note, {this.label = '', this.detail = ''});
+
+  /// Display only (never stored): the scheme name, e.g. "gpt-6.1-sol_1".
+  final String label;
+
+  /// Display only: secondary text, e.g. the upstream model "gpt-6.1-sol".
+  final String detail;
 
   /// "adapter/model", "adapter/*" or "*" — exactly what is stored in allow.
   final String id;
@@ -189,10 +195,17 @@ List<PolicyEntry> policyEntries(
 ) {
   final out = <PolicyEntry>[];
   final seen = <String>{};
+  final labels = schemeLabels(adapters);
+  final names = schemeNames(adapters);
   for (final e in allow) {
     if ((e == '*' || e.endsWith('/*')) && seen.add(e)) {
+      final scheme = e == '*' ? '' : names[e.substring(0, e.length - 2)] ?? '';
       out.add(
-        PolicyEntry(e, e == '*' ? '通配：全部本机模型，含以后新增和停用的' : '通配：该方案全部模型，含以后新增的'),
+        PolicyEntry(
+          e,
+          e == '*' ? '通配：全部本机模型，含以后新增和停用的' : '通配：该方案全部模型，含以后新增的',
+          label: e == '*' ? '全部本机模型' : (scheme.isEmpty ? e : '$scheme · 全部模型'),
+        ),
       );
     }
   }
@@ -201,7 +214,14 @@ List<PolicyEntry> policyEntries(
         in (a['models'] as List?)?.cast<String>() ?? const <String>[]) {
       final id = '${a['id']}/$m';
       if (seen.add(id)) {
-        out.add(PolicyEntry(id, a['enabled'] == true ? '' : '方案已停用（授权保留）'));
+        out.add(
+          PolicyEntry(
+            id,
+            a['enabled'] == true ? '' : '方案已停用（授权保留）',
+            label: labels[id] ?? id,
+            detail: m,
+          ),
+        );
       }
     }
   }
@@ -240,3 +260,75 @@ List<({String text, bool error})> revokeOutcome(
 /// can simply retry; otherwise the UI must restart pairing.
 bool approveRetryable(Map<String, dynamic>? pairStatus) =>
     pairStatus?['state'] == 'consent';
+
+/// Scheme (adapter) id -> trimmed display name ("" when unnamed).
+Map<String, String> schemeNames(List<Map<String, dynamic>> adapters) => {
+  for (final a in adapters) '${a['id']}': '${a['name'] ?? ''}'.trim(),
+};
+
+/// Display label per stored model id ("adapter/model"): the scheme name,
+/// plus the model when a scheme serves several, and the adapter id when two
+/// schemes still share a name (older configs). Falls back to the id.
+/// Display only: allow lists and requests keep the ids.
+Map<String, String> schemeLabels(List<Map<String, dynamic>> adapters) {
+  final raw = <String, String>{};
+  for (final a in adapters) {
+    final name = '${a['name'] ?? ''}'.trim();
+    final models = (a['models'] as List?)?.cast<String>() ?? const <String>[];
+    for (final m in models) {
+      final id = '${a['id']}/$m';
+      raw[id] = name.isEmpty ? id : (models.length > 1 ? '$name · $m' : name);
+    }
+  }
+  final count = <String, int>{};
+  for (final v in raw.values) {
+    count[v.toLowerCase()] = (count[v.toLowerCase()] ?? 0) + 1;
+  }
+  return {
+    for (final e in raw.entries)
+      e.key: (count[e.value.toLowerCase()] ?? 0) > 1 && e.value != e.key
+          ? '${e.value} (${e.key.split('/').first})'
+          : e.value,
+  };
+}
+
+/// The allow list as readable text for the connection tile.
+String allowSummary(List<String> allow, List<Map<String, dynamic>> adapters) {
+  if (allow.isEmpty) return '未授权任何模型';
+  if (allow.contains('*')) return '全部本机模型';
+  final byId = {for (final e in policyEntries(adapters, allow)) e.id: e.label};
+  return allow.map((e) => (byId[e] ?? '').isEmpty ? e : byId[e]!).join(', ');
+}
+
+/// Default name for a new scheme: the model itself when free, else `<model>_<n>` with the smallest n >= 2
+/// not used by another scheme (trimmed, case-insensitive), so a new scheme
+/// usually needs no renaming. Mirrors connector.DefaultSchemeName.
+String defaultSchemeName(String model, Iterable<String> taken) {
+  var m = model.trim();
+  if (m.isEmpty) m = 'scheme';
+  if (m.runes.length > 90) m = String.fromCharCodes(m.runes.take(90));
+  final used = {for (final t in taken) t.trim().toLowerCase()};
+  if (!used.contains(m.toLowerCase())) return m;
+  for (var n = 2; ; n++) {
+    final c = '${m}_$n';
+    if (!used.contains(c.toLowerCase())) return c;
+  }
+}
+
+/// Inline validation for a scheme name; null when acceptable. exceptId is
+/// the scheme being edited (its own name never conflicts).
+String? schemeNameError(
+  String name,
+  List<Map<String, dynamic>> adapters, {
+  String? exceptId,
+}) {
+  final k = name.trim().toLowerCase();
+  if (k.isEmpty) return null; // the kernel fills a default
+  for (final a in adapters) {
+    if (exceptId != null && '${a['id']}' == exceptId) continue;
+    if ('${a['name'] ?? ''}'.trim().toLowerCase() == k) {
+      return '名称「${name.trim()}」已被其他方案使用';
+    }
+  }
+  return null;
+}

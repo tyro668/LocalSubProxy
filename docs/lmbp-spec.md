@@ -260,7 +260,7 @@
 | 接口 | 作用 |
 |---|---|
 | `POST /lmbp/v1/tenant/devices/approvals` `{user_code, jkt?, deny?}` | 确认或拒绝配对码；设备归属于 `X-End-User`。带 `jkt` 时与设备公钥指纹不符 MUST 返回 409（§17.2） |
-| `GET /lmbp/v1/tenant/devices` | 列出该终端用户的设备：`created_at`（RFC 3339）、`public_key`、`jkt`、`e2ee_key`、在线时还有 `model_capabilities`、`capabilities`、`max_concurrency` |
+| `GET /lmbp/v1/tenant/devices` | 列出该终端用户的设备：`created_at`（RFC 3339）、`public_key`、`jkt`、`e2ee_key`、在线时还有 `model_capabilities`、`model_names`（可选）、`capabilities`、`max_concurrency` |
 | `GET /lmbp/v1/tenant/tasks/{task}/events` | 按 `Last-Event-ID` 重新接入任务的 SSE 流（§14.4） |
 | `POST /lmbp/v1/tenant/devices/{device}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
 
@@ -606,6 +606,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 ### 16.1 tools
 - `hello`/`models.update` 的 `model_capabilities` 为每个模型声明 `tools`、`vision`、`audio` 中的若干项。`GET /v1/models` MUST 返回每个模型的 `capabilities`。
+- `hello`/`models.update` 可选携带 `model_names`：`{模型 id: 显示名}`（显示名 1..128 字符，例如桌面端的方案名）。仅用于展示：网关 SHOULD 在 `GET /v1/models` 条目中以 `display_name` 返回（Anthropic 形状的 `display_name` 也用它，缺省为 id），在设备列表中以 `model_names` 返回；请求 MUST 仍使用模型 id。网关 MUST 忽略未出现在 `models` 中的条目；未携带时行为与旧版一致。
 - 请求带 `tools` 而目标模型未声明 `tools`、或设备未协商 `tools` 能力时，网关 MUST 返回 400 `CAPABILITY_UNSUPPORTED`，MUST NOT 下发任务。
 - `tools`、`tool_choice` 原样放入签名的 `task.run`。设备在 `task.delta.tool_calls` 中按 OpenAI 流式格式回报（`index` 区分调用，`arguments` 可分片），以 `finish_reason: "tool_calls"` 结束。网关 MUST 透传为 SSE `delta.tool_calls`；非流式响应 MUST 按 `index` 合并成 `message.tool_calls`。
 - 后续请求中的 `role: "assistant"`+`tool_calls` 和 `role: "tool"`+`tool_call_id` 消息 MUST 原样转给设备。

@@ -167,7 +167,7 @@ export class LMBPServer {
     listDevices: (tenant: string, endUser: string): DeviceInfo[] => this.store.listDevices(tenant, endUser).map((d) => {
       const s = this.engine.online(d.id);
       return { deviceId: d.id, name: d.name, status: d.status, createdAt: d.created, jkt: L.thumbprint(d.pub), online: !!s,
-        models: s ? [...s.models] : [], modelCapabilities: s ? { ...s.modelCaps } : {}, publicKey: Buffer.from(d.pub), e2eeKey: d.e2eeKey || '' };
+        models: s ? [...s.models] : [], modelCapabilities: s ? { ...s.modelCaps } : {}, modelNames: s ? { ...(s.modelNames || {}) } : {}, publicKey: Buffer.from(d.pub), e2eeKey: d.e2eeKey || '' };
     }),
     /** Revoke a device: its session ends immediately and refresh is refused. */
     revokeDevice: (tenant: string, endUser: string, deviceId: string): boolean => this.engine.revokeDevice(tenant, endUser, deviceId),

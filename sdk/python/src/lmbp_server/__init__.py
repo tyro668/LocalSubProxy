@@ -76,6 +76,7 @@ class DeviceInfo:
     model_capabilities: dict[str, list[str]]
     public_key: bytes = b""  # Ed25519 identity key (check against your pinned jkt)
     e2ee_key: str = ""       # device-signed X25519 key statement, for seal_e2ee_request
+    model_names: dict = field(default_factory=dict)  # optional display name per model id
 
 
 class PairingError(Exception):
@@ -141,7 +142,8 @@ class _Pairing:
             s = self._s.engine.online(d["id"])
             out.append(DeviceInfo(d["id"], d["name"], d["status"], d["created"], _L.thumbprint(d["pub"]), s is not None,
                                   list(s.models) if s else [], dict(s.model_caps) if s else {},
-                                  bytes(d["pub"]), d.get("e2ee_key") or ""))
+                                  bytes(d["pub"]), d.get("e2ee_key") or "",
+                                  dict(s.model_names) if s else {}))
         return out
 
     def revoke_device(self, tenant: str, end_user: str, device_id: str) -> bool:

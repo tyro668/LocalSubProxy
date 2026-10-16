@@ -123,6 +123,7 @@ pub struct DState {
     pub gen: u64,
     pub models: Vec<Value>,
     pub model_caps: Obj,
+    pub model_names: Obj,
     pub caps: Vec<String>,
     pub max_conc: i64,
     pub token_exp: i64,
@@ -815,6 +816,9 @@ fn list_devices(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode) {
             io.insert("online".into(), true.into());
             io.insert("models".into(), Value::Array(s.models.clone()));
             io.insert("model_capabilities".into(), Value::Object(s.model_caps.clone()));
+            if !s.model_names.is_empty() {
+                io.insert("model_names".into(), Value::Object(s.model_names.clone()));
+            }
             io.insert("capabilities".into(), s.caps.clone().into());
             io.insert("max_concurrency".into(), s.max_conc.into());
         }
@@ -1065,6 +1069,7 @@ fn attach_session(g: &mut Guard, wsid: u64, dev: Device, claims: Obj, iss: &str,
             gen: 0,
             models: vec![],
             model_caps: Obj::new(),
+            model_names: Obj::new(),
             caps: vec![],
             max_conc: 1,
             token_exp: 0,
@@ -1088,6 +1093,7 @@ fn attach_session(g: &mut Guard, wsid: u64, dev: Device, claims: Obj, iss: &str,
     ds.ws = Some(wsid);
     ds.models = get(hello, "models").as_array().cloned().unwrap_or_default();
     ds.model_caps = get(hello, "model_capabilities").as_object().cloned().unwrap_or_default();
+    ds.model_names = clean_names(get(hello, "model_names"), &ds.models);
     ds.caps = caps.clone();
     ds.max_conc = conc;
     ds.token_exp = json::int(claims.get("exp").unwrap_or(&Value::Null));
@@ -1256,6 +1262,7 @@ fn on_session_message(g: &mut Guard, wsid: u64, dsh: u64, dev_id: &str, raw: &st
                 let ds = g.ds(dsh);
                 ds.models = ml.clone();
                 ds.model_caps = get(mu, "model_capabilities").as_object().cloned().unwrap_or_default();
+                ds.model_names = clean_names(get(mu, "model_names"), &ml);
                 if let Some(mx) = get(mu, "max_concurrency").as_f64() {
                     if mx >= 1.0 {
                         ds.max_conc = (mx.min(max_c as f64)) as i64;
@@ -1447,8 +1454,12 @@ fn models(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode) {
         let s = &g.dstates[&h];
         for m in &s.models {
             let c = s.model_caps.get(&json::js_string(m)).cloned().unwrap_or(Value::Null);
-            data.push(obj! {"id" => format!("{}/{}", d.id, json::js_string(m)), "object" => "model", "owned_by" => d.name.clone(),
-                "capabilities" => if truthy(&c) { c } else { Value::Array(vec![]) }});
+            let mut item = obj! {"id" => format!("{}/{}", d.id, json::js_string(m)), "object" => "model", "owned_by" => d.name.clone(),
+                "capabilities" => if truthy(&c) { c } else { Value::Array(vec![]) }};
+            if let (Some(n), Some(o)) = (s.model_names.get(&json::js_string(m)).cloned(), item.as_object_mut()) {
+                o.insert("display_name".into(), n);
+            }
+            data.push(item);
         }
     }
     if !req.header("anthropic-version").is_empty() {
@@ -2523,4 +2534,20 @@ pub fn task_stream(g: &mut Guard, tk: u64, mut after: i64, signal: &Abort, keepa
     })();
     task_detach(g, tk, sub);
     r
+}
+
+/// Optional display names (model_names), kept only for advertised models.
+fn clean_names(names: &Value, models: &[Value]) -> Obj {
+    let mut out = Obj::new();
+    let Some(m) = names.as_object() else { return out };
+    for id in models {
+        let Some(k) = id.as_str() else { continue };
+        if let Some(n) = m.get(k).and_then(|v| v.as_str()) {
+            let t = n.trim();
+            if !t.is_empty() {
+                out.insert(k.to_string(), Value::String(t.chars().take(128).collect()));
+            }
+        }
+    }
+    out
 }

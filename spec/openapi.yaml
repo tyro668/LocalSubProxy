@@ -255,6 +255,7 @@ paths:
                         id: { type: string, examples: [dev_0192f5e0/lm/qwen3-8b] }
                         object: { const: model }
                         owned_by: { type: string }
+                        display_name: { type: string, description: "Optional device-advertised display name (model_names); requests still use id." }
                         capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/modelCapability' } }
         '401': { $ref: '#/components/responses/OpenAIError' }
   /v1/chat/completions:
@@ -600,6 +601,7 @@ components:
         jkt: { type: string, description: RFC 7638 thumbprint of the device identity key }
         e2ee_key: { type: string, description: 'Latest E2EE key statement (JWS, typ lmbp-e2ee-key+jwt). Tenants MUST verify it against the jkt they pinned at pairing, never against this response alone.' }
         model_capabilities: { $ref: 'schemas/defs.json#/$defs/modelCapabilities' }
+        model_names: { $ref: 'schemas/defs.json#/$defs/modelNames' }
         capabilities: { type: array, items: { $ref: 'schemas/defs.json#/$defs/capability' } }
         max_concurrency: { type: integer }
     Problem:

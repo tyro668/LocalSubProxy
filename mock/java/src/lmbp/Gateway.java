@@ -403,6 +403,7 @@ final class Gateway {
         item.put("online", true);
         item.put("models", new ArrayList<>(s.models));
         item.put("model_capabilities", new LinkedHashMap<>(s.modelCaps));
+        if (!s.modelNames.isEmpty()) item.put("model_names", new LinkedHashMap<>(s.modelNames));
         item.put("capabilities", new ArrayList<>(s.caps));
         item.put("max_concurrency", (long) s.maxConc);
       }
@@ -557,6 +558,7 @@ final class Gateway {
     ds.models = hm != null ? hm : new ArrayList<>();
     Map<String, Object> mcaps = Json.asObj(hello.get("model_capabilities"));
     ds.modelCaps = mcaps != null ? mcaps : new LinkedHashMap<>();
+    ds.modelNames = cleanNames(hello.get("model_names"), ds.models);
     ds.caps = caps;
     ds.maxConc = conc;
     ds.tokenExp = Json.longOf(claims.get("exp"));
@@ -627,6 +629,7 @@ final class Gateway {
             ds.models = ml;
             Map<String, Object> mc = Json.asObj(mu.get("model_capabilities"));
             ds.modelCaps = mc != null ? mc : new LinkedHashMap<>();
+            ds.modelNames = cleanNames(mu.get("model_names"), ml);
             Object mx = mu.get("max_concurrency");
             if (Json.isNumber(mx) && ((Number) mx).doubleValue() >= 1) { ds.maxConc = (int) Math.min(((Number) mx).doubleValue(), cfg.maxConc); ds.wakeSlots(); }
             if (Json.truthy(mu.get("e2ee_key")) && ds.caps.contains("e2ee")) {
@@ -698,7 +701,10 @@ final class Gateway {
       if (s == null || !d.status.equals("active")) continue;
       for (Object m : s.models) {
         Object c = s.modelCaps.get(String.valueOf(m));
-        data.add(Json.obj("id", d.id + "/" + m, "object", "model", "owned_by", d.name, "capabilities", Json.truthy(c) ? c : new ArrayList<>()));
+        Map<String, Object> item = Json.obj("id", d.id + "/" + m, "object", "model", "owned_by", d.name, "capabilities", Json.truthy(c) ? c : new ArrayList<>());
+        String dn = s.modelNames.get(String.valueOf(m));
+        if (dn != null) item.put("display_name", dn);
+        data.add(item);
       }
     }
     if (!req.header("anthropic-version").isEmpty()) { json(res, 200, Anthropic.modelsList(data)); return; }
@@ -1206,6 +1212,7 @@ final class Gateway {
     int gen;
     List<Object> models = new ArrayList<>();
     Map<String, Object> modelCaps = new LinkedHashMap<>();
+    Map<String, String> modelNames = new LinkedHashMap<>();
     List<String> caps = new ArrayList<>();
     int maxConc = 1;
     long tokenExp;
@@ -1472,5 +1479,19 @@ final class Gateway {
         }
       } finally { detach(sub); }
     }
+  }
+
+  /** Optional display names (model_names), kept only for advertised models. */
+  static Map<String, String> cleanNames(Object names, List<Object> models) {
+    Map<String, String> out = new LinkedHashMap<>();
+    Map<String, Object> m = Json.asObj(names);
+    if (m == null || models == null) return out;
+    for (Object id : models) {
+      if (m.get(String.valueOf(id)) instanceof String n && !n.isBlank()) {
+        String t = n.strip();
+        out.put(String.valueOf(id), t.codePointCount(0, t.length()) > 128 ? t.substring(0, t.offsetByCodePoints(0, 128)) : t);
+      }
+    }
+    return out;
   }
 }

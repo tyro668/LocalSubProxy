@@ -143,6 +143,7 @@ func New(cfg Config) (*Connector, error) {
 			return nil, err
 		}
 	}
+	x.dedupeNamesLocked() // single-threaded: older configs may repeat names
 	return x, nil
 }
 
@@ -344,6 +345,28 @@ func (x *Connector) ModelCapabilities() map[string][]string {
 	for _, a := range x.adapters {
 		for _, m := range a.Models {
 			out[a.ID+"/"+m] = capsOf(a)
+		}
+	}
+	return out
+}
+
+// ModelNames advertises the scheme (adapter) name per model id (lmbp
+// model_names) so gateways can show it instead of the raw id.
+func (x *Connector) ModelNames() map[string]string {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	out := map[string]string{}
+	for _, a := range x.adapters {
+		n := strings.TrimSpace(a.Name)
+		if n == "" {
+			continue
+		}
+		for _, m := range a.Models {
+			if len(a.Models) > 1 {
+				out[a.ID+"/"+m] = n + " · " + m
+			} else {
+				out[a.ID+"/"+m] = n
+			}
 		}
 	}
 	return out

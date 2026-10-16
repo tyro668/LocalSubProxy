@@ -46,6 +46,9 @@
     "model_capabilities": {
       "$ref": "defs.json#/$defs/modelCapabilities"
     },
+    "model_names": {
+      "$ref": "defs.json#/$defs/modelNames"
+    },
     "flow": {
       "$ref": "defs.json#/$defs/flow",
       "description": "Receive windows the device grants the gateway (capability flow)."

@@ -207,6 +207,7 @@ type Model struct {
 	ID           string   `json:"id"`
 	Object       string   `json:"object"`
 	OwnedBy      string   `json:"owned_by"`
+	DisplayName  string   `json:"display_name,omitempty"` // optional device-advertised name
 	Capabilities []string `json:"capabilities"`
 }
 

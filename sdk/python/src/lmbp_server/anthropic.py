@@ -155,7 +155,7 @@ def to_openai(inp: dict) -> dict:
 
 
 def models_list(data: list[dict]) -> dict:
-    return {"data": [{"type": "model", "id": m["id"], "display_name": m["id"], "created_at": "1970-01-01T00:00:00Z"} for m in data],
+    return {"data": [{"type": "model", "id": m["id"], "display_name": m.get("display_name") or m["id"], "created_at": "1970-01-01T00:00:00Z"} for m in data],
             "has_more": False, "first_id": data[0]["id"] if data else None, "last_id": data[-1]["id"] if data else None}
 
 

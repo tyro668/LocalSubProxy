@@ -265,6 +265,7 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 	flow := &lmbp.Flow{TaskWindow: 256 << 10, ConnWindow: 1 << 20}
 	hello := lmbp.Hello{DeviceID: r.devID, Client: "lmbp-conformance", Models: []string{mTools, mPlain, mParamCaps}, MaxConcurrency: 4,
 		ModelCapabilities: map[string][]string{mTools: {lmbp.ModelCapTools, lmbp.ModelCapVision}, mParamCaps: {lmbp.ModelCapParams, lmbp.ModelCapTemperature}},
+		ModelNames:        map[string]string{mTools: "Conformance 视觉方案", "not-advertised": "ghost"},
 		Capabilities:      lmbp.Capabilities, Flow: flow, E2EEKey: stmt,
 		Proof: lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())}
 	dev, wel, err := r.dialExt(at, hello)
@@ -298,6 +299,22 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 		}
 	}
 	r.check("X-T1", "GET /v1/models reports per-model capabilities", want(st == 200 && capsOK, "status %d %v", st, ml))
+	namesOK := false
+	if data, _ := ml["data"].([]any); data != nil {
+		named, plain := "", "unset"
+		for _, it := range data {
+			mm, _ := it.(map[string]any)
+			switch mm["id"] {
+			case full(mTools):
+				named, _ = mm["display_name"].(string)
+			case full(mPlain):
+				plain, _ = mm["display_name"].(string)
+			}
+		}
+		dn, _ := dj["model_names"].(map[string]any)
+		namesOK = named == "Conformance 视觉方案" && plain == "" && dn[mTools] == "Conformance 视觉方案" && dn["not-advertised"] == nil
+	}
+	r.check("X-N1", "optional model_names surface as display_name in /v1/models and model_names in the device list (unadvertised entries dropped)", want(st == 200 && namesOK, "status %d %v devices %v", st, ml, dj))
 
 	// tools round trip
 	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "get_weather", "parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]string{"type": "string"}}}}}}

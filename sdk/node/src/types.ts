@@ -14,7 +14,7 @@ export interface PendingPairing { userCode: string; deviceName: string; jkt: str
 export interface ApproveResult { status: 'approved' | 'denied'; deviceId: string; deviceName: string; jkt: string }
 export interface DeviceInfo {
   deviceId: string; name: string; status: string; createdAt: Date; jkt: string; online: boolean;
-  models: string[]; modelCapabilities: Record<string, string[]>;
+  models: string[]; modelCapabilities: Record<string, string[]>; modelNames?: Record<string, string>;
   /** Ed25519 identity key (check against your pinned jkt) and the device-signed X25519 key statement ('' if none), for sealE2EERequest. */
   publicKey: Buffer; e2eeKey: string;
 }
@@ -60,7 +60,7 @@ export interface ChatCompletionChunk {
   choices: { index: number; delta: Partial<ChatMessage>; finish_reason: string | null }[]; usage?: Usage;
   lmbp_e2ee?: E2EEFrameWire;
 }
-export interface Model { id: string; object: 'model'; owned_by: string; capabilities: string[] }
+export interface Model { id: string; object: 'model'; owned_by: string; display_name?: string; capabilities: string[] }
 
 // ---- Anthropic Messages shapes (subset) ----
 export type AnthropicBlock =

@@ -165,6 +165,15 @@
       ],
       "description": "tools/vision/audio: input kinds. params: the model's request-parameter support is declared, and each of temperature, top_p, stop, max_tokens is honoured only if listed (§16.4)."
     },
+    "modelNames": {
+      "type": "object",
+      "description": "Optional human-readable display name per model id (e.g. the device's scheme name). Display only; requests MUST still use the model id.",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
     "modelCapabilities": {
       "type": "object",
       "description": "Per-model capability flags (§16).",

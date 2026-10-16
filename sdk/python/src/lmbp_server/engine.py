@@ -238,6 +238,7 @@ class DState:
         self.q = None
         self.gen = 0
         self.models, self.model_caps, self.caps = [], {}, []
+        self.model_names = {}
         self.max_conc, self.token_exp, self.issuer, self.resume_token = 1, 0, "", ""
         self.tasks: dict[str, Task] = {}
         self.slots = 0
@@ -899,6 +900,8 @@ class Gateway:
             s = self.online(d["id"])
             if s is not None:
                 item.update(online=True, models=list(s.models), model_capabilities=dict(s.model_caps), capabilities=list(s.caps), max_concurrency=s.max_conc)
+                if s.model_names:
+                    item["model_names"] = dict(s.model_names)
             out.append(item)
         return json_resp(200, {"devices": out})
 
@@ -1033,6 +1036,7 @@ class Gateway:
         ds.ws, ds.q = ws, q
         ds.models = hello.get("models") if isinstance(hello.get("models"), list) else []
         ds.model_caps = hello.get("model_capabilities") if isinstance(hello.get("model_capabilities"), dict) else {}
+        ds.model_names = clean_names(hello.get("model_names"), ds.models)
         ds.caps, ds.max_conc, ds.token_exp, ds.issuer, ds.resume_token = caps, conc, claims["exp"], iss, L.random_id("rt_")
         if ds.inb is None:
             ds.inb = L.Inbound(self.cfg["flow"] if "flow" in caps else None)
@@ -1164,6 +1168,7 @@ class Gateway:
             return
         ds.models = mu["models"]
         ds.model_caps = mu.get("model_capabilities") or {}
+        ds.model_names = clean_names(mu.get("model_names"), ds.models)
         if L.is_int(mu.get("max_concurrency")) and mu["max_concurrency"] >= 1:
             ds.max_conc = min(mu["max_concurrency"], self.cfg["max_conc"])
             ds.wake_slots()
@@ -1226,7 +1231,10 @@ class Gateway:
             if s is None or d["status"] != "active":
                 continue
             for m in s.models:
-                data.append({"id": f"{d['id']}/{m}", "object": "model", "owned_by": d["name"], "capabilities": s.model_caps.get(m) or []})
+                item = {"id": f"{d['id']}/{m}", "object": "model", "owned_by": d["name"], "capabilities": s.model_caps.get(m) or []}
+                if s.model_names.get(m):
+                    item["display_name"] = s.model_names[m]
+                data.append(item)
         if req.headers.get("Anthropic-Version"):
             return json_resp(200, A.models_list(data))
         return json_resp(200, {"object": "list", "data": data})
@@ -1632,3 +1640,15 @@ WEB_FILES = {
 }
 WEB_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+
+def clean_names(names, models):
+    """Optional display names (model_names), kept only for advertised models."""
+    if not isinstance(names, dict) or not isinstance(models, list):
+        return {}
+    out = {}
+    for m in models:
+        n = names.get(m) if isinstance(m, str) else None
+        if isinstance(n, str) and n.strip():
+            out[m] = n.strip()[:128]
+    return out

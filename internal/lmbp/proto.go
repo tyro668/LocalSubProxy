@@ -117,8 +117,11 @@ type SessionToken struct {
 type ModelsUpdate struct {
 	Models            []string            `json:"models"`
 	ModelCapabilities map[string][]string `json:"model_capabilities,omitempty"`
-	MaxConcurrency    int                 `json:"max_concurrency,omitempty"`
-	E2EEKey           string              `json:"e2ee_key,omitempty"`
+	// ModelNames optionally maps a model id to a human-readable display name
+	// (e.g. the desktop scheme name). Display only; requests use the id.
+	ModelNames     map[string]string `json:"model_names,omitempty"`
+	MaxConcurrency int               `json:"max_concurrency,omitempty"`
+	E2EEKey        string            `json:"e2ee_key,omitempty"`
 }
 
 // Envelope is the single frame shape on the wire. task.run carries no Data;
@@ -158,11 +161,14 @@ type Hello struct {
 	Client            string              `json:"client"`
 	Models            []string            `json:"models"`
 	ModelCapabilities map[string][]string `json:"model_capabilities,omitempty"`
-	MaxConcurrency    int                 `json:"max_concurrency"`
-	Capabilities      []string            `json:"capabilities,omitempty"`
-	Flow              *Flow               `json:"flow,omitempty"`
-	Resume            *HelloResume        `json:"resume,omitempty"`
-	E2EEKey           string              `json:"e2ee_key,omitempty"`
+	// ModelNames optionally maps a model id to a human-readable display name
+	// (e.g. the desktop scheme name). Display only; requests use the id.
+	ModelNames     map[string]string `json:"model_names,omitempty"`
+	MaxConcurrency int               `json:"max_concurrency"`
+	Capabilities   []string          `json:"capabilities,omitempty"`
+	Flow           *Flow             `json:"flow,omitempty"`
+	Resume         *HelloResume      `json:"resume,omitempty"`
+	E2EEKey        string            `json:"e2ee_key,omitempty"`
 	// Proof is a proof JWT (aud "lmbp:hello", ath = hash of the access token).
 	Proof string `json:"proof"`
 }

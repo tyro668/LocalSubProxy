@@ -118,6 +118,17 @@ func (e linkExec) ModelCapabilities() map[string][]string {
 	return out
 }
 
+func (e linkExec) ModelNames() map[string]string {
+	p := e.policy()
+	out := map[string]string{}
+	for m, n := range e.x.ModelNames() {
+		if p.allows(m) {
+			out[m] = n
+		}
+	}
+	return out
+}
+
 func (e linkExec) Execute(ctx context.Context, run lmbp.TaskRun, emit func(lmbp.TaskDelta) error) (*lmbp.TaskDone, *lmbp.ErrorBody) {
 	return e.x.serve(ctx, e.l, run, emit)
 }

@@ -33,12 +33,16 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
 	for _, d := range ds {
 		if s := g.online(d.ID); s != nil && d.Status == "active" {
+			names := s.names()
 			for _, m := range s.modelList() {
 				caps := s.modelCaps()[m]
 				if caps == nil {
 					caps = []string{}
 				}
 				item := map[string]any{"id": d.ID + "/" + m, "object": "model", "owned_by": d.Name, "capabilities": caps}
+				if n := names[m]; n != "" {
+					item["display_name"] = n
+				}
 				data = append(data, item)
 			}
 		}

@@ -535,6 +535,9 @@ func (g *Gateway) listDevices(w http.ResponseWriter, r *http.Request) {
 		if s := g.online(d.ID); s != nil {
 			item["online"], item["models"] = true, s.modelList()
 			item["model_capabilities"], item["capabilities"], item["max_concurrency"] = s.modelCaps(), s.capabilities(), s.concurrency()
+			if n := s.names(); len(n) > 0 {
+				item["model_names"] = n
+			}
 		}
 		out = append(out, item)
 	}

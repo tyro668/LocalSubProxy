@@ -129,7 +129,7 @@ final class Anthropic {
 
   static Map<String, Object> modelsList(List<Object> data) {
     List<Object> out = new ArrayList<>();
-    for (Object m : data) out.add(Json.obj("type", "model", "id", Json.get(m, "id"), "display_name", Json.get(m, "id"), "created_at", "1970-01-01T00:00:00Z"));
+    for (Object m : data) out.add(Json.obj("type", "model", "id", Json.get(m, "id"), "display_name", Json.get(m, "display_name") instanceof String dn && !dn.isEmpty() ? dn : Json.get(m, "id"), "created_at", "1970-01-01T00:00:00Z"));
     return Json.obj("data", out, "has_more", false, "first_id", data.isEmpty() ? null : Json.get(data.get(0), "id"),
         "last_id", data.isEmpty() ? null : Json.get(data.get(data.size() - 1), "id"));
   }

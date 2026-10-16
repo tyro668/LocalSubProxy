@@ -24,6 +24,9 @@
     "model_capabilities": {
       "$ref": "defs.json#/$defs/modelCapabilities"
     },
+    "model_names": {
+      "$ref": "defs.json#/$defs/modelNames"
+    },
     "e2ee_key": {
       "$ref": "defs.json#/$defs/compactJws"
     }

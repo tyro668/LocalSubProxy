@@ -151,7 +151,9 @@
       const ms = el('div', 'models');
       for (const m of d.models || []) {
         const caps = (d.model_capabilities || {})[m] || [];
-        ms.append(el('span', 'badge', m + (caps.length ? ' · ' + caps.join('/') : '')));
+        const dn = (d.model_names || {})[m];
+        const b = el('span', 'badge', (dn || m) + (caps.length ? ' · ' + caps.join('/') : '')); b.title = m;
+        ms.append(b);
       }
       row.append(ms);
       if (d.status === 'active') {
@@ -166,11 +168,25 @@
       box.append(row);
     }
   }
+  // modelLabels shows the device-advertised scheme name (display_name) instead of
+  // the long "device/adapter/model" id; the device is added only when several
+  // devices serve models, and the id when labels would still collide.
+  function modelLabels(list) {
+    const devs = new Set(list.map((m) => m.id.split('/')[0]));
+    const base = (m) => {
+      const n = m.display_name || m.id.split('/').slice(1).join('/') || m.id;
+      return devs.size > 1 && m.owned_by ? n + '  @' + m.owned_by : n;
+    };
+    const count = new Map();
+    for (const m of list) count.set(base(m), (count.get(base(m)) || 0) + 1);
+    return new Map(list.map((m) => [m.id, count.get(base(m)) > 1 ? base(m) + '  (' + m.id + ')' : base(m)]));
+  }
   function renderModels(list) {
     models = list;
     const sel = $('model'), prev = sel.value; sel.textContent = '';
     if (!list.length) { const o = el('option', '', '（没有在线模型）'); o.value = ''; sel.append(o); }
-    for (const m of list) { const o = el('option', '', m.id + (m.owned_by ? '  @' + m.owned_by : '')); o.value = m.id; sel.append(o); }
+    const labels = modelLabels(list);
+    for (const m of list) { const o = el('option', '', labels.get(m.id)); o.value = m.id; o.title = m.id; sel.append(o); }
     if (list.some((m) => m.id === prev)) sel.value = prev;
     else if (prev && busy === null && history.length) {
       // Keep the conversation's model selectable so the user sees DEVICE_OFFLINE instead of a silent switch.

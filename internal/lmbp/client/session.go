@@ -242,6 +242,13 @@ func (c *Client) modelCaps() map[string][]string {
 	return nil
 }
 
+func (c *Client) modelNames() map[string]string {
+	if r, ok := c.cfg.Executor.(NameReporter); ok {
+		return r.ModelNames()
+	}
+	return nil
+}
+
 func (c *Client) keyStatement() string {
 	if c.xpriv == nil || !contains(c.cfg.Capabilities, lmbp.CapE2EE) {
 		return ""
@@ -315,7 +322,7 @@ func (c *Client) ModelsChanged() {
 	if !live { // before the welcome: the handshake re-checks and resends
 		return
 	}
-	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
+	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
 	if announceHook != nil {
 		announceHook(b)
 	}
@@ -357,7 +364,7 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	if c.xpriv == nil {
 		caps = removeS(caps, lmbp.CapE2EE)
 	}
-	hello := lmbp.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), MaxConcurrency: c.declaredConc(),
+	hello := lmbp.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(),
 		Capabilities: caps, E2EEKey: c.keyStatement(), Proof: lmbp.SignProof(c.key, c.id.DeviceID, lmbp.ProofHello, tok, time.Now())}
 	if contains(caps, lmbp.CapFlow) {
 		hello.Flow = c.cfg.Flow

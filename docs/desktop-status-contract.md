@@ -197,3 +197,10 @@ in-flight tasks are cancelled. A transient disconnect keeps them for resume.
   only unique per gateway.
 - `e2ee` in audit records is true for tasks that arrived end-to-end encrypted,
   even though the run is decrypted before it executes.
+
+## Scheme (adapter) names
+
+- Names are unique among schemes, compared trimmed and case-insensitively. `adapter_create` / `adapter_update` (full or partial) reject a name used by another scheme with an error containing `scheme name already exists`; a scheme may keep its own name in any case.
+- An empty name gets the default: the first model itself when free (e.g. `gpt-6.1-sol`), otherwise `<model>_<n>` with the smallest free `n >= 2` (`gpt-6.1-sol_2`, `gpt-6.1-sol_3`, …). The desktop editor shows the same default for a new scheme and keeps it in step with the chosen model until the user types a name.
+- Older `adapters.enc` files with repeated names still load; later duplicates (by id) are shown as `name (2)`, `name (3)`, … and that name is saved on the next adapter change.
+- Display only: the connection model dialog, consent checklist and connection tile show scheme names (`schemeLabels`, model as secondary text); `allow` keeps the `adapter/model` ids. The device advertises names to gateways as `model_names` (lmbp-spec §16.1); requests still use the ids.

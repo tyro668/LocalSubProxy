@@ -30,6 +30,7 @@ type dstate struct {
 	gen         int
 	models      []string
 	modelCapMap map[string][]string
+	modelNames  map[string]string
 	caps        []string
 	maxConc     int
 	tokenExp    int64
@@ -65,6 +66,16 @@ func (ds *dstate) modelCaps() map[string][]string {
 	out := map[string][]string{}
 	for k, v := range ds.modelCapMap {
 		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+func (ds *dstate) names() map[string]string {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	out := map[string]string{}
+	for k, v := range ds.modelNames {
+		out[k] = v
 	}
 	return out
 }
@@ -295,7 +306,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	ds.gen++
 	gen := ds.gen
 	ds.conn, ds.wmu = conn, wmu
-	ds.models, ds.modelCapMap, ds.caps, ds.maxConc, ds.tokenExp = hello.Models, hello.ModelCapabilities, caps, conc, claims.Exp
+	ds.models, ds.modelCapMap, ds.modelNames, ds.caps, ds.maxConc, ds.tokenExp = hello.Models, hello.ModelCapabilities, cleanNames(hello.ModelNames, hello.Models), caps, conc, claims.Exp
 	ds.issuer = iss
 	ds.resumeToken = lmbp.RandomID("rt_")
 	if ds.in == nil {
@@ -465,7 +476,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 			var mu lmbp.ModelsUpdate
 			if json.Unmarshal(in.Data, &mu) == nil && len(mu.Models) <= 500 {
 				ds.mu.Lock()
-				ds.models, ds.modelCapMap = mu.Models, mu.ModelCapabilities
+				ds.models, ds.modelCapMap, ds.modelNames = mu.Models, mu.ModelCapabilities, cleanNames(mu.ModelNames, mu.Models)
 				if mu.MaxConcurrency >= 1 {
 					ds.maxConc = min(mu.MaxConcurrency, g.cfg.MaxConc)
 				}
@@ -621,6 +632,25 @@ func removeS(xs []string, x string) []string {
 		if v != x {
 			out = append(out, v)
 		}
+	}
+	return out
+}
+
+// cleanNames keeps display names only for advertised models, bounded in size.
+func cleanNames(in map[string]string, models []string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, m := range models {
+		n := strings.TrimSpace(in[m])
+		if n == "" {
+			continue
+		}
+		if r := []rune(n); len(r) > 128 {
+			n = string(r[:128])
+		}
+		out[m] = n
 	}
 	return out
 }

@@ -110,7 +110,7 @@ export function toOpenAI(input: Obj): Obj {
 /** /v1/models in the Anthropic list shape. */
 export function modelsList(data: Obj[]) {
   return {
-    data: data.map((m) => ({ type: 'model', id: m.id, display_name: m.id, created_at: '1970-01-01T00:00:00Z' })),
+    data: data.map((m) => ({ type: 'model', id: m.id, display_name: (m as any).display_name || m.id, created_at: '1970-01-01T00:00:00Z' })),
     has_more: false, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null,
   };
 }

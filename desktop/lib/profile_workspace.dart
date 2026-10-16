@@ -50,6 +50,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   String reasoning = 'medium';
   bool isDefault = false;
   bool skipModelProbe = false;
+  // false while the name is the generated "<模型>_<编号>" default, which then
+  // follows the chosen model; true once the user typed a name.
+  bool nameTouched = true;
   bool dirty = false;
   bool working = false;
   bool codexConnected = false;
@@ -107,6 +110,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     ]) {
       c.addListener(markDirty);
     }
+    model.addListener(_followModelName);
     _pickHighlight();
   }
 
@@ -148,6 +152,22 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     super.dispose();
   }
 
+  /// Saved scheme names except the one being edited.
+  List<String> takenNames() => [
+    for (final a in widget.adapters)
+      if ('${a['id']}' != selectedID) '${a['name'] ?? ''}',
+  ];
+
+  String? get nameError =>
+      schemeNameError(name.text, widget.adapters, exceptId: selectedID);
+
+  void _followModelName() {
+    if (nameTouched || !editorOpen) return;
+    final m = model.text.trim();
+    final next = m.isEmpty ? '' : defaultSchemeName(m, takenNames());
+    if (name.text != next) name.text = next;
+  }
+
   void markDirty() {
     if (!mounted) return;
     setState(() {
@@ -166,11 +186,16 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       'ollama_http' => 'legacy_ollama',
       _ => 'openai',
     };
-    name.text = (a['name'] as String?)?.isNotEmpty == true
-        ? a['name'] as String
-        : selectedID!;
+    // A new draft keeps the generated default name until the user edits it.
+    nameTouched = a['draft'] != true || a['name_custom'] == true;
+    name.text = nameTouched
+        ? ((a['name'] as String?)?.isNotEmpty == true
+              ? a['name'] as String
+              : selectedID!)
+        : '';
     originalModels = (a['models'] as List?)?.cast<String>() ?? [];
     model.text = originalModels.isEmpty ? '' : originalModels.first;
+    _followModelName();
     originalModel = model.text;
     baseURL.text = a['base_url'] as String? ?? '';
     apiKey.clear();
@@ -382,8 +407,20 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (result != true || !mounted || next.isEmpty || next == a['name']) {
       return;
     }
+    final dup = schemeNameError(
+      next,
+      widget.adapters,
+      exceptId: a['draft'] == true ? null : '${a['id']}',
+    );
+    if (dup != null) {
+      setState(() => error = dup);
+      return;
+    }
     if (a['draft'] == true) {
-      setState(() => a['name'] = next);
+      setState(() {
+        a['name'] = next;
+        a['name_custom'] = true;
+      });
       return;
     }
     try {
@@ -548,7 +585,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         : [chosenModel];
     return {
       'id': selectedID ?? 'profile_${DateTime.now().microsecondsSinceEpoch}',
-      'name': name.text.trim().isEmpty ? chosenModel : name.text.trim(),
+      'name': name.text.trim().isEmpty
+          ? defaultSchemeName(chosenModel, takenNames())
+          : name.text.trim(),
       'type': type,
       'provider':
           selected != null &&
@@ -573,6 +612,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
 
   String? validate() {
     if (model.text.trim().isEmpty) return '请输入模型 ID。';
+    final dup = nameError;
+    if (dup != null) return dup;
     if (contextWindow.text.trim().isNotEmpty &&
         (int.tryParse(contextWindow.text.trim()) ?? -1) < 1)
       return '上下文窗口必须是正整数。';
@@ -649,7 +690,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         setState(() => testStatus ??= '设置已保存');
       }
     } catch (e) {
-      if (mounted) setState(() => error = '保存失败：$e');
+      if (mounted) {
+        setState(
+          () => error = '$e'.contains('scheme name already exists')
+              ? '保存失败：方案名称已被其他方案使用，请换一个名称'
+              : '保存失败：$e',
+        );
+      }
     } finally {
       if (mounted) setState(() => working = false);
     }
@@ -825,9 +872,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                           Text(
                             paired ? '连接详情  ›' : '立即连接  ›',
                             style: TextStyle(
-                              color: paired
-                                  ? _purple
-                                  : const Color(0xFFFFFFFF),
+                              color: paired ? _purple : const Color(0xFFFFFFFF),
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                             ),
@@ -1100,7 +1145,26 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       children: [
         _formField(
           '方案名称',
-          TextField(controller: name, placeholder: const Text('默认使用模型 ID')),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: name,
+                placeholder: const Text('默认：模型名，重名时加 _2、_3'),
+                onChanged: (_) => setState(() => nameTouched = true),
+              ),
+              if (nameError != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  nameError!,
+                  style: const TextStyle(
+                    color: Color(0xFFDC2626),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
         _formField('API 提供商', _providerSelect()),
         if (provider == 'codex') ...[

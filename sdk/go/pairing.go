@@ -60,8 +60,9 @@ type DeviceInfo struct {
 	Online            bool
 	Models            []string
 	ModelCapabilities map[string][]string
-	PublicKey         []byte // Ed25519 identity key (verify against your pinned JKT)
-	E2EEKey           string // device-signed X25519 key statement; "" if none
+	ModelNames        map[string]string // optional display name per model id
+	PublicKey         []byte            // Ed25519 identity key (verify against your pinned JKT)
+	E2EEKey           string            // device-signed X25519 key statement; "" if none
 }
 
 // Link returns the §19.4 deep link. issuer defaults to Options.Issuer.
@@ -151,7 +152,7 @@ func (p *Pairing) ListDevices(ctx context.Context, tenant, endUser string) ([]De
 	for _, d := range ds {
 		l := p.s.gw.Live(d.ID)
 		out = append(out, DeviceInfo{DeviceID: d.ID, Name: d.Name, Status: d.Status, CreatedAt: d.CreatedAt, JKT: lmbp.Thumbprint(d.PublicKey),
-			Online: l.Online, Models: l.Models, ModelCapabilities: l.ModelCapabilities, PublicKey: d.PublicKey, E2EEKey: d.E2EEKey})
+			Online: l.Online, Models: l.Models, ModelCapabilities: l.ModelCapabilities, ModelNames: l.ModelNames, PublicKey: d.PublicKey, E2EEKey: d.E2EEKey})
 	}
 	return out, nil
 }

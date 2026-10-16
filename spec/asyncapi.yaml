@@ -197,7 +197,7 @@ components:
       name: 'hello'
       title: hello
       contentType: application/json
-      summary: "Device→gateway, first frame. Requires id. May carry flow (windows granted to the gateway), resume {token, tasks[{task_id, recv_seq}]}, model_capabilities and e2ee_key (key statement JWS)."
+      summary: "Device→gateway, first frame. Requires id. May carry flow (windows granted to the gateway), resume {token, tasks[{task_id, recv_seq}]}, model_capabilities, model_names (optional display names) and e2ee_key (key statement JWS)."
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'

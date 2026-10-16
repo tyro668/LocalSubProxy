@@ -182,10 +182,12 @@ func TestDesktopCoreEndToEnd(t *testing.T) {
 	}
 
 	// Adapter edits are re-announced on the live session (models.update).
-	if _, err := c.UpdateAdapter(connector.AdapterConfig{ID: "lm", Type: "openai_compatible", BaseURL: model.URL, Models: []string{"m1", "m2"}, Enabled: true}); err != nil {
+	if _, err := c.UpdateAdapter(connector.AdapterConfig{ID: "lm", Name: "本地方案", Type: "openai_compatible", BaseURL: model.URL, Models: []string{"m1", "m2"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	waitModels(id.DeviceID + "/lm/m2")
+	// The scheme name travels as model_names and is shown as display_name.
+	waitModels(`"display_name":"本地方案 · m2"`)
 
 	// Revocation stops the session; the core reports the error.
 	r2 := tenant("POST", "/lmbp/v1/tenant/devices/"+id.DeviceID+"/revoke", nil)

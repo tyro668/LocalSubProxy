@@ -89,6 +89,7 @@ type LiveDevice struct {
 	Online            bool
 	Models            []string
 	ModelCapabilities map[string][]string
+	ModelNames        map[string]string
 	Capabilities      []string
 }
 
@@ -104,7 +105,11 @@ func (g *Gateway) Live(id string) LiveDevice {
 	for k, v := range ds.modelCapMap {
 		caps[k] = slices.Clone(v)
 	}
-	return LiveDevice{Online: true, Models: slices.Clone(ds.models), ModelCapabilities: caps, Capabilities: slices.Clone(ds.caps)}
+	names := map[string]string{}
+	for k, v := range ds.modelNames {
+		names[k] = v
+	}
+	return LiveDevice{Online: true, Models: slices.Clone(ds.models), ModelCapabilities: caps, ModelNames: names, Capabilities: slices.Clone(ds.caps)}
 }
 
 // Owns reports whether the gateway serves path (frameworks fall through otherwise).

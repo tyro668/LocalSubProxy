@@ -169,4 +169,28 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     }
   });
+
+  testWidgets('新方案名称默认为模型名，重名时加编号 并随模型变化，重名时提示', (tester) async {
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+
+    TextField field(String hint) => tester.widget<TextField>(
+      find.ancestor(of: find.text(hint), matching: find.byType(TextField)),
+    );
+    final nameHint = '默认：模型名，重名时加 _2、_3';
+    await tester.enterText(
+      find.ancestor(of: find.text('输入模型 ID'), matching: find.byType(TextField)),
+      'claude-sonnet',
+    );
+    await tester.pumpAndSettle();
+    expect(field(nameHint).controller!.text, 'claude-sonnet_2');
+
+    // a user-typed duplicate (trimmed, case-insensitive) is flagged inline
+    await tester.enterText(find.byWidget(field(nameHint)), ' Claude-Sonnet ');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('已被其他方案使用'), findsOneWidget);
+  });
 }
