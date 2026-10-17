@@ -516,21 +516,25 @@ class _HomePageState extends State<HomePage> {
     ).future;
   }
 
+  bool _hasScheme(String id) => adapters.any((a) => '${a['id']}' == id);
+
   /// Total tokens per scheme id, for the scheme details.
   Map<String, int> get usageByScheme => {
     for (final b in usage)
-      '${b['adapter'] ?? ''}': ((b['total_tokens'] ?? 0) as num).toInt(),
+      if (_hasScheme('${b['adapter'] ?? ''}'))
+        '${b['adapter'] ?? ''}': ((b['total_tokens'] ?? 0) as num).toInt(),
   };
 
   Widget usageCard() => UsagePanel(
     rows: [
       for (final b in usage)
-        UsageRow(
-          _schemeName('${b['adapter'] ?? ''}'),
-          ((b['prompt_tokens'] ?? 0) as num).toInt(),
-          ((b['completion_tokens'] ?? 0) as num).toInt(),
-          ((b['total_tokens'] ?? 0) as num).toInt(),
-        ),
+        if (_hasScheme('${b['adapter'] ?? ''}'))
+          UsageRow(
+            _schemeName('${b['adapter'] ?? ''}'),
+            ((b['prompt_tokens'] ?? 0) as num).toInt(),
+            ((b['completion_tokens'] ?? 0) as num).toInt(),
+            ((b['total_tokens'] ?? 0) as num).toInt(),
+          ),
     ],
   );
 
@@ -558,6 +562,7 @@ class _HomePageState extends State<HomePage> {
     try {
       api.deleteAdapter(adapter['id'] as String);
       await refresh();
+      await loadUsage();
     } catch (e) {
       if (mounted) show('$e', error: true);
     }
@@ -975,7 +980,10 @@ class _HomePageState extends State<HomePage> {
                 usage: usageByScheme,
                 onConnectionTap: openConnection,
                 onUsageTap: openUsage,
-                onChanged: () => refresh(force: true),
+                onChanged: () async {
+                  await refresh(force: true);
+                  await loadUsage();
+                },
               )
             : KernelErrorPage(
                 error: kernelError ?? '内核启动失败',

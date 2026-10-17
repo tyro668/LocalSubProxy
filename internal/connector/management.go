@@ -456,6 +456,11 @@ func (x *Connector) DeleteAdapter(id string) error {
 	}
 	x.mu.Unlock()
 	if err == nil {
+		if x.cfg.Audit != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = x.cfg.Audit.DeleteByAdapter(ctx, id)
+			cancel()
+		}
 		go x.refreshHeartbeat()
 	}
 	return err
