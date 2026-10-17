@@ -37,7 +37,7 @@ public final class Pairing {
     String iss = issuer != null && !issuer.isEmpty() ? issuer : s.g.cfg.issuer;
     if (iss.isEmpty()) throw new IllegalStateException("pairing link needs an issuer (configure issuer or pass one)");
     if (!s.g.tenants.containsKey(tenant)) throw new IllegalArgumentException("unknown tenant " + tenant);
-    return "lmbp://pair?v=1&gateway=" + URLEncoder.encode(Lmbp.origin(iss), StandardCharsets.UTF_8) + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+    return "lmbp://pair?v=" + Lmbp.PAIR_LINK_VERSION + "&gateway=" + URLEncoder.encode(Lmbp.origin(iss), StandardCharsets.UTF_8) + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
   }
 
   public Pending lookup(String tenant, String userCode) {
@@ -57,7 +57,7 @@ public final class Pairing {
 
   private Decision decide(String tenant, String endUser, String userCode, boolean deny, String jkt) {
     if (!s.g.tenants.containsKey(tenant)) throw new PairingException("BAD_REQUEST", "unknown tenant");
-    if (endUser == null || endUser.isEmpty() || endUser.length() > 128) throw new PairingException("BAD_REQUEST", "end user id required (1-128 chars)");
+    if (!Lmbp.validHeader(endUser, 128)) throw new PairingException("BAD_REQUEST", "end user must be 1-128 printable ASCII characters (it travels as X-End-User)");
     Gateway.PairResult[] r = {null};
     s.g.locked(() -> r[0] = s.g.pairDecide(tenant, endUser, userCode == null ? "" : userCode, deny, jkt));
     Gateway.PairResult p = r[0];

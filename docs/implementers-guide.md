@@ -11,7 +11,7 @@
 | `spec/asyncapi.yaml` | WebSocket 通道和消息 |
 | `spec/testvectors/vectors.json` | 固定密钥、期望签名和 JWT、正例与反例，以及合法和非法的帧 |
 | `spec/examples/{python,node,rust}` | 关键路径的骨架代码，**都已用测试向量实际运行通过** |
-| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 112 项检查（含规范 1.0 勘误 E1–E7） |
+| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 120 项检查，按 7 个配置统计（规范 §13）；`-list` 输出需求 ID 与检查的对应表 |
 | `spec/validate.sh` | 一键校验所有契约，并运行示例骨架 |
 
 ### 代码片段的验证状态
@@ -95,9 +95,13 @@
 ### 2.5 背压与并发
 - 每个 WebSocket 连接只能有一个写入者。各语言都需要加写锁或使用发送队列：Go 用 `sync.Mutex`；Node 的 `ws` 自带队列，但要关注 `bufferedAmount`；Python 用 `asyncio.Lock`；Rust 用 `mpsc` 通道。
 - 每个任务的缓冲区要有上限。SSE 客户端跟不上时，取消任务或断开会话，**不要无限缓冲**。Node 中 `res.write` 返回 `false` 时要等待 `drain` 事件。
-- 只要 HTTP 客户端断开，就必须发送 `task.cancel`：Node 监听 `req.on('close')`，Starlette 检查 `await request.is_disconnected()`，Go 监听 `r.Context().Done()`，Spring 用 `SseEmitter.onCompletion`/`onError`（注意：Servlet 容器通常只在写入失败时才发现客户端断开，等待设备期间要定期写 SSE 注释作保活，`sdk/java` 的 Spring 适配默认每 1 秒一次）。非流式请求在任务结束前不写任何字节，同样要主动检测断开（规范勘误 E3）：`sdk/java` 在 Tomcat 上用一个 Valve 探测连接是否已关闭。
+- 只要 HTTP 客户端断开，就必须发送 `task.cancel`：Node 监听 `req.on('close')`，Starlette 检查 `await request.is_disconnected()`，Go 监听 `r.Context().Done()`，Spring 用 `SseEmitter.onCompletion`/`onError`（注意：Servlet 容器通常只在写入失败时才发现客户端断开，等待设备期间要定期写 SSE 注释作保活，`sdk/java` 的 Spring 适配默认每 1 秒一次）。非流式请求在任务结束前不写任何字节，同样要主动检测断开（规范 §6.5）：`sdk/java` 在 Tomcat 上用一个 Valve 探测连接是否已关闭。
 
-### 2.6 反向代理
+### 2.6 长度与 ASCII 头
+- 字符串长度一律按 Unicode 码点计（规范 §4.1）：Go `utf8.RuneCountInString`，Node `[...s].length`，Python `len(s)`，Java `s.codePointCount(0, s.length())`，Rust `s.chars().count()`。不要用 JavaScript/Java 的 `.length`（UTF-16 码元）或字节数。
+- `X-End-User`、`Idempotency-Key` 只接受可打印 ASCII（0x20–0x7E），其余返回 400。
+
+### 2.7 反向代理
 - Nginx 需要设置 `proxy_set_header Upgrade/Connection`、`proxy_read_timeout 75s`；SSE 需要 `proxy_buffering off`（或在响应头加 `X-Accel-Buffering: no`）。
 - 如果代理对 `Sec-WebSocket-Protocol` 头做了改写或过滤，子协议协商会失败。
 
@@ -118,30 +122,31 @@
    - jwt-bearer 授权：用设备公钥验证断言，并对 `jti` 去重。
    - 签发 `at+jwt`，内含 `cnf.jkt`。
 6. **`GET /lmbp/v1/connect`**：
-   1. 检查子协议；
+   1. 检查子协议：没有 `lmbp` 时返回 400 `VERSION_UNSUPPORTED`（子协议名不带版本；1.x 设备也带 `lmbp`，由 hello 的 `v` 拒绝）；
    2. 拒绝带 `Origin` 的请求；
    3. 验证访问令牌，并核对设备状态和 `cnf.jkt`；
    4. 升级连接，选择 `lmbp`；
-   5. 15 秒内读取 `hello`，验证证明（`ath` 绑定本次连接的令牌）；
-   6. 回复 `welcome`，`capabilities` 取交集；
+   5. 15 秒内读取 `hello`，按规范 §7.4 的顺序检查：`v == 2` → `hello.json` 模式（`max_concurrency` 越界直接拒绝，不要截断）→ 证明（`ath` 绑定本次连接的令牌）→ 扩展语义；
+   6. 回复 `welcome`，`capabilities` 取交集，`max_concurrency = min(声明值, 网关上限)`；
    7. 记录 `sessions[device_id]`，并关闭该设备的旧会话。
 7. **读循环**：
    - `task.delta`/`task.done`/`task.error`：检查 `seq` 连续后，转发到任务通道；
    - `session.token`：验证后回复；
-   - `models.update`：更新模型表；
+   - `models.update`：先按 `models.update.json` 校验，不合法就回复 `error BAD_REQUEST`、整帧不生效；
    - `ping`：回复 `pong`；
-   - 其他类型：回复 `error`，但不断开。
+   - 其他类型、`v ≠ 2` 或无法解析的帧：回复 `error BAD_REQUEST`，但不断开；
+   - 未知任务的数据帧、已在本地结束的任务的迟到帧：按规范 §8.6 的状态表处理（回复 `task.cancel unknown_task`，或照常确认）。
    - 定时发送 WebSocket ping，并检查令牌是否已过期超过 30 秒。
 8. **`POST /v1/chat/completions`**：
    1. 认证租户；
    2. 解析模型路由；
    3. 检查设备并发；
-   4. 构造 `task.run` 载荷，签名后发送 `{v:1,type:"task.run",task_id,jws}`；
+   4. 构造 `task.run` 载荷，签名后发送 `{v:2,type:"task.run",task_id,seq:1,jws}`（`seq` 恒为 1，与是否协商 `resume`/`flow` 无关）；
    5. 把设备回报转换成 SSE；
    6. 客户端断开或超时时发送 `task.cancel`；
    7. 设备断线时任务失败（`DEVICE_OFFLINE`）。
 9. **吊销**：把设备状态改为 `revoked`，并关闭在线会话。
-10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 112 项全部通过（E6 需加 `-retention`，否则记为跳过）。
+10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 120 项全部通过（E6 需加 `-retention`，否则记为跳过）。
 
 ---
 
@@ -156,7 +161,7 @@ def verify_hello(gw_pub, device_pub_of, frame, access_token, aud="https://gw.exa
     dev_pub = device_pub_of(claims["sub"])                                # 查库，且 status == active
     if claims.get("cnf", {}).get("jkt") != thumbprint(dev_pub):
         raise LmbpError("token not bound to this device key")
-    if frame.get("v") != 1 or frame.get("type") != "hello" or frame["data"].get("device_id") != claims["sub"]:
+    if frame.get("v") != 2 or frame.get("type") != "hello" or frame["data"].get("device_id") != claims["sub"]:
         raise LmbpError("bad hello")
     verify_proof(dev_pub, frame["data"]["proof"], claims["sub"], "lmbp:hello", access_token, now)
     return claims   # 调用方还要对 proof 的 jti 去重
@@ -168,7 +173,7 @@ def issue_access_token(gw_key, kid, device_id, tenant, device_pub, ttl=900, now=
     return sign_jws(gw_key, "at+jwt", json_bytes(claims), kid)
 
 def sign_task_run(gw_key, kid, payload):
-    return {"v": 1, "type": "task.run", "task_id": payload["task_id"],
+    return {"v": 2, "type": "task.run", "task_id": payload["task_id"], "seq": 1,
             "jws": sign_jws(gw_key, "lmbp-task+jws", json_bytes(payload), kid)}
 
 def sse_chunk(task_id, model, created, text=None, finish=None):
@@ -185,7 +190,7 @@ export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = 'htt
   const claims = verifyAccessToken(gwPub, accessToken, aud, now);
   const devPub = devicePubOf(claims.sub);
   if (claims.cnf?.jkt !== thumbprint(devPub)) throw new Error('token not bound to device key');
-  if (frame.v !== 1 || frame.type !== 'hello' || frame.data?.device_id !== claims.sub) throw new Error('bad hello');
+  if (frame.v !== 2 || frame.type !== 'hello' || frame.data?.device_id !== claims.sub) throw new Error('bad hello');
   verifyProof(devPub, frame.data.proof, { iss: claims.sub, aud: 'lmbp:hello', credential: accessToken }, now);
   return claims;
 }
@@ -195,7 +200,7 @@ export function issueAccessToken(gwKey, kid, { deviceId, tenant, devicePub, ttl 
   return signJws(gwKey, 'at+jwt', jsonBytes(claims), kid);
 }
 export const signTaskRun = (gwKey, kid, payload) =>
-  ({ v: 1, type: 'task.run', task_id: payload.task_id, jws: signJws(gwKey, 'lmbp-task+jws', jsonBytes(payload), kid) });
+  ({ v: 2, type: 'task.run', task_id: payload.task_id, seq: 1, jws: signJws(gwKey, 'lmbp-task+jws', jsonBytes(payload), kid) });
 export async function writeSseChunk(res, { taskId, model, created, text, finish = null }) {
   const obj = { id: `chatcmpl-${taskId}`, object: 'chat.completion.chunk', created, model,
     choices: [{ index: 0, delta: text === undefined ? {} : { content: text }, finish_reason: finish }] };
@@ -240,7 +245,7 @@ pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &
     let sub = c["sub"].as_str().ok_or("sub")?.to_string();
     let dev = device_pub_of(&sub);
     if c["cnf"]["jkt"] != thumbprint(&dev).as_str() { return Err("token not bound to device key".into()); }
-    if frame["v"] != 1 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
+    if frame["v"] != 2 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
     verify_proof(&dev, frame["data"]["proof"].as_str().ok_or("proof")?, &sub, "lmbp:hello", token, now)?;
     Ok(c)
 }
@@ -249,7 +254,7 @@ pub fn issue_access_token(gw: &SigningKey, kid: &str, device_id: &str, tenant: &
     sign_jws(gw, TYP_ACCESS_TOKEN, c.to_string().as_bytes(), Some(kid))
 }
 pub fn sign_task_run(gw: &SigningKey, kid: &str, payload: &Value) -> Value {
-    json!({"v":1,"type":"task.run","task_id":payload["task_id"],"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
+    json!({"v":2,"type":"task.run","task_id":payload["task_id"],"seq":1,"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
 }
 pub fn sse_chunk(task_id: &str, model: &str, created: i64, text: &str) -> String {
     format!("data: {}\n\n", json!({"id":format!("chatcmpl-{task_id}"),"object":"chat.completion.chunk","created":created,"model":model,
@@ -351,7 +356,7 @@ Go 设备端参考实现见 `internal/lmbp/client`。
 4. 令牌响应带 `issuer`。
 
 **设备（桌面端）**
-1. 入口是深链接 `lmbp://pair?v=1&gateway=…&tenant=…`，或 SaaS 地址 → `/.well-known/localsubproxy`。
+1. 入口是深链接 `lmbp://pair?v=2&gateway=…&tenant=…`（`v=1` 的旧链接要明确拒绝），或 SaaS 地址 → `/.well-known/localsubproxy`。
 2. 拉取元数据和 JWKS（必须同源），校验签名、issuer、tenant、audience、有效期；失败就不显示同意页。
 3. 同意页显示 `saas.*`、网关 origin、请求的模型和作用域、密钥指纹。用户拒绝时不发任何请求，返回 `CONSENT_DENIED`。
 4. 用户同意后才调用 `device_authorize`。令牌响应的 `gateway_key` 必须等于签名元数据的密钥。

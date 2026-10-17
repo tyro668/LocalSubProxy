@@ -10,7 +10,8 @@
   ],
   "properties": {
     "v": {
-      "const": 1
+      "const": 2,
+      "description": "Protocol major version. LMBP 2.0 frames carry 2; a 1.x frame (v 1) is refused (§7.4, §11)."
     },
     "type": {
       "type": "string",
@@ -109,13 +110,18 @@
           "v",
           "type",
           "task_id",
+          "seq",
           "jws"
         ],
         "properties": {
           "type": {
             "const": "task.run"
           },
-          "data": false
+          "data": false,
+          "seq": {
+            "const": 1,
+            "description": "task.run is the first gateway→device data frame of its task (§7.2)."
+          }
         }
       }
     },

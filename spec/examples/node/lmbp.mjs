@@ -63,13 +63,13 @@ export function verifyHello(gwPub, devicePubOf, frame, accessToken, { aud = toke
   const claims = verifyAccessToken(gwPub, accessToken, aud, now);
   const devPub = devicePubOf(claims.sub);
   if (claims.cnf?.jkt !== thumbprint(devPub)) throw new Error('token not bound to device key');
-  if (frame.v !== 1 || frame.type !== 'hello' || frame.data?.device_id !== claims.sub) throw new Error('bad hello');
+  if (frame.v !== 2 || frame.type !== 'hello' || frame.data?.device_id !== claims.sub) throw new Error('bad hello');
   verifyProof(devPub, frame.data.proof, { iss: claims.sub, aud: 'lmbp:hello', credential: accessToken }, now);
   return claims;
 }
 
 export const signTaskRun = (gwKey, kid, payload) =>
-  ({ v: 1, type: 'task.run', task_id: payload.task_id, jws: signJws(gwKey, TYP.task, jsonBytes(payload), kid) });
+  ({ v: 2, type: 'task.run', task_id: payload.task_id, seq: 1, jws: signJws(gwKey, TYP.task, jsonBytes(payload), kid) });
 
 export function verifyTaskRun(gwPub, frame) {
   const p = JSON.parse(verifyJws(gwPub, frame.jws, TYP.task));

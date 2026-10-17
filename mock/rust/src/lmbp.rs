@@ -10,8 +10,22 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const VERSION: i64 = 1;
+pub const VERSION: i64 = 2;
 pub const SUBPROTOCOL: &str = "lmbp";
+pub const PROTOCOL_VERSIONS: [&str; 1] = ["2.0"];
+/// Conformance profiles (spec §13.1); metadata.profiles lists those this gateway meets.
+pub const PROFILES: [&str; 7] = ["core", "reliable", "tools", "multimodal", "e2ee", "openai", "anthropic"];
+pub const VERSION_REQUIRED: &str = "LMBP 2.0 required: WebSocket subprotocol lmbp and envelope v 2 (LMBP 1.x is not supported)";
+
+/// Unicode code points, the unit of every string limit (spec §4.1).
+pub fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// 1..max printable ASCII (0x20-0x7E): X-End-User and Idempotency-Key (spec §4.1).
+pub fn valid_header(s: &str, max: usize) -> bool {
+    !s.is_empty() && s.len() <= max && s.bytes().all(|b| (0x20..=0x7E).contains(&b))
+}
 pub const CAPABILITIES: [&str; 7] = ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"];
 pub const SCOPES: [&str; 4] = ["lmbp.chat", "lmbp.tools", "lmbp.vision", "lmbp.audio"];
 pub const MAX_FRAME_BYTES: usize = 256 << 10;

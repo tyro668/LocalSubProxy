@@ -26,7 +26,7 @@ from . import anthropic as A
 from . import protocol as L
 from ._http import Request, WSMsgType, web
 from .store import MemoryStore, Store, StoreConflict, StoreNotFound
-from .params import ParamError, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
+from .params import ParamError, announce_problem, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
 
 PROBLEM_BASE = "https://localsubproxy.dev/problems/"
 USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ"
@@ -767,8 +767,8 @@ class Gateway:
         ip = req.scope.get("lmbp.in_process_tenant") if hasattr(req, "scope") else None
         if ip is not None:
             user = req.headers.get("X-End-User", "")
-            if not user or len(user) > 128:
-                raise HTTPDone(err(400, "BAD_REQUEST", "end user required"))
+            if not L.valid_header(user, 128):
+                raise HTTPDone(err(400, "BAD_REQUEST", "end user must be 1-128 printable ASCII characters"))
             return ip, user
         a = req.headers.get("Authorization", "")
         if not a and req.headers.get("X-Api-Key"):
@@ -780,15 +780,15 @@ class Gateway:
         if t is None:
             raise HTTPDone(err(401, "UNAUTHENTICATED", "invalid tenant API key"))
         user = req.headers.get("X-End-User", "")
-        if not user or len(user) > 128:
-            raise HTTPDone(err(400, "BAD_REQUEST", "X-End-User header required"))
+        if not L.valid_header(user, 128):
+            raise HTTPDone(err(400, "BAD_REQUEST", "X-End-User must be 1-128 printable ASCII characters"))
         return t, user
 
     # ---------- §18 metadata ----------
     def build_metadata(self, iss, t):
         m = {"issuer": iss, "jwks_uri": iss + "/.well-known/jwks.json", "device_authorization_endpoint": iss + "/lmbp/v1/device/authorize",
              "token_endpoint": iss + "/lmbp/v1/token", "connect_endpoint": "ws" + iss[4:] + "/lmbp/v1/connect",
-             "chat_completions_endpoint": iss + "/v1/chat/completions", "protocol_versions": ["1.0"],
+             "chat_completions_endpoint": iss + "/v1/chat/completions", "protocol_versions": L.PROTOCOL_VERSIONS, "profiles": L.PROFILES,
              "capabilities": L.CAPABILITIES, "scopes_supported": L.SCOPES}
         if t is None:
             return m
@@ -821,7 +821,7 @@ class Gateway:
         if req.method != "POST":
             return oauth_error(405, "invalid_request")
         ps = await params(req, 4096)
-        if not ps or not ps.get("tenant") or len(ps.get("device_name", "")) > 100:
+        if not ps or not ps.get("tenant") or L.char_len(ps.get("device_name") or "") > 100:
             return oauth_error(400, "invalid_request")
         try:
             pub = L.unb64(ps.get("public_key", ""))
@@ -1023,7 +1023,7 @@ class Gateway:
     async def connect(self, req):
         protos = [p.strip() for p in req.headers.get("Sec-WebSocket-Protocol", "").split(",")]
         if req.headers.get("Upgrade", "").lower() != "websocket" or L.SUBPROTOCOL not in protos:
-            return problem(400, "VERSION_UNSUPPORTED", "WebSocket subprotocol lmbp required")
+            return problem(400, "VERSION_UNSUPPORTED", L.VERSION_REQUIRED)
         if req.headers.get("Origin"):
             return problem(403, "FORBIDDEN", "browser origins are not allowed")
         tok = req.headers.get("Authorization", "").removeprefix("Bearer ")
@@ -1059,7 +1059,11 @@ class Gateway:
             await ws.close()
             return ws
         if env.get("v") != L.VERSION:
-            return await early("VERSION_UNSUPPORTED", "unsupported protocol version")
+            return await early("VERSION_UNSUPPORTED", L.VERSION_REQUIRED)
+        # §7.4 order: v, schema (BAD_REQUEST), device/proof (UNAUTHENTICATED), extension semantics.
+        schema_bad = announce_problem(hello, True)
+        if schema_bad:
+            return await early("BAD_REQUEST", schema_bad)
         try:
             if hello.get("device_id") != dev["id"]:
                 raise ValueError("device")
@@ -1088,8 +1092,7 @@ class Gateway:
             dev["e2ee_key"] = hello["e2ee_key"]
         else:
             caps = [c for c in caps if c != "e2ee"]
-        mc = hello.get("max_concurrency")
-        conc = min(max(mc if L.is_int(mc) else 1, 1), self.cfg["max_conc"])
+        conc = min(hello["max_concurrency"], self.cfg["max_conc"])  # validated 1..16; may lower, never raise
         await self.run_session(ws, dev, claims, iss, env, hello, caps, conc)
         return ws
 
@@ -1221,7 +1224,11 @@ class Gateway:
                         ds.send_err(inp.get("id"), "UNAUTHENTICATED", "session token rejected")
                         break
                 elif typ == "models.update":
-                    self.models_update(ds, dev, inp.get("data"))
+                    mu_bad = announce_problem(inp.get("data"), False)
+                    if mu_bad:
+                        ds.send_err(inp.get("id"), "BAD_REQUEST", mu_bad)  # rejected whole: nothing applied
+                    else:
+                        self.models_update(ds, dev, inp.get("data"))
                 elif typ == "ping":
                     ds.control(envelope("pong", id=inp.get("id")))
                 elif typ == "pong":
@@ -1256,7 +1263,7 @@ class Gateway:
         ds.models = mu["models"]
         ds.model_caps = mu.get("model_capabilities") or {}
         ds.model_names = clean_names(mu.get("model_names"), ds.models)
-        if L.is_int(mu.get("max_concurrency")) and mu["max_concurrency"] >= 1:
+        if mu.get("max_concurrency") is not None:
             ds.max_conc = min(mu["max_concurrency"], self.cfg["max_conc"])
             ds.wake_slots()
         if mu.get("e2ee_key") and "e2ee" in ds.caps:
@@ -1417,8 +1424,8 @@ class Gateway:
         except ParamError as e:
             return json_resp(400, param_error_body(e, bool(getattr(req, "anthropic", False))))
         idem_key = req.headers.get("Idempotency-Key", "")
-        if len(idem_key) > 255:
-            return err(400, "BAD_REQUEST", "Idempotency-Key too long")
+        if idem_key and not L.valid_header(idem_key, 255):
+            return err(400, "BAD_REQUEST", "Idempotency-Key must be 1-255 printable ASCII characters")
         body_hash = L.sha256(body).hex()
         rec = self.store.get_idempotency(t["id"], user, idem_key) if idem_key else None
         if rec is not None and (rec.get("tenant") != t["id"] or rec.get("owner") != user):
@@ -1755,5 +1762,5 @@ def clean_names(names, models):
     for m in models:
         n = names.get(m) if isinstance(m, str) else None
         if isinstance(n, str) and n.strip():
-            out[m] = n.strip()[:128]
+            out[m] = n.strip()  # length bounded by the schema (1-128 code points)
     return out

@@ -44,11 +44,23 @@ func TestReferenceGatewayConforms(t *testing.T) {
 	if len(res) < 25 {
 		t.Fatalf("only %d checks ran", len(res))
 	}
+	ran := map[string]bool{}
 	for _, r := range res {
+		ran[r.ID] = true
+		if r.Req == "" {
+			t.Errorf("%s is not mapped to a requirement in catalog.go", r.ID)
+		}
 		if r.Skip {
 			t.Errorf("%s %s: skipped (%s)", r.ID, r.Title, r.Detail)
 		} else if !r.Pass {
 			t.Errorf("%s %s: %s", r.ID, r.Title, r.Detail)
+		}
+	}
+	for _, rq := range Catalog { // every catalogued check exists and ran
+		for _, c := range rq.Checks {
+			if !ran[c] {
+				t.Errorf("%s (%s) is in the catalog but did not run", c, rq.ID)
+			}
 		}
 	}
 }

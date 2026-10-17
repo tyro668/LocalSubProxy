@@ -260,6 +260,21 @@ func TestDenyAndBadCode(t *testing.T) {
 	}
 }
 
+// LMBP 2.0 §4.1: endUser travels as X-End-User, so it must be printable
+// ASCII, at most 128 characters. 1.0 counted bytes and accepted non-ASCII.
+func TestApproveEndUserIsPrintableASCII(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t, nil)
+	for _, u := range []string{"张三", strings.Repeat("a", 129), "a\tb"} {
+		if _, err := r.srv.Pairing.Approve(ctx, "acme", u, "ZZZZ-ZZZZ", ""); err == nil || errors.Is(err, lmbpserver.ErrCodeInvalid) {
+			t.Fatalf("endUser %q: want a format error before the code lookup, got %v", u, err)
+		}
+	}
+	if _, err := r.srv.Pairing.Approve(ctx, "acme", strings.Repeat("a", 128), "ZZZZ-ZZZZ", ""); !errors.Is(err, lmbpserver.ErrCodeInvalid) {
+		t.Fatalf("128 ASCII endUser should pass the format check: %v", err)
+	}
+}
+
 func TestSigningKeyPersistsInStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "k.db")
 	kid := func() string {

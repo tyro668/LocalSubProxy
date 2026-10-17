@@ -15,8 +15,24 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-VERSION = 1
+VERSION = 2
 SUBPROTOCOL = "lmbp"
+PROTOCOL_VERSIONS = ["2.0"]
+PAIR_LINK_VERSION = "2"
+# Conformance profiles (spec §13.1); metadata.profiles lists those this gateway meets.
+PROFILES = ["core", "reliable", "tools", "multimodal", "e2ee", "openai", "anthropic"]
+MIN_CONCURRENCY, MAX_CONCURRENCY = 1, 16
+VERSION_REQUIRED = "LMBP 2.0 required: WebSocket subprotocol lmbp and envelope v 2 (LMBP 1.x is not supported)"
+
+
+def char_len(s: str) -> int:
+    """Unicode code points, the unit of every string limit (spec §4.1)."""
+    return len(s)
+
+
+def valid_header(s, max_len: int) -> bool:
+    """1..max_len printable ASCII (0x20-0x7E): X-End-User, Idempotency-Key (spec §4.1)."""
+    return isinstance(s, str) and 1 <= len(s) <= max_len and all(0x20 <= ord(c) <= 0x7E for c in s)
 CAPABILITIES = ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"]
 SCOPES = ["lmbp.chat", "lmbp.tools", "lmbp.vision", "lmbp.audio"]
 TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")

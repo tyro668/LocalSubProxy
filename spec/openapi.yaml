@@ -5,7 +5,7 @@ info:
   summary: Pairing (RFC 8628), token (RFC 6749/7523), tenant admin and OpenAI-compatible endpoints of an lmbp gateway.
   description: |
     Normative text: docs/lmbp-spec.md. The device WebSocket channel (`GET /lmbp/v1/connect`,
-    subprotocol `lmbp`) is described in spec/asyncapi.yaml.
+    subprotocol `lmbp`, LMBP 2.0: envelope v 2) is described in spec/asyncapi.yaml.
 
     * OAuth endpoints (`/lmbp/v1/device/authorize`, `/lmbp/v1/token`) take
       `application/x-www-form-urlencoded` bodies (normative). Gateways MAY also accept JSON.
@@ -132,6 +132,7 @@ paths:
         - in: header
           name: Sec-WebSocket-Protocol
           required: true
+          description: 'MUST offer lmbp (no version in the name). A request without lmbp gets 400 problem+json with code VERSION_UNSUPPORTED (§7.1). LMBP 1.x devices also offer lmbp and are refused on hello by the envelope v (§11).'
           schema: { type: string, examples: [lmbp] }
       responses:
         '101': { description: Switching Protocols; the server selects subprotocol `lmbp`. }
@@ -392,14 +393,14 @@ components:
       in: header
       name: X-End-User
       required: true
-      description: Stable, opaque id of the end user as authenticated by the tenant (1–128 chars). The gateway trusts it because the tenant key is server-side only.
-      schema: { type: string, minLength: 1, maxLength: 128 }
+      description: Stable, opaque id of the end user as authenticated by the tenant, 1–128 printable ASCII characters (0x20–0x7E, §4.1); anything else is 400. The gateway trusts it because the tenant key is server-side only.
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[\x20-\x7E]+$' }
     IdempotencyKey:
       in: header
       name: Idempotency-Key
       required: false
-      description: 'Client-chosen key (1–255 chars, draft-ietf-httpapi-idempotency-key-header). A retry with the same key and body re-attaches to the existing task instead of running it again; the same key with a different body fails with 422 IDEMPOTENCY_KEY_REUSED. With a key, a client disconnect does not cancel the task for 30 s.'
-      schema: { type: string, minLength: 1, maxLength: 255 }
+      description: 'Client-chosen key (1–255 printable ASCII characters, §4.1; anything else is 400; draft-ietf-httpapi-idempotency-key-header). A retry with the same key and body re-attaches to the existing task instead of running it again; the same key with a different body fails with 422 IDEMPOTENCY_KEY_REUSED. With a key, a client disconnect does not cancel the task for 30 s.'
+      schema: { type: string, minLength: 1, maxLength: 255, pattern: '^[\x20-\x7E]+$' }
     LastEventID:
       in: header
       name: Last-Event-ID
@@ -551,7 +552,7 @@ components:
       properties:
         tenant: { type: string }
         public_key: { type: string, description: base64url (no padding) of the 32-byte Ed25519 public key }
-        device_name: { type: string, maxLength: 100 }
+        device_name: { type: string, maxLength: 100, description: 'At most 100 Unicode code points (§4.1); longer names are rejected with 400.' }
     DeviceAuthorizationResponse:
       type: object
       required: [device_code, user_code, expires_in, interval]

@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/conformance"
 )
 
@@ -23,8 +24,13 @@ func main() {
 	timeout := flag.Duration("timeout", 10*time.Second, "per-step timeout")
 	issuer := flag.String("issuer", "", "expected gateway issuer origin (default: origin of -gateway)")
 	asJSON := flag.Bool("json", false, "print results as JSON")
+	list := flag.Bool("list", false, "print the requirement ↔ check table (spec §13.2) and exit")
 	retention := flag.Duration("retention", 0, "the gateway's retention period; when set, check that finished tasks and idempotency records are purged after it (E6)")
 	flag.Parse()
+	if *list {
+		fmt.Print(conformance.CatalogMarkdown())
+		return
+	}
 	key := os.Getenv("LMBP_TENANT_KEY")
 	if key == "" {
 		fmt.Fprintln(os.Stderr, "LMBP_TENANT_KEY must hold the tenant API key")
@@ -36,12 +42,34 @@ func main() {
 	}
 	res := conformance.Run(context.Background(), cfg)
 	fail, skipped := 0, 0
+	type tally struct{ pass, fail, skip int }
+	byProfile := map[string]*tally{}
 	for _, r := range res {
-		if !r.Pass {
-			fail++
+		t := byProfile[r.Profile]
+		if t == nil {
+			t = &tally{}
+			byProfile[r.Profile] = t
 		}
-		if r.Skip {
+		switch {
+		case !r.Pass:
+			fail++
+			t.fail++
+		case r.Skip:
 			skipped++
+			t.skip++
+		default:
+			t.pass++
+		}
+	}
+	if !*asJSON {
+		fmt.Println()
+		for _, p := range append(lmbp.Profiles, "") {
+			if t := byProfile[p]; t != nil {
+				if p == "" {
+					p = "(unmapped)"
+				}
+				fmt.Printf("profile %-10s %3d passed, %d failed, %d skipped\n", p, t.pass, t.fail, t.skip)
+			}
 		}
 	}
 	if *asJSON {

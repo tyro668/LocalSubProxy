@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lmbp/hello.json",
+  "title": "hello",
+  "description": "device→gateway",
+  "type": "object",
+  "required": [
+    "device_id",
+    "client",
+    "models",
+    "max_concurrency",
+    "proof"
+  ],
+  "properties": {
+    "device_id": {
+      "$ref": "defs.json#/$defs/id"
+    },
+    "client": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "models": {
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "defs.json#/$defs/modelId"
+      }
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "defs.json#/$defs/capability"
+      }
+    },
+    "proof": {
+      "$ref": "defs.json#/$defs/compactJws",
+      "description": "Proof JWT, typ lmbp-proof+jwt, aud lmbp:hello, ath=SHA-256(access token)."
+    },
+    "model_capabilities": {
+      "$ref": "defs.json#/$defs/modelCapabilities"
+    },
+    "model_names": {
+      "$ref": "defs.json#/$defs/modelNames"
+    },
+    "flow": {
+      "$ref": "defs.json#/$defs/flow",
+      "description": "Receive windows the device grants the gateway (capability flow)."
+    },
+    "e2ee_key": {
+      "$ref": "defs.json#/$defs/compactJws",
+      "description": "E2EE key statement, typ lmbp-e2ee-key+jwt (capability e2ee, §17)."
+    },
+    "resume": {
+      "type": "object",
+      "required": [
+        "token",
+        "tasks"
+      ],
+      "description": "Resume a previous session (capability resume, §14).",
+      "properties": {
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tasks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "defs.json#/$defs/resumeTask"
+          }
+        }
+      }
+    }
+  }
+}

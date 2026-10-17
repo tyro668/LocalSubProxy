@@ -16,13 +16,59 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-// Subprotocol is the WebSocket subprotocol name; Version is the envelope version.
+// Subprotocol is the WebSocket subprotocol name. It carries no version: the
+// major version is the envelope v (Version), checked on hello (spec §11).
 const (
 	Subprotocol = "lmbp"
-	Version     = 1
+	Version     = 2
 )
+
+// ProtocolVersions lists the "major.minor" versions this implementation
+// speaks (gateway metadata protocol_versions, spec §18.2).
+var ProtocolVersions = []string{"2.0"}
+
+// Conformance profiles (spec §13). A gateway lists the profiles it
+// implements in its metadata (profiles); core is mandatory.
+const (
+	ProfileCore       = "core"
+	ProfileReliable   = "reliable"
+	ProfileTools      = "tools"
+	ProfileMultimodal = "multimodal"
+	ProfileE2EE       = "e2ee"
+	ProfileOpenAI     = "openai"
+	ProfileAnthropic  = "anthropic"
+)
+
+// Profiles this implementation implements, in spec order.
+var Profiles = []string{ProfileCore, ProfileReliable, ProfileTools, ProfileMultimodal, ProfileE2EE, ProfileOpenAI, ProfileAnthropic}
+
+// Concurrency bounds for hello/models.update max_concurrency (spec §7.4).
+// Out-of-range values are rejected, never clamped.
+const (
+	MinConcurrency = 1
+	MaxConcurrency = 16
+)
+
+// CharLen is the length unit of every string limit in the spec (§4.1):
+// Unicode code points, the same unit as JSON Schema maxLength.
+func CharLen(s string) int { return utf8.RuneCountInString(s) }
+
+// ValidHeaderValue reports whether s is 1..max printable ASCII characters
+// (0x20-0x7E), the rule for X-End-User and Idempotency-Key (spec §4.1).
+func ValidHeaderValue(s string, max int) bool {
+	if s == "" || len(s) > max {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
 
 // Message types. Data frames (sequenced, flow-controlled, resumable):
 // gateway→device task.run, blob.chunk; device→gateway task.delta, task.done,

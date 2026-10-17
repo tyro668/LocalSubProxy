@@ -55,7 +55,7 @@ func (g *Gateway) Metadata(iss string, t *store.Tenant) lmbp.GatewayMetadata {
 	ws := "ws" + strings.TrimPrefix(iss, "http")
 	m := lmbp.GatewayMetadata{Issuer: iss, JWKSURI: iss + "/.well-known/jwks.json", DeviceAuthorizationEndpoint: iss + "/lmbp/v1/device/authorize",
 		TokenEndpoint: iss + "/lmbp/v1/token", ConnectEndpoint: ws + "/lmbp/v1/connect", ChatCompletionsEndpoint: iss + "/v1/chat/completions",
-		ProtocolVersions: []string{"1.0"}, Capabilities: lmbp.Capabilities, ScopesSupported: lmbp.Scopes}
+		ProtocolVersions: lmbp.ProtocolVersions, Profiles: lmbp.Profiles, Capabilities: lmbp.Capabilities, ScopesSupported: lmbp.Scopes}
 	if t == nil {
 		return m
 	}

@@ -2,12 +2,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | 正式版（Final），协议版本 1.0 |
-| 发布日期 | 2026-10-16 |
-| 线上标识 | WebSocket 子协议 `lmbp`；信封字段 `v: 1`（主版本）；元数据 `protocol_versions: ["1.0"]`；配对链接 `lmbp://pair?v=1` |
+| 状态 | 正式版（Final），协议版本 2.0（不兼容 1.x，变更见附录 A） |
+| 发布日期 | 2026-10-17 |
+| 线上标识 | WebSocket 子协议 `lmbp`（不带版本）；信封字段 `v: 2`（主版本）；元数据 `protocol_versions: ["2.0"]`、`profiles`（§13）；配对链接 `lmbp://pair?v=2`。HTTP 路径前缀 `/lmbp/v1` 是接口路径版本，与协议版本无关，2.0 不变 |
 | 机器可读契约 | [`spec/schemas/`](../spec/schemas)（JSON Schema 2020-12）、[`spec/asyncapi.yaml`](../spec/asyncapi.yaml)（AsyncAPI 3.0）、[`spec/openapi.yaml`](../spec/openapi.yaml)（OpenAPI 3.1） |
-| 测试向量 | [`spec/testvectors/vectors.json`](../spec/testvectors/vectors.json) |
-| 一致性测试 | `go run ./cmd/lmbp-conformance`（黑盒测试任意语言实现的网关） |
+| 测试向量 | [`spec/testvectors/`](../spec/testvectors)（`vectors.json`、`jose.json`、`params.json`）；`spec/validate.sh` 校验本文与契约中的示例和向量一致 |
+| 一致性测试 | `go run ./cmd/lmbp-conformance`（黑盒测试任意语言实现的网关；`-list` 输出 §13.2 的需求表） |
 | 参考实现 | Go：`internal/lmbp`（协议与 JOSE）、`internal/lmbp/gateway`（网关）、`internal/lmbp/client`（设备端） |
 | 实现指南 | [`docs/implementers-guide.md`](implementers-guide.md)：Java、Node.js、Python、Go、Rust |
 
@@ -26,7 +26,7 @@
 10. 超时与限制
 11. 版本与能力协商
 12. 安全要求
-13. 一致性等级与测试
+13. 一致性配置与测试
 14. 断线续传（能力 `resume`）
 15. 流量控制（能力 `flow`）
 16. tools 与多模态（能力 `tools`、`multimodal`）
@@ -35,7 +35,7 @@
 19. 配对同意（签名元数据、`lmbp://pair`、`CONSENT_DENIED`）
 20. 本机审计日志与用量统计
 21. 尚未定义的内容
-附录 A. 勘误
+附录 A. 相对 1.0 的变更
 
 ---
 
@@ -90,7 +90,7 @@
                                │  HTTPS：/lmbp/v1/tenant/*、/v1/*（Bearer 租户 Key + X-End-User）
                                ▼
  设备 ── HTTPS：/lmbp/v1/device/authorize、/lmbp/v1/token ──▶ 网关
- 设备 ══ WSS：/lmbp/v1/connect（子协议 lmbp）══════════▶ 网关
+ 设备 ══ WSS：/lmbp/v1/connect（子协议 lmbp）════════▶ 网关
 ```
 
 1. **配对（RFC 8628）**：设备生成 Ed25519 密钥对，把公钥发到 `/lmbp/v1/device/authorize`，拿到 `user_code`。用户在已登录的租户页面输入 `user_code`，租户后端调用 `/lmbp/v1/tenant/devices/approvals` 确认。设备带上证明 JWT 轮询 `/lmbp/v1/token`，得到 `device_id` 和第一个访问令牌。
@@ -108,6 +108,8 @@
 - 接收方 MUST 忽略不认识的成员（前向兼容）。
 - 整数 MUST 落在 [-(2^53-1), 2^53-1] 内。本协议中的整数（时间戳、seq、计数）都是非负整数，MUST NOT 带小数点或指数（`1.0`、`1e3` 不是合法整数）。
 - 字符串 MUST 是合法 Unicode，MUST NOT 包含单独的代理项（lone surrogate）。
+- **长度单位**：本文所有字符串长度限制（写作“字符”）按 **Unicode 码点**计数，与 JSON Schema `maxLength` 相同：`a`、`张`、`😀` 各算 1。实现 MUST NOT 改用 UTF-8 字节数或 UTF-16 码元数。按字节计的限制（帧、请求体、附件）一律写明“字节”。
+- **ASCII 头**：`X-End-User`（1–128）与 `Idempotency-Key`（1–255）的值 MUST 只含可打印 ASCII（0x20–0x7E）；否则网关 MUST 返回 400，MUST NOT 截断或转码。HTTP 头没有统一的非 ASCII 解码方式，各语言会得到不同的字符串。
 
 ### 4.2 base64url
 - 采用 RFC 4648 §5 字母表，**MUST NOT 带 `=` 填充**。
@@ -219,7 +221,7 @@
 | `max_tokens` | OPTIONAL，正整数 |
 | `temperature` | OPTIONAL，0–2 |
 | `top_p` | OPTIONAL，0–1 |
-| `stop` | OPTIONAL，1–4 个非空字符串（每个 ≤ 256 字节） |
+| `stop` | OPTIONAL，1–4 个非空字符串（每个 ≤ 256 字符） |
 
 网关 MUST 在签名前按 `spec/schemas/task.run.payload.json` 校验将要签名的载荷；不满足时 MUST NOT 签名或下发，并以 400 `BAD_REQUEST` 拒绝请求（§6.5）。
 
@@ -231,15 +233,15 @@
 
 完整定义见 [`spec/openapi.yaml`](../spec/openapi.yaml)。所有接口 MUST 通过 TLS 1.2 及以上版本提供；仅在开发环境的回环地址上可以例外。
 
-**缓存**（勘误 E2）：网关返回的每个 JSON 响应（`application/json`、`application/problem+json`，包括成功结果、错误、列表、`/healthz`，以及 401/404 这类在路由或认证阶段就返回的错误）MUST 带 `Cache-Control: no-store`。唯一例外是 §6.1 的公开发现文档（`/.well-known/jwks.json`、`/.well-known/lmbp`、`/.well-known/localsubproxy`）：它们不含秘密，MAY 用 `Cache-Control: public, max-age=<秒>` 允许缓存（参考实现为 300 秒）。SSE 响应沿用 `Cache-Control: no-cache`。
+**缓存**：网关返回的每个 JSON 响应（`application/json`、`application/problem+json`，包括成功结果、错误、列表、`/healthz`，以及 401/404 这类在路由或认证阶段就返回的错误）MUST 带 `Cache-Control: no-store`。唯一例外是 §6.1 的公开发现文档（`/.well-known/jwks.json`、`/.well-known/lmbp`、`/.well-known/localsubproxy`）：它们不含秘密，MAY 用 `Cache-Control: public, max-age=<秒>` 允许缓存（参考实现为 300 秒）。SSE 响应沿用 `Cache-Control: no-cache`。
 
 ### 6.1 发现
-- 租户后端 SHOULD 在 `GET /.well-known/localsubproxy` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`，供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+- 租户后端 SHOULD 在 `GET /.well-known/localsubproxy` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`（`protocol` 是协议族名，不含版本），供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
 - 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
 - 网关 MUST 提供 `GET /.well-known/lmbp[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
 
 ### 6.2 设备授权：`POST /lmbp/v1/device/authorize`
-- 请求 MUST 支持 `application/x-www-form-urlencoded`（RFC 8628 §3.1），MAY 同时接受 JSON。参数：`tenant`（必填）、`public_key`（必填，base64url 32 字节）、`device_name`（≤ 100 字符）。
+- 请求 MUST 支持 `application/x-www-form-urlencoded`（RFC 8628 §3.1），MAY 同时接受 JSON。参数：`tenant`（必填）、`public_key`（必填，base64url 32 字节）、`device_name`（≤ 100 字符，超出返回 400）。
 - 响应字段：`device_code`、`user_code`、`expires_in`、`interval`（≥ 1）。响应头 MUST 带 `Cache-Control: no-store`。`verification_uri` 是 OPTIONAL：确认页由租户提供，地址通过发现文档的 `link_url` 告知设备，这是本协议对 RFC 8628 的唯一偏离。
 - `user_code` MUST 为 `XXXX-XXXX` 格式，字母表 `BCDFGHJKLMNPQRSTVWXZ`（20 个辅音字母，约 34.6 比特）。比较时 MUST 忽略大小写和分隔符。
 - `device_code` 是不透明的高熵字符串。网关 SHOULD 只保存其哈希。
@@ -259,7 +261,7 @@
 **成功响应**：`{access_token, token_type: "Bearer", expires_in, device_id, gateway_key: <JWK>}`，响应头带 `Cache-Control: no-store`。错误响应为 RFC 6749 §5.2 格式的 `{"error": "..."}`，HTTP 状态码 400。
 
 ### 6.4 租户管理接口
-认证：`Authorization: Bearer <租户 API Key>`，加上 `X-End-User: <终端用户 ID>`（1–128 字符）。租户 API Key MUST 只在服务器之间使用，MUST NOT 出现在浏览器或设备上。网关 MUST 只存储 Key 的哈希，比较时 SHOULD 使用常数时间比较。
+认证：`Authorization: Bearer <租户 API Key>`，加上 `X-End-User: <终端用户 ID>`（1–128 个可打印 ASCII 字符，§4.1）。租户 API Key MUST 只在服务器之间使用，MUST NOT 出现在浏览器或设备上。网关 MUST 只存储 Key 的哈希，比较时 SHOULD 使用常数时间比较。
 
 | 接口 | 作用 |
 |---|---|
@@ -279,7 +281,7 @@
   - `stream: false`：返回一个 `chat.completion` 对象。
   - `stream: true`：返回 `text/event-stream`。第一个事件 SHOULD 是 `delta: {role: "assistant", content: ""}`；每个 `task.delta` 对应一个 `chat.completion.chunk` 事件；结束时发送带 `finish_reason`（以及 `usage`，如有）的块，然后发送 `data: [DONE]`。中途出错时 MUST 发送 `data: {"error":{...}}` 后关闭连接，MUST NOT 再发送 `[DONE]`。网关 SHOULD 每 15 秒发送一次注释行 `: keep-alive`。
   - 响应头 `X-Task-Id` 给出 `task_id`。
-  - 调用方断开 HTTP 连接时，网关 MUST 向设备发送 `task.cancel`（`reason: "client_disconnected"`）。这条同样适用于 `stream: false`（勘误 E3）：非流式请求在任务结束前不会写出任何字节，网关 MUST 主动检测连接已关闭（而不是等到写结果失败才发现），并 SHOULD 在 2 秒内发出 `task.cancel`。带 `Idempotency-Key` 的请求按 §14.4 先等待宽限期。
+  - 调用方断开 HTTP 连接时，网关 MUST 向设备发送 `task.cancel`（`reason: "client_disconnected"`）。这条同样适用于 `stream: false`：非流式请求在任务结束前不会写出任何字节，网关 MUST 主动检测连接已关闭（而不是等到写结果失败才发现），并 SHOULD 在 2 秒内发出 `task.cancel`。带 `Idempotency-Key` 的请求按 §14.4 先等待宽限期。
 - 请求参数校验：网关 MUST 在存储、排队或签名之前校验下列参数。非法值 MUST 以 400 拒绝，错误对象为 `{"error":{"message","type":"invalid_request_error","code":"BAD_REQUEST","param":"<顶层参数名>"}}`（`/v1/messages` 见 §6.7）。MUST NOT 静默丢弃或修正非法值。`null` 视同未提供。共享测试向量见 `spec/testvectors/params.json`，conformance 检查项为 Z8。
 
   | 参数 | 合法值 | 写入 `task.run` |
@@ -289,7 +291,7 @@
   | `temperature` | 数字，0–2 | `temperature` |
   | `top_p` | 数字，0–1 | `top_p` |
   | `max_tokens`、`max_completion_tokens` | 正整数（后者为别名，两者都有时取 `max_tokens`） | `max_tokens` |
-  | `stop` | 非空字符串，或 1–4 个非空字符串的数组（每个 ≤ 256 字节） | `stop`（统一为数组） |
+  | `stop` | 非空字符串，或 1–4 个非空字符串的数组（每个 ≤ 256 字符） | `stop`（统一为数组） |
   | `n` | 只支持 1 | — |
   | `stream` | 布尔值 | — |
   | `tools` | 数组，≤ 128 个；每个 `{type:"function", function:{name, description?, parameters?}}`，`name` 匹配 `^[A-Za-z0-9_-]{1,64}$`，`parameters` 为对象 | `tools` |
@@ -300,11 +302,11 @@
 ### 6.6 模型路由
 `model` 为 `<device_id>/<model>` 时，路由到该设备（必须属于调用方）。`model` 不带设备前缀时，网关 MAY 选择调用方任意一台声明了该模型的在线设备。设备离线时返回 503（`DEVICE_OFFLINE`）；没有任何设备声明该模型时返回 404（`MODEL_NOT_FOUND`）；设备已达并发上限时返回 429（`DEVICE_BUSY`），并带 `Retry-After` 头。
 
-判定顺序（勘误 E1，行为更正）：
+判定顺序：
 1. 指定了 `<device_id>`：设备不属于调用方，或调用方没有这台设备 → 404（`MODEL_NOT_FOUND`，不透露设备是否存在）；设备属于调用方但不在线（包括已连接、尚未完成握手）→ 503（`DEVICE_OFFLINE`）；设备在线但没有声明该模型 → **404（`MODEL_NOT_FOUND`）**；
 2. 未指定设备前缀：调用方有在线设备声明了该模型 → 路由；调用方有设备、但没有一台在线 → 503（`DEVICE_OFFLINE`）；有在线设备但都没有声明该模型，或调用方没有任何设备 → 404（`MODEL_NOT_FOUND`）。
 
-`DEVICE_OFFLINE` 只表示设备不可达（可重试），MUST NOT 用来表示“设备在线但模型不存在”（不可重试）。勘误前所有实现对“在线设备未声明该模型”都返回 503 `DEVICE_OFFLINE`（Anthropic 接口为 503 `overloaded_error`），现更正为 404 `MODEL_NOT_FOUND`（Anthropic 接口为 404 `not_found_error`）。
+`DEVICE_OFFLINE` 只表示设备不可达（可重试），MUST NOT 用来表示“设备在线但模型不存在”（不可重试；Anthropic 接口为 404 `not_found_error`）。
 
 ### 6.7 Anthropic Messages 兼容接口
 认证方式同 §6.4，另外接受 Anthropic 客户端使用的 `x-api-key: <tenant key>` 头（与 `Authorization: Bearer` 等价）；`anthropic-version` 头可有可无，网关不校验其取值。
@@ -324,7 +326,7 @@
 | `tools[]: {name, description, input_schema}` | `{type:"function", function:{name, description, parameters: input_schema}}` |
 | `tool_choice` `auto` / `any` / `none` / `{type:"tool",name}` | `"auto"` / `"required"` / `"none"` / `{type:"function",function:{name}}` |
 | `max_tokens`（必填，正整数）、`temperature`（0–1，Anthropic 的取值范围）、`top_p`（0–1）、`stream`（布尔） | 同名字段 |
-| `stop_sequences`（1–4 个非空字符串的数组） | `stop` |
+| `stop_sequences`（1–4 个非空字符串的数组，每个 ≤ 256 字符） | `stop` |
 
 - 参数校验：按上表的名称与取值范围在翻译之前校验；`tools[]` 必须有符合 `^[A-Za-z0-9_-]{1,64}$` 的 `name` 和对象类型的 `input_schema`；`tool_choice` 必须是对象，`type ∈ {auto, any, tool, none}`，`tool` 需要出现在 `tools` 中的 `name`，除 `none` 外必须同时提供 `tools`。非法值 MUST 以 400 拒绝，错误对象为 `{"type":"error","error":{"type":"invalid_request_error","message","lmbp_code":"BAD_REQUEST","lmbp_param":"<参数名>"}}`。`top_k` 等未列出的字段被忽略。
 
@@ -342,14 +344,15 @@
 
 ### 7.1 建立连接
 - `GET /lmbp/v1/connect`，请求头：`Authorization: Bearer <访问令牌>`、`Sec-WebSocket-Protocol: lmbp`。
-- 网关在升级前 MUST 验证令牌（§5.3）。缺少子协议时返回 400；令牌无效时返回 401；设备已吊销或令牌未绑定该设备时返回 403。错误响应使用 RFC 9457 格式。
-- 网关 MUST 在响应中选择子协议 `lmbp`；设备看到其他值 MUST 断开。
+- 网关在升级前 MUST 验证令牌（§5.3）。未提供 `lmbp` 时返回 400，`code` 为 `VERSION_UNSUPPORTED`（只提供其他名字，包括带版本号的变体，也一样）；令牌无效时返回 401；设备已吊销或令牌未绑定该设备时返回 403。错误响应使用 RFC 9457 格式。
+- 网关 MUST 在响应中选择子协议 `lmbp`；设备看到其他值 MUST 断开。子协议名不带版本，版本只由信封 `v`、元数据 `protocol_versions` 和配对链接的 `v` 表示（§11）。
 - 带 `Origin` 头的请求（来自浏览器）MUST 拒绝（403），以防跨站 WebSocket 劫持。
 - 同一设备建立新会话时，网关 MUST 关闭该设备的旧会话。
 
 ### 7.2 帧
 - 每条 WebSocket **文本**消息正好包含一个 JSON 对象。MUST NOT 发送二进制消息；收到二进制消息时 SHOULD 以关闭码 1003 断开。
 - 单帧 MUST ≤ `welcome.max_frame_bytes`（参考实现为 262144 字节）。超限时接收方 MUST 以 1009 断开。
+- 握手之后，网关收到 `v ≠ 2` 或无法解析为信封的帧时，MUST 回复 `error`（`BAD_REQUEST`）并丢弃该帧，MUST NOT 断开；设备收到 `v ≠ 2` 的帧 MUST 丢弃。
 
 信封：
 
@@ -359,7 +362,7 @@
 | `type` | 字符串 | 消息类型，格式 `^[a-z][a-z0-9._]{0,63}$` |
 | `id` | 字符串 | 请求/响应关联 ID；`hello`、`session.token` 必填，响应 MUST 原样带回 |
 | `task_id` | 字符串 | 任务相关消息必填 |
-| `seq` | 整数 ≥ 1 | 数据帧（`task.run`、`blob.chunk`、`task.delta`、`task.done`、`task.error`）必填，每个任务、每个方向从 1 开始（§14、§15） |
+| `seq` | 整数 ≥ 1 | 数据帧（`task.run`、`blob.chunk`、`task.delta`、`task.done`、`task.error`）必填，与是否协商 `resume`/`flow` 无关；每个任务、每个方向从 1 开始，`task.run` 恒为 1（§14、§15） |
 | `data` | 对象 | 消息体，结构由 `type` 决定 |
 | `jws` | 字符串 | 只用于 `task.run`；此时 MUST NOT 出现 `data` |
 
@@ -374,7 +377,7 @@
 | `task.error` | 设备→网关 | `task.error.json` | 任务失败结束（终止消息） |
 | `task.cancel` | 网关→设备 | `task.cancel.json` | 要求停止任务 |
 | `session.token` | 设备→网关；网关以同名消息回复 | 请求 `session.token.request.json`，回复 `session.token.response.json` | 连接内续期令牌 |
-| `models.update` | 设备→网关 | `models.update.json` | 重新声明模型列表和并发数 |
+| `models.update` | 设备→网关 | `models.update.json` | 重新声明模型列表和并发数；不符合模式时网关回复 `error`（`BAD_REQUEST`），整帧不生效，会话保持 |
 | `ping` / `pong` | 双向 | 无 | 应用层心跳；`pong` 带回 `ping` 的 `id` |
 | `blob.chunk` | 网关→设备 | `blob.chunk.json` | 数据帧：二进制附件分块（§16.3） |
 | `task.ack` | 双向 | `task.ack.json` | 控制帧：确认对方 `seq ≤ data.seq` 的数据帧（§14、§15） |
@@ -382,9 +385,12 @@
 
 ### 7.4 握手
 1. 连接建立后，设备 MUST 在 15 秒内发送 `hello`。超时，或第一帧不是 `hello`，网关 MUST 断开连接。
-2. 网关检查：`v == 2`（否则回复 `error` `VERSION_UNSUPPORTED` 并断开）；`data.device_id == token.sub`；证明 JWT 有效（`ath` 绑定**本次连接使用的访问令牌**），且 `jti` 未用过。失败时回复 `error`（`UNAUTHENTICATED`）并断开。
-3. `max_concurrency` 取值 1–16，超出范围时网关 MUST 截断到边界值。
-4. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）。
+2. 网关按以下顺序检查 `hello`，任一失败即回复 `error`（带 `hello` 的 `id`）并断开，不发 `welcome`：
+   1. `v == 2`，否则 `VERSION_UNSUPPORTED`（1.x 设备同样以子协议 `lmbp` 升级，在这一步被拒）；
+   2. `data` 符合 `hello.json`，否则 `BAD_REQUEST`。其中 `max_concurrency` 是 1–16 的整数（必填），`model_names` 的显示名为 1–128 字符；越界值 MUST 拒绝，MUST NOT 截断；
+   3. `data.device_id == token.sub`，证明 JWT 有效（`ath` 绑定**本次连接使用的访问令牌**）且 `jti` 未用过，否则 `UNAUTHENTICATED`；
+   4. `flow`、`e2ee_key` 等扩展的语义检查（§15.1、§17.1），否则 `BAD_REQUEST`。
+3. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）、`max_concurrency`。`welcome.max_concurrency = min(hello.max_concurrency, 网关上限)`：网关 MAY 降低，MUST NOT 提高；设备 MUST 以它为准。
 
 ### 7.5 任务与顺序
 - 网关收到 OpenAI 请求后，创建 `task_id`，发送 `task.run`。
@@ -395,8 +401,7 @@
 
 ### 7.6 取消
 - 网关在以下情况发送 `task.cancel`：调用方断开连接（`client_disconnected`）、任务超时（`timeout`）、协议错误（`protocol_error`）。
-- 设备收到后 SHOULD 尽快中止模型调用，并发送 `task.error`（`CANCELLED`）作为终止消息。如果任务已经结束，或者 `task_id` 未知，MUST 忽略这条取消。
-- 发出取消后，该任务后续到达的帧，网关 MUST 静默丢弃，MUST NOT 把它们当作协议错误。
+- 取消、确认与窗口回收的完整规则见 §8.6 的状态转换表。
 
 ### 7.7 心跳与续期
 - 网关每 `heartbeat_seconds` 发送一次 WebSocket 控制帧 ping，设备 MUST 回复 pong（RFC 6455 §5.5.2）。60 秒内没有收到任何数据，任一方都 MAY 断开。应用层 `ping` 帧 OPTIONAL。
@@ -435,6 +440,31 @@ RUNNING ──task.done──▶ SUCCEEDED
 
 ### 8.5 设备连接（设备侧）
 `IDLE → TOKEN → CONNECTING → HANDSHAKE → OPEN`。断开后按指数退避重连：1 秒起，翻倍，上限 30 秒，SHOULD 加随机抖动。收到 `invalid_grant` 时进入 `REVOKED`，停止重连。
+
+### 8.6 取消、确认与窗口回收
+网关对每个任务处于以下状态之一：**未知**（从未存在，或状态已被忘记）、**RUNNING**（已下发，尚未结束）、**DRAINING**（网关已在本地结束并发出 `task.cancel`，等待设备的终止帧）。“数据帧”“确认”见 §14.1；“确认”同时释放对方的续传缓冲和 §15 窗口。
+
+| 行 | 网关侧状态 | 事件 | 动作 | 下一状态 |
+|---|---|---|---|---|
+| U1 | 未知 | 收到该任务的设备数据帧 | 回复 `task.cancel {reason: "unknown_task"}`，不确认，不交付 | 未知 |
+| R1 | RUNNING | 本地结束：调用方断开、超时、慢消费者、本地错误（§14.4 单一终止决策） | 发送 `task.cancel {reason}` | DRAINING |
+| R2 | RUNNING | 收到按序的数据帧 | 持久化、交付、确认；若是终止帧，任务结束并忘记该任务 | RUNNING；终止帧后为未知 |
+| R3 | RUNNING | 收到跳号的数据帧 | 任务以 `INTERNAL` 失败，发送 `task.cancel {reason: "protocol_error"}` | DRAINING |
+| D1 | DRAINING | 收到非终止数据帧 | 确认，不交付，不报协议错误 | DRAINING |
+| D2 | DRAINING | 收到终止帧 | 确认，忘记该任务 | 未知 |
+| D3 | DRAINING | 本地保留的 DRAINING 状态超过上限被淘汰（参考实现每设备 1024 个） | — | 未知 |
+| F1 | 未知（任务已结束） | 终止帧之后又收到该任务的数据帧 | 同 U1 | 未知 |
+
+设备侧：
+
+| 行 | 设备侧状态 | 事件 | 动作 |
+|---|---|---|---|
+| N1 | 执行中 | `task.cancel`（`unknown_task` 以外的原因） | SHOULD 尽快中止模型调用，发送 `task.error`（`CANCELLED`）作为终止帧；未确认的帧照常保留直到被确认 |
+| N2 | 已结束或未知 | `task.cancel`（`unknown_task` 以外的原因） | MUST 忽略 |
+| N3 | 任意 | `task.cancel {reason: "unknown_task"}` | MUST 停止该任务；MAY 丢弃该任务的未确认帧并释放其窗口 |
+| N4 | 任意 | `task.ack {seq}` | 释放该任务 `seq` 及以前帧占用的续传缓冲与窗口 |
+
+conformance 的 S1（U1）、S2（R2、F1）、S3（D1、D2、F1）与 E7 检查本表。
 
 ---
 
@@ -488,11 +518,12 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | 初始轮询间隔 | ≥ 1 秒；每次 `slow_down` 加 5 秒 | MUST |
 | `task.run` 有效期（exp - iat） | ≤ 60 秒 | SHOULD |
 | 任务总时长 | 10 分钟（推荐） | SHOULD |
-| `max_concurrency` | 1–16 | MUST |
-| 模型列表 | ≤ 500 项 | MUST |
+| `max_concurrency` | 1–16 的整数；越界拒绝，不截断（§7.4）；`welcome` 取 min(声明值, 网关上限) | MUST |
+| 模型列表 | ≤ 500 项；`model_names` 显示名 1–128 字符 | MUST |
 | `messages` | 1–200 条；201 条起 400 `BAD_REQUEST` | MUST |
 | 已签名 `task.run` | JWS ≤ 262144 字节，且编码后的 `task.run` 帧 ≤ `max_frame_bytes`；超限时网关在存储/排队前返回 413 `PAYLOAD_TOO_LARGE`（大内容改用图片/附件，走 `blob.chunk`） | MUST |
 | chat 请求体 | ≤ 1 MiB | SHOULD |
+| 字符串长度 | 按码点计（§4.1）：`device_name` ≤ 100，`stop`/`stop_sequences` 每项 ≤ 256；`X-End-User` 1–128、`Idempotency-Key` 1–255 可打印 ASCII | MUST |
 
 | 续传窗口 | 30 秒（`welcome.resume_window_seconds`） | SHOULD |
 | 流控窗口 | 默认每任务 1 MiB、每连接 4 MiB；hello 提供的 `task_window` MUST ≥ `max_frame_bytes`，`conn_window` MUST ≥ `task_window`，否则网关拒绝 hello（不发 welcome） | SHOULD / MUST |
@@ -507,8 +538,9 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 ## 11. 版本与能力协商
 
-- **版本号**：本规范为 LMBP 1.0。主版本由信封的 `v`（整数，本版本为 `1`）和 WebSocket 子协议名（`lmbp`）表示；网关元数据的 `protocol_versions` 以 `"主.次"` 字符串列出网关实现的全部版本（本版本为 `["1.0"]`），配对链接的 `v` 参数是主版本（`v=1`）。
-- **主版本**：不兼容的变更 MUST 递增主版本，并使用新的子协议名（如 `lmbp.2`），使新旧设备在握手阶段就能区分。设备 MAY 同时提供多个子协议，网关从中选择一个。次版本只增加兼容扩展，不改变 `v` 和子协议名。
+- **版本号**：本规范为 LMBP 2.0。主版本只由信封的 `v`（整数，本版本为 `2`）表示，WebSocket 子协议名 `lmbp` 不带版本；网关元数据的 `protocol_versions` 以 `"主.次"` 字符串列出网关实现的全部版本（本版本为 `["2.0"]`），配对链接的 `v` 参数是主版本（`v=2`）。
+- **主版本**：不兼容的变更 MUST 递增主版本，并使用新的子协议名，使新旧设备在握手阶段就能区分。设备 MAY 同时提供多个子协议，网关从中选择一个。次版本只增加兼容扩展，不改变 `v` 和子协议名。
+- **1.x 对端**：2.0 实现 MUST NOT 降级到 1.x。网关：1.x 设备同样以子协议 `lmbp` 升级，升级照常成功；它的 `hello`（`v ≠ 2`）得到 `error`（`VERSION_UNSUPPORTED`，`id` 同 hello），随后网关断开连接（§7.4）；握手后 `v ≠ 2` 的帧见 §7.2。设备：网关选择的子协议不是 `lmbp`、或 `welcome.v ≠ 2`、或 hello 得到 `VERSION_UNSUPPORTED` 时 MUST 断开；`protocol_versions` 不含 `"2.0"` 的网关 MUST NOT 配对；`v` 不是 `2` 的配对链接 MUST 拒绝并提示需要 LMBP 2.0。
 - **兼容扩展**（新增可选成员、新增消息类型、新增错误码）不改变主版本。接收方 MUST 忽略不认识的成员。收到不认识的 `type` 时，网关 MUST 回复 `error`（`BAD_REQUEST`）且 MUST NOT 断开连接；设备 MUST 忽略不认识的 `type`。
 - **能力**：`hello.capabilities` 列出设备支持的能力，`welcome.capabilities` MUST 是它与网关所支持能力的交集。双方 MUST 只使用交集中的能力。本版本定义的能力：
 
@@ -541,25 +573,81 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 ---
 
-## 13. 一致性等级与测试
+## 13. 一致性配置与测试
 
-| 等级 | 要求 |
-|---|---|
-| **lmbp-core 网关** | §4–§10 中所有 MUST；能通过 `lmbp-conformance` 的全部检查 |
-| **lmbp-core 设备** | 能验证 `spec/testvectors` 中所有正例、拒绝所有反例；实现 §7.4–§7.7 |
-| **lmbp-openai** | §6.5 的 OpenAI 兼容接口与 SSE 行为 |
-| **lmbp-anthropic** | §6.7 的 Anthropic Messages 兼容接口（`lmbp-conformance` 的 A1–A10） |
+### 13.1 配置（profile）
+实现按配置声明一致性。网关 MUST 在元数据 `profiles`（§18.2）中列出它满足的配置，MUST 包含 `core`；只能列出全部检查都通过的配置。设备侧的一致性以能力（§11）协商，`profiles` 只描述网关。
 
-验证方法：
+| 配置 | 范围 | 依赖的能力 |
+|---|---|---|
+| `core` | §4–§10、§18–§19：配对、令牌、握手、帧、`task.run`、取消状态表（§8.6） | `session.token`、`models.update` |
+| `reliable` | §14 断线续传、§15 流量控制、迟到帧回收 | `resume`、`flow` |
+| `tools` | §16.1 | `tools` |
+| `multimodal` | §16.2–§16.3 | `multimodal` |
+| `e2ee` | §17 | `e2ee` |
+| `openai` | §6.5、§16.4–§16.5 OpenAI 兼容接口 | — |
+| `anthropic` | §6.7 Anthropic Messages 兼容接口 | — |
+
+设备的一致性：能验证 `spec/testvectors` 中所有正例、拒绝所有反例，并实现 §7.4–§7.7 与 §8.6 设备侧各行。
+
+### 13.2 需求 ID 与检查
+每条需求有稳定的 ID，ID 一经发布不再改变含义；conformance 检查编号同样稳定（以 E 开头的检查最早来自 1.0 勘误，编号保留）。下表与 `go run ./cmd/lmbp-conformance -list` 的输出一致（`spec/validate.sh` 校验）。
+
+<!-- catalog:begin -->
+| 需求 ID | 条款 | 配置 | 要求 | conformance 检查 |
+|---|---|---|---|---|
+| CORE-01 | §5.2 | core | JWS 严格校验：头只含 alg/typ/kid，alg 为 EdDSA，typ 匹配用途，kid 为公钥指纹，声明类型正确 | Z4a Z4b |
+| CORE-02 | §6.1、§18.2 | core | 发现与元数据：JWKS、issuer 同源、protocol_versions 含 2.0、profiles 含 core | S0 D1 M1 M2 M3 M6 M8 |
+| CORE-03 | §19.1 | core | 带 ?tenant= 的元数据带网关签名的 SaaS 身份 | M4 M5 M7 |
+| CORE-04 | §6.2 | core | 设备授权：表单编码、user_code 格式、no-store、device_name ≤ 100 码点 | P1 P2 P3 L1 |
+| CORE-05 | §6.3 | core | 令牌端点：先验证明再透露状态，device_code 一次性 | P4 P5 T5 |
+| CORE-06 | §6.4 | core | 租户确认配对：未知码 404，jkt 不符 409，忽略大小写与分隔符 | P6 P7 P8 |
+| CORE-07 | §5.3、§18.3 | core | 访问令牌：at+jwt，iss/aud/tenant/sub/cnf.jkt 正确，与 JWKS、元数据一致 | T1 T2 T3 T4 I1 I2 |
+| CORE-08 | §5.5 | core | 客户端断言：aud 为本网关令牌端点，jti 防重放 | T6 T7 I3 |
+| CORE-09 | §7.1 | core | WebSocket 升级：要求子协议 lmbp（名字不带版本号，带版本号的变体被拒绝），令牌无效 401，选择 lmbp | W1 W2 W4 W8 |
+| CORE-10 | §7.4、§11 | core | 1.x 对端被拒：子协议仍为 lmbp，v 为 1 的 hello 回 error VERSION_UNSUPPORTED 后断开 | W9 |
+| CORE-11 | §7.4 | core | hello 校验：证明绑定本连接令牌，符合 hello.json，max_concurrency 越界拒绝不截断 | W3 W10 W11 |
+| CORE-12 | §7.4、§11 | core | welcome：同 id，能力取交集，max_concurrency 在 1 与声明值之间 | W5 W6 W12 X1 |
+| CORE-13 | §7.2、§7.3 | core | 帧：只发文本帧，符合 envelope.json，未知 type 不断开，握手后 v≠2 的帧回 BAD_REQUEST | F0 F1 F2 W7 |
+| CORE-14 | §7.4 | core | models.update 不符合 models.update.json 时整帧拒绝、不生效 | W13 |
+| CORE-15 | §5.6、§7.5 | core | task.run：无 data，JWS 可验证，载荷正确，envelope seq 为 1 | R1 R2 R3 |
+| CORE-16 | §7.7 | core | 连接内续期 session.token | K1 |
+| CORE-17 | §8.2 | core | 吊销立即断开会话，之后不能取得令牌 | V1 V2 |
+| CORE-18 | §6.6 | core | 在线设备未声明的模型返回 404 MODEL_NOT_FOUND | E1 |
+| CORE-19 | §6 | core | JSON 响应带 Cache-Control: no-store | E2 |
+| CORE-20 | §10 | core | 限制：messages 1–200 条，帧按 UTF-8 字节计、≤ 262144 | Z6a Z6b Z6c Z6d Z6e Z6f Z6g |
+| CORE-21 | §4.1 | core | X-End-User 为 1–128 个可打印 ASCII 字符 | L2 |
+| CORE-22 | §8.6 | core | 未知任务或已结束任务的数据帧：回 task.cancel(unknown_task)，不确认 | S1 S2 |
+| CORE-23 | §16.1 | core | model_names 只用于展示，未声明模型的条目被忽略 | X-N1 |
+| REL-01 | §14.1 | reliable | 数据帧逐任务编号，累计确认，跳号让任务失败 | X-F1 X-F2 X-F3 |
+| REL-02 | §14.2–§14.3 | reliable | 断线续传：重传不重复、不丢失，续传参数有界 | X-R1 X-R2 Z3 |
+| REL-03 | §14.4 | reliable | SSE 事件带 id，Last-Event-ID 精确重放 | X-H2 X-H3 |
+| REL-04 | §14.4 | reliable | 幂等：同键同体接回，异体 422，按租户和终端用户隔离，排队中的重复请求接回，键为 1–255 个可打印 ASCII | X-H1 X-H4 Z1 Z1b Z7 L3 |
+| REL-05 | §14.4 | reliable | 保留期清理已结束任务及其幂等记录 | E6 |
+| REL-06 | §15 | reliable | 流量控制：窗口 ≥ max_frame_bytes，并发下不超窗 | Z2 Z6h Z6i |
+| REL-07 | §8.6、§15.5 | reliable | 本地结束的任务：迟到帧照常确认直到终止帧，之后按未知任务处理 | E7 S3 |
+| TOOLS-01 | §16.1 | tools | tools：每模型能力、签名载荷携带、tool_calls 合并、缺能力 400 | X-T1 X-T2 X-T3 X-T4 |
+| MM-01 | §16.2–§16.3 | multimodal | 内容片段与 blob：缺 vision 400，大 data: URI 走 blob.chunk | X-M1 X-M2 |
+| MM-02 | §16.2 | multimodal | 远程图片原样转发，设备不支持时调用方得到 400 CAPABILITY_UNSUPPORTED | E4 |
+| E2EE-01 | §17 | e2ee | 端到端加密：密钥声明、JWE 原样转发、密封输出 | X-E1 X-E2 X-E3 X-E4 X-E5 |
+| OAI-01 | §6.5 | openai | /v1/models 与 SSE 输出 | O1 O2 |
+| OAI-02 | §6.5 | openai | 调用方断开（流式与非流式）后向设备发送 task.cancel | C1 E3 |
+| OAI-03 | §6.5 | openai | 请求参数校验，共享向量 params.json（长度按码点） | Z8a Z8b Z8c |
+| OAI-04 | §16.4 | openai | 声明了 params 的模型：未声明的参数 400 CAPABILITY_UNSUPPORTED | Z8d |
+| OAI-05 | §16.5 | openai | 被忽略的字段不写入 task.run | E5 |
+| ANT-01 | §6.7 | anthropic | Anthropic Messages 兼容接口 | A1 A2 A3 A4 A5 A6 A7 A8 A9 A10 Z5 E1b |
+<!-- catalog:end -->
+
+### 13.3 验证方法
 ```bash
-# 1) 你的 JOSE 实现对照测试向量（Go/Python/Node/Rust 示例见 spec/examples）
+# 1) JOSE 实现对照测试向量，并校验本文与契约中的示例
 spec/validate.sh
-# 2) 黑盒测试你的网关
+# 2) 黑盒测试网关
 LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
   [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lmbp-conformance` 依次扮演设备和租户后端，共 112 项检查（含 X1、X-* 扩展检查，M1–M5、I1–I3 身份绑定检查，以及勘误 E1–E7 的检查；E6 需用 `-retention <网关保留期>` 启用，否则记为跳过），覆盖：JWKS、RFC 8628 流程与错误顺序、令牌签名与 `cnf.jkt`、一次性 `device_code`、断言防重放、子协议与令牌校验、hello 证明绑定、能力交集、未知消息类型、模型列表、`task.run` 的 JWS 校验、SSE 输出、取消、会话续期和吊销。它还会用 JSON Schema 校验网关发出的每一帧。
+`lmbp-conformance` 依次扮演设备和租户后端，共 120 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 
@@ -582,8 +670,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 ### 14.4 HTTP 侧续传
 - 每个 SSE 事件 MUST 带 `id:`：角色前导事件为 `0`，其后为对应设备数据帧的 `seq`（单调递增）。
-- 调用方 MAY 带 `Idempotency-Key`（1–255 字符）。同一租户、同一终端用户内，相同 key + 相同请求体（按 SHA-256 比较）MUST 接回已有任务而不是再次执行；请求体不同 MUST 返回 422 `IDEMPOTENCY_KEY_REUSED`。key 至少保留 24 小时。
-- 保留期（勘误 E6）：网关 SHOULD 定期清理已结束的任务（§12 第 8 条）。清理以任务结束时间为准，超过网关保留期（生产环境 MUST ≥ 24 小时，参考实现与各 SDK 默认 7 天，可配置，负值表示不清理）的已结束任务连同其事件、它的 `Idempotency-Key` 记录一起删除，同时删除已过期的配对授权记录；未结束的任务 MUST NOT 被清理。幂等记录 MUST NOT 比它的任务活得更久：保留期内用同一 key 重放接回原任务，清理之后用同一 key 和同一请求体再次请求会作为新任务执行（不是 404，也不是 `IDEMPOTENCY_KEY_REUSED`）。
+- 调用方 MAY 带 `Idempotency-Key`（1–255 个可打印 ASCII 字符，§4.1）。同一租户、同一终端用户内，相同 key + 相同请求体（按 SHA-256 比较）MUST 接回已有任务而不是再次执行；请求体不同 MUST 返回 422 `IDEMPOTENCY_KEY_REUSED`。key 至少保留 24 小时。
+- 保留期：网关 SHOULD 定期清理已结束的任务（§12 第 8 条）。清理以任务结束时间为准，超过网关保留期（生产环境 MUST ≥ 24 小时，参考实现与各 SDK 默认 7 天，可配置，负值表示不清理）的已结束任务连同其事件、它的 `Idempotency-Key` 记录一起删除，同时删除已过期的配对授权记录；未结束的任务 MUST NOT 被清理。幂等记录 MUST NOT 比它的任务活得更久：保留期内用同一 key 重放接回原任务，清理之后用同一 key 和同一请求体再次请求会作为新任务执行（不是 404，也不是 `IDEMPOTENCY_KEY_REUSED`）。
 - 幂等记录、任务记录、排队等待设备并发槽位与网关内存中的任务登记 MUST 构成一个整体：从幂等记录可见的那一刻起，任务即处于“待执行（pending）”状态，此时到达的重复请求 MUST 接回这个待执行任务（等待并得到同一结果），MUST NOT 返回 404、`OUTCOME_UNKNOWN` 或再次执行。任务在排队阶段失败（如 `DEVICE_BUSY`、`DEVICE_OFFLINE`）时，网关 MUST 把该错误记录为任务的终止事件，此后用同一 key 重放得到同一错误；要重新执行，调用方使用新的 key。
 - 持久化先于确认：网关 MUST 先把设备数据帧（终止帧还包括任务终止状态）写入存储，再向订阅者发布并发送覆盖该帧的 `task.ack`。写入失败时 MUST NOT 确认该帧（设备保留在续传缓冲区中），MUST 通知设备取消任务，并以 `INTERNAL` 结束任务，不得把未持久化的结果作为成功返回给调用方。
 - 终止原子性：终止事件（`task.done` / `task.error`）与任务终止状态（SUCCEEDED / FAILED / CANCELLED）MUST 在同一个事务中提交，要么都写入，要么都不写入。每个任务最多有一个终止事件；`seq` MUST NOT 复用，已有终止状态 MUST NOT 被覆盖。终止写入失败时，网关以 `INTERNAL` 结束任务，这个本地错误使用同一 `seq`（失败的事务没有占用它）。
@@ -611,10 +699,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 ### 15.4 慢消费者
 网关 SHOULD 对长期不读取的 SSE 调用方设置上限（参考实现 60 秒），超时后以 `SLOW_CONSUMER` 结束任务并向设备发送 `task.cancel`。
 
-### 15.5 迟到帧与窗口回收（勘误 E7）
-- 网关在本地结束任务（客户端取消、超时、慢消费者、本地错误，见 §14.4“单一终止决策”）并发出 `task.cancel` 后，设备可能已经发出、或在收到取消前继续发出该任务的数据帧。这些迟到帧不再交付给调用方，但网关 MUST 照常用 `task.ack` 确认它们，使设备释放续传缓冲和该任务占用的 `task_window`/`conn_window`；直到收到该任务的终止帧（`task.done`/`task.error`）为止。网关 MUST NOT 对这类帧回复 `task.cancel(unknown_task)`。
-- 网关为此保留的“已在本地结束”状态 MAY 有上限（参考实现每设备 1024 个任务）。对网关完全不认识的任务（从未存在，或状态已被淘汰）的数据帧，网关回复 `task.cancel {reason: "unknown_task"}` 且不再确认；设备收到后 MAY 丢弃该任务的未确认帧并释放其窗口。
-- 设备收到 `task.cancel` 后 SHOULD 尽快以 `task.error`（`CANCELLED`）结束该任务；该终止帧同样按上文被确认，此后设备即可忘掉该任务。
+### 15.5 迟到帧与窗口回收
+网关在本地结束任务后，设备已发出或仍在发出的数据帧照常被确认，直到该任务的终止帧，从而释放设备的续传缓冲和窗口；网关 MUST NOT 对这些帧回复 `task.cancel(unknown_task)`。逐行规则见 §8.6（D1–D3、F1）。
 
 ---
 
@@ -622,7 +708,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 ### 16.1 tools
 - `hello`/`models.update` 的 `model_capabilities` 为每个模型声明 `tools`、`vision`、`audio` 中的若干项。`GET /v1/models` MUST 返回每个模型的 `capabilities`。
-- `hello`/`models.update` 可选携带 `model_names`：`{模型 id: 显示名}`（显示名 1..128 字符，例如桌面端的方案名）。本字段属于协议 1.0：仅用于展示，网关 SHOULD 在 `GET /v1/models` 条目中以 `display_name` 返回（Anthropic 形状的 `display_name` 也用它，缺省为 id），在设备列表中以 `model_names` 返回；请求 MUST 仍使用模型 id。网关 MUST 忽略未出现在 `models` 中的条目；省略该字段时不返回显示名。
+- `hello`/`models.update` 可选携带 `model_names`：`{模型 id: 显示名}`（显示名 1–128 字符，例如桌面端的方案名；超长时整帧按模式拒绝，§7.4）。本字段仅用于展示，网关 SHOULD 在 `GET /v1/models` 条目中以 `display_name` 返回（Anthropic 形状的 `display_name` 也用它，缺省为 id），在设备列表中以 `model_names` 返回；请求 MUST 仍使用模型 id。网关 MUST 忽略未出现在 `models` 中的条目；省略该字段时不返回显示名。
 - 请求带 `tools` 而目标模型未声明 `tools`、或设备未协商 `tools` 能力时，网关 MUST 返回 400 `CAPABILITY_UNSUPPORTED`，MUST NOT 下发任务。
 - `tools`、`tool_choice` 原样放入签名的 `task.run`。设备在 `task.delta.tool_calls` 中按 OpenAI 流式格式回报（`index` 区分调用，`arguments` 可分片），以 `finish_reason: "tool_calls"` 结束。网关 MUST 透传为 SSE `delta.tool_calls`；非流式响应 MUST 按 `index` 合并成 `message.tool_calls`。
 - 后续请求中的 `role: "assistant"`+`tool_calls` 和 `role: "tool"`+`tool_call_id` 消息 MUST 原样转给设备。
@@ -631,7 +717,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 ### 16.2 内容片段
 `content` 可为片段数组：`{type:"text",text}`、`{type:"image_url",image_url:{url,detail?}}`（需 `vision`）、`{type:"input_audio",input_audio:{data,format}}`（需 `audio`）。缺少能力时 400 `CAPABILITY_UNSUPPORTED`。`image_url.url` 允许 `https://`（原样转发，由设备自行获取）与 `data:`；`http://` MUST 拒绝。
 
-远程图片（勘误 E4）：网关 MUST NOT 下载 `https://` 图片，也 MUST NOT 改写该 URL；Anthropic `image` 块的 `source.type: "url"` 同样原样转发（§6.7）。设备或其上游模型不能获取远程图片时，设备 MUST 返回 `task.error`（`CAPABILITY_UNSUPPORTED`，消息说明不支持远程图片 URL），网关把它作为 400 `CAPABILITY_UNSUPPORTED` 返回给调用方（流式请求在流中发送错误事件）。设备 MUST NOT 静默丢弃该图片后继续执行。
+远程图片：网关 MUST NOT 下载 `https://` 图片，也 MUST NOT 改写该 URL；Anthropic `image` 块的 `source.type: "url"` 同样原样转发（§6.7）。设备或其上游模型不能获取远程图片时，设备 MUST 返回 `task.error`（`CAPABILITY_UNSUPPORTED`，消息说明不支持远程图片 URL），网关把它作为 400 `CAPABILITY_UNSUPPORTED` 返回给调用方（流式请求在流中发送错误事件）。设备 MUST NOT 静默丢弃该图片后继续执行。
 
 ### 16.3 blob
 - 大于 16 KiB 的 data: URI 和音频数据，网关 MUST 移入 blob：`task.run.blobs` 列出 `{id, size, sha256(base64url), media_type}`，片段中改写为 `lmbp-blob:<id>`。
@@ -654,7 +740,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 - Codex app-server 没有采样、停止序列和输出长度控制，也没有消息角色：连接器把对话合并成一段带角色标签的文本（`[system]`、`[user]`、`[assistant]` 各自成段），Codex 收到的是这一段文本，而不是分角色的消息。一轮正常完成即 `finish_reason: "stop"`（Codex 不会因长度截断）；中断、失败分别映射为 `CANCELLED`、上游错误。
 
-### 16.5 忽略与拒绝的请求字段（勘误 E5）
+### 16.5 忽略与拒绝的请求字段
 本节把 §6.5、§6.7、§16.1–§16.4 分散的规则汇总成一张表，不新增要求。“忽略”指网关接受请求、照常执行，但该字段 MUST NOT 写入 `task.run`；“拒绝”指网关在存储、排队或签名之前返回错误，MUST NOT 下发任务。
 
 | 接口 | 字段 / 内容 | 处理 |
@@ -726,7 +812,8 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 | `device_authorization_endpoint`、`token_endpoint` | REQUIRED，同源 |
 | `connect_endpoint` | REQUIRED，`wss://<host>/lmbp/v1/connect`（开发环境 `ws://`） |
 | `chat_completions_endpoint` | OPTIONAL |
-| `protocol_versions` | REQUIRED，如 `["1.0"]` |
+| `protocol_versions` | REQUIRED，`"主.次"` 字符串数组，2.0 网关 MUST 包含 `"2.0"` |
+| `profiles` | REQUIRED，网关满足的配置（§13.1），MUST 包含 `core` |
 | `capabilities` | REQUIRED，网关支持的扩展 |
 | `scopes_supported` | REQUIRED，§19.2 的作用域 |
 | `tenant`、`audience`、`saas`、`requested_models`、`requested_scopes`、`iat`、`exp`、`signed_metadata` | 仅 `?tenant=` 时出现，§19.1 |
@@ -782,9 +869,9 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 ### 19.4 深链接 `lmbp://pair`
 ```
-lmbp://pair?v=1&gateway=<https issuer origin>&tenant=<tenant id>[&remote=<SaaS origin>]
+lmbp://pair?v=2&gateway=<https issuer origin>&tenant=<tenant id>[&remote=<SaaS origin>]
 ```
-- `v` REQUIRED，当前为 `2`；`gateway` REQUIRED，按 §18.1 规范化；`tenant` 匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；参数不得重复。
+- `v` REQUIRED，当前为 `2`；设备 MUST 拒绝其他值（1.0 的 `v=1` 链接提示需要 LMBP 2.0）；`gateway` REQUIRED，按 §18.1 规范化；`tenant` 匹配 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`；参数不得重复。
 - 链接 MUST NOT 携带秘密或展示信息；展示的一切都来自签名元数据，因此伪造的链接最多只能把用户引到另一个真实的、已签名的身份上。
 - 桌面应用 SHOULD 注册 `lmbp` URL scheme；不能注册时，用户可以粘贴链接。
 
@@ -802,20 +889,31 @@ lmbp://pair?v=1&gateway=<https issuer origin>&tenant=<tenant id>[&remote=<SaaS o
 
 - 网关多实例部署时的会话路由和共享去重/续传存储（参考实现为单进程）；
 - E2EE 的多设备/群组密钥与密钥透明日志；
-- 网关签名密钥轮换（JWKS 中并存多把密钥的过渡期规则）；
 - 网关侧的按租户用量计费接口；
 - 按 SaaS 的本机策略（配额、时间窗）与 `QUOTA_EXCEEDED` / `POLICY_DENIED` 错误码。
 
+密钥轮换、同意与作用域、严格模式、RFC/IANA 注册、许可与治理的方向见非规范草案 [`docs/lmbp-2-p2-draft.md`](lmbp-2-p2-draft.md)，它不构成 2.0 的要求。
+
 ---
 
-## 附录 A. 勘误
+## 附录 A. 相对 1.0 的变更
 
-协议版本仍为 1.0（`v: 1`）。以下条目澄清 1.0 的既有要求，将并入后续的 2.0；编号与 `lmbp-conformance` 的检查编号相同。
+2.0 与 1.x 不互通（§11）。下表列出全部线上变更；E1–E7 是 1.0 勘误，已并入正文，检查编号不变。
 
-- **E1（§6.6，行为更正）**：在线设备没有声明请求的模型时返回 404 `MODEL_NOT_FOUND`，不再返回 503 `DEVICE_OFFLINE`。此前所有实现都返回 503。
-- **E2（§6，行为更正）**：所有 JSON 响应带 `Cache-Control: no-store`，公开发现文档除外。此前 Node.js、Python、Java 不带这个头，Go 的 JWKS 不带缓存头。
-- **E3（§6.5）**：调用方断开后发送 `task.cancel(client_disconnected)` 的要求同样适用于非流式请求。
-- **E4（§16.2）**：网关不下载远程图片；设备无法获取时返回 `CAPABILITY_UNSUPPORTED`，调用方收到 400。
-- **E5（§16.5）**：列出哪些请求字段被忽略、哪些被拒绝。
-- **E6（§14.4）**：超过保留期后，已结束的任务和它的幂等记录一起删除；之后用同一个 key 重放会重新执行。
-- **E7（§15.5）**：网关在本地结束任务后，设备再发来的迟到帧仍然要 ACK，以便回收窗口。
+| 变更 | 1.0 | 2.0 | 条款 |
+|---|---|---|---|
+| 版本标识 | 子协议 `lmbp`，`v: 1`，`["1.0"]`，`v=1` 链接 | 子协议仍为 `lmbp`；`v: 2`，`["2.0"]`，`v=2` 链接；1.x 对端在 hello 时被明确拒绝（`VERSION_UNSUPPORTED` 后断开） | §7.1、§7.4、§11、§19.4 |
+| `task.run` 的 `seq` | 只在协商 `resume`/`flow` 时出现，正文与模式不一致 | 必填，恒为 1 | §7.2 |
+| `max_concurrency` | 越界截断到 1–16 | `hello` 越界拒绝；`models.update` 整帧拒绝；`welcome` 取 min(声明值, 网关上限) | §7.4、§10 |
+| hello / models.update | 只检查部分字段 | 按 `hello.json` / `models.update.json` 整体校验，检查顺序固定 | §7.3、§7.4 |
+| 字符串长度 | 各语言分别按字节、码点或 UTF-16 计；`stop` 按字节 | 一律按码点；`X-End-User`、`Idempotency-Key` 限可打印 ASCII | §4.1、§10 |
+| 握手后的 `v ≠ 2` 帧 | 未定义 | `error BAD_REQUEST`，丢弃该帧，会话保持 | §7.2 |
+| 取消与确认 | 分散在 §7.6、§15.5 | §8.6 状态转换表 | §8.6 |
+| 配置与需求 ID | 4 个等级 | 7 个配置，元数据 `profiles`，需求 ID 映射到检查 | §13 |
+| E1 | 在线设备未声明模型返回 503 | 404 `MODEL_NOT_FOUND` | §6.6 |
+| E2 | 部分实现缺缓存头 | JSON 响应 `Cache-Control: no-store`（公开发现文档除外） | §6 |
+| E3 | 只要求流式请求 | 非流式请求断开同样发送 `task.cancel` | §6.5 |
+| E4 | 未定义 | 网关不下载远程图片，设备不支持时 400 `CAPABILITY_UNSUPPORTED` | §16.2 |
+| E5 | 规则分散 | 忽略与拒绝字段汇总表 | §16.5 |
+| E6 | 未定义 | 保留期清理任务及其幂等记录 | §14.4 |
+| E7 | 未定义 | 本地结束的任务，迟到帧照常确认 | §8.6、§15.5 |

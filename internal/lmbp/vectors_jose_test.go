@@ -61,7 +61,7 @@ func genJOSE() joseFile {
 	md := map[string]any{}
 	{
 		m := GatewayMetadata{Issuer: vecIssuer, JWKSURI: vecIssuer + "/.well-known/jwks.json", DeviceAuthorizationEndpoint: vecIssuer + "/lmbp/v1/device/authorize",
-			TokenEndpoint: vecIssuer + "/lmbp/v1/token", ConnectEndpoint: "wss://gw.example.com/lmbp/v1/connect", ProtocolVersions: []string{"1.0"}, Capabilities: Capabilities,
+			TokenEndpoint: vecIssuer + "/lmbp/v1/token", ConnectEndpoint: "wss://gw.example.com/lmbp/v1/connect", ProtocolVersions: ProtocolVersions, Profiles: Profiles, Capabilities: Capabilities,
 			ScopesSupported: Scopes, Tenant: "acme", Audience: TokenAudience(vecIssuer, "acme"), SaaS: &SaaSInfo{Name: "Acme CRM", PairingURI: "https://acme.example/lmbp/link"},
 			Iat: vecIat, Exp: vecIat + 3600}
 		b, _ := json.Marshal(m)

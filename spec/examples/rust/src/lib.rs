@@ -74,13 +74,13 @@ pub fn verify_hello(gw: &[u8], device_pub_of: impl Fn(&str) -> Vec<u8>, frame: &
     let sub = c["sub"].as_str().ok_or("sub")?.to_string();
     let dev = device_pub_of(&sub);
     if c["cnf"]["jkt"] != thumbprint(&dev).as_str() { return Err("token not bound to device key".into()); }
-    if frame["v"] != 1 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
+    if frame["v"] != 2 || frame["type"] != "hello" || frame["data"]["device_id"] != sub.as_str() { return Err("bad hello".into()); }
     verify_proof(&dev, frame["data"]["proof"].as_str().ok_or("proof")?, &sub, "lmbp:hello", token, now)?;
     Ok(c)
 }
 
 pub fn sign_task_run(gw: &SigningKey, kid: &str, payload: &Value) -> Value {
-    json!({"v":1,"type":"task.run","task_id":payload["task_id"],"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
+    json!({"v":2,"type":"task.run","task_id":payload["task_id"],"seq":1,"jws":sign_jws(gw, TYP_TASK, payload.to_string().as_bytes(), Some(kid))})
 }
 
 pub fn verify_task_run(gw: &[u8], frame: &Value) -> Result<Value> {

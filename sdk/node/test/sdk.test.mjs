@@ -41,7 +41,7 @@ test('pairing API: link/QR, lookup, approve, list, revoke', async () => {
   const s = await setup({ issuer: 'https://gw.example.com' });
   try {
     const info = s.lsp.pairing.create(T);
-    assert.equal(info.link, 'lmbp://pair?v=1&gateway=https%3A%2F%2Fgw.example.com&tenant=acme');
+    assert.equal(info.link, 'lmbp://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme');
     assert.match(info.qrSVG, /^<svg/);
     assert.match(info.qrDataURL, /^data:image\/gif;base64,/);
     const p = await startPairing(s.base, T, 'my-laptop');

@@ -140,3 +140,25 @@ fn chat_page_and_core_endpoints() {
     gateway::lock().cfg.web_dir = String::new();
     assert_eq!(get(port, "/chat").0, 404);
 }
+
+/// LMBP 2.0 (§4.1, §7.4): hello / models.update are schema-checked without
+/// clamping, lengths count code points, the two headers are printable ASCII.
+#[test]
+fn lmbp2_announce_lengths_headers() {
+    let hello = |conc: Value| serde_json::json!({"device_id": "d", "client": "c", "models": ["m1"], "max_concurrency": conc, "proof": "eyJh.eyJh.c2ln"});
+    assert!(params::announce_problem(&hello(serde_json::json!(2)), true).is_none());
+    for bad in [serde_json::json!(0), serde_json::json!(17), serde_json::json!("2")] {
+        assert!(params::announce_problem(&hello(bad.clone()), true).is_some(), "{bad}");
+    }
+    let mut missing = hello(serde_json::json!(2));
+    missing.as_object_mut().unwrap().remove("max_concurrency");
+    assert!(params::announce_problem(&missing, true).is_some());
+    let names = |n: usize| serde_json::json!({"models": ["m1"], "model_names": {"m1": "😀".repeat(n)}});
+    assert!(params::announce_problem(&names(128), false).is_none());
+    assert!(params::announce_problem(&names(129), false).is_some());
+    assert!(params::announce_problem(&serde_json::json!({"models": ["m1"], "max_concurrency": 99}), false).is_some());
+    assert_eq!(lmbp::char_len(&"😀".repeat(100)), 100);
+    assert!(lmbp::valid_header(&"a".repeat(128), 128) && !lmbp::valid_header(&"a".repeat(129), 128));
+    assert!(!lmbp::valid_header("张三", 128) && !lmbp::valid_header("", 128) && !lmbp::valid_header("a\tb", 128));
+    assert_eq!((lmbp::VERSION, lmbp::SUBPROTOCOL), (2, "lmbp"));
+}

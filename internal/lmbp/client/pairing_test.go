@@ -144,16 +144,16 @@ func TestRejectsForgedMetadata(t *testing.T) {
 }
 
 func TestParsePairLink(t *testing.T) {
-	ok := []string{"lmbp://pair?v=1&gateway=https%3A%2F%2Fgw.example.com&tenant=acme", "lmbp://pair?v=1&gateway=https://GW.example.com:443&tenant=a.b-c&remote=https://crm.example"}
+	ok := []string{"lmbp://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme", "lmbp://pair?v=2&gateway=https://GW.example.com:443&tenant=a.b-c&remote=https://crm.example"}
 	for _, s := range ok {
 		l, err := lmbp.ParsePairLink(s)
 		if err != nil || l.Gateway != "https://gw.example.com" {
 			t.Fatalf("%s: %v %+v", s, err, l)
 		}
 	}
-	bad := []string{"https://pair?v=1&gateway=https://gw&tenant=a", "lmbp://pair?gateway=https://gw.example.com&tenant=a", "lmbp://pair?v=1&gateway=http://gw.example.com&tenant=a",
-		"lmbp://pair?v=1&gateway=https://gw.example.com/path&tenant=a", "lmbp://pair?v=1&gateway=https://gw.example.com&tenant=a/b", "lmbp://pair?v=1&v=2&gateway=https://gw.example.com&tenant=a",
-		"lmbp://pair?v=1&gateway=https://u:p@gw.example.com&tenant=a"}
+	bad := []string{"https://pair?v=1&gateway=https://gw&tenant=a", "lmbp://pair?gateway=https://gw.example.com&tenant=a", "lmbp://pair?v=2&gateway=http://gw.example.com&tenant=a",
+		"lmbp://pair?v=2&gateway=https://gw.example.com/path&tenant=a", "lmbp://pair?v=2&gateway=https://gw.example.com&tenant=a/b", "lmbp://pair?v=1&v=2&gateway=https://gw.example.com&tenant=a", "lmbp://pair?v=1&gateway=https://gw.example.com&tenant=a",
+		"lmbp://pair?v=2&gateway=https://u:p@gw.example.com&tenant=a"}
 	for _, s := range bad {
 		if _, err := lmbp.ParsePairLink(s); err == nil {
 			t.Fatalf("accepted %s", s)

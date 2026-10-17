@@ -357,7 +357,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	say("⑦d 图片输入：120 KiB data: URI 被网关移入 blob（task.run 签入 size+sha256，随后 2 个 ≤96 KiB 的 blob.chunk）→ 设备重组后交给模型：%q", res.ImageReply)
 
 	// ── 端到端加密 ──
-	secret := "机密：项目代号青鸾，预算 4200 万"
+	secret := e2eeSecret
 	e2Text, e2Task, e2Code, err := streamChat(alice, ctx, "/api/chat/e2ee", map[string]any{"model": devModel, "messages": []map[string]string{{"role": "user", "content": secret}}}, nil)
 	if err != nil || e2Code != "" {
 		return nil, fmt.Errorf("e2ee chat: %v %s", err, e2Code)
@@ -377,8 +377,7 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	time.Sleep(200 * time.Millisecond)
 	rawDB, _ := os.ReadFile(dbPath)
 	walDB, _ := os.ReadFile(dbPath + "-wal")
-	needles := [][]byte{[]byte("青鸾"), []byte("4200")}
-	for _, n := range needles {
+	for _, n := range e2eeNeedles {
 		res.E2EEPlainInStore = res.E2EEPlainInStore || bytes.Contains(dump.Bytes(), n) || bytes.Contains(rawDB, n) || bytes.Contains(walDB, n)
 		res.E2EEPlainInLogs = res.E2EEPlainInLogs || strings.Contains(gwLogs.String(), string(n))
 	}
@@ -444,3 +443,11 @@ func Run(ctx context.Context, out io.Writer, dir string) (*Result, error) {
 	say("⑬ alice 吊销设备 → 状态 revoked、会话被关闭、设备离线：%v", res.RevokedRefresh)
 	return res, nil
 }
+
+// e2eeSecret is the end-to-end encrypted prompt; e2eeNeedles are the parts
+// searched for in the gateway store and logs. They must not occur in other
+// data the store legitimately holds: a bare "4200" did (the "[04200]" chunk of
+// the backpressure reply), which made the plaintext check flaky.
+const e2eeSecret = "机密：项目代号青鸾，预算 4200 万"
+
+var e2eeNeedles = [][]byte{[]byte("青鸾"), []byte("预算 4200 万")}

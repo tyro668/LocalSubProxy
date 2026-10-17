@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,9 +13,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/LocalSubProxy/spec/schemas"
 )
 
 // dstate is one device's protocol state. It outlives a single WebSocket
@@ -204,7 +208,9 @@ func (ds *dstate) drop(code, msg string) {
 
 func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	if !contains(websocket.Subprotocols(r), lmbp.Subprotocol) {
-		httpError(w, r, 400, lmbp.ErrVersion, "WebSocket subprotocol lmbp required")
+		// No "lmbp" offered: refused before the upgrade (§7.1). 1.x devices also
+		// offer "lmbp"; they are refused on hello by the envelope v (§11).
+		httpError(w, r, 400, lmbp.ErrVersion, versionRequired)
 		return
 	}
 	if r.Header.Get("Origin") != "" {
@@ -234,7 +240,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	var env lmbp.Envelope
 	var hello lmbp.Hello
 	mt, raw, err := conn.ReadMessage()
-	if err != nil || mt != websocket.TextMessage || json.Unmarshal(raw, &env) != nil || env.Type != lmbp.TypeHello || json.Unmarshal(env.Data, &hello) != nil {
+	if err != nil || mt != websocket.TextMessage || json.Unmarshal(raw, &env) != nil || env.Type != lmbp.TypeHello {
 		return
 	}
 	wmu := &sync.Mutex{}
@@ -242,8 +248,17 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(lmbp.ErrorBody{Code: code, Message: msg})
 		_ = conn.WriteJSON(lmbp.Envelope{V: lmbp.Version, Type: lmbp.TypeError, ID: env.ID, Data: b})
 	}
+	// Handshake checks in the order of spec §7.4.
 	if env.V != lmbp.Version {
-		early(lmbp.ErrVersion, "unsupported protocol version")
+		early(lmbp.ErrVersion, versionRequired)
+		return
+	}
+	if msg := checkAnnounce(env.Data, true); msg != "" {
+		early(lmbp.ErrBadRequest, msg)
+		return
+	}
+	if json.Unmarshal(env.Data, &hello) != nil {
+		early(lmbp.ErrBadRequest, "malformed hello")
 		return
 	}
 	pc, perr := lmbp.VerifyProof(dev.PublicKey, hello.Proof, dev.ID, lmbp.ProofHello, tok, time.Now())
@@ -265,13 +280,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		early(lmbp.ErrBadRequest, fmt.Sprintf("flow windows must be >= max_frame_bytes (%d) and conn_window >= task_window", lmbp.MaxFrameBytes))
 		return
 	}
-	conc := hello.MaxConcurrency
-	if conc < 1 {
-		conc = 1
-	}
-	if conc > g.cfg.MaxConc {
-		conc = g.cfg.MaxConc
-	}
+	conc := min(hello.MaxConcurrency, g.cfg.MaxConc) // gateway policy may lower, never raise (§7.4)
 
 	// The device may have been revoked while we awaited the hello: the
 	// upgrade-time read is stale. Re-check before activating.
@@ -466,7 +475,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		}
 		var in lmbp.Envelope
 		if json.Unmarshal(raw, &in) != nil || in.V != lmbp.Version {
-			ds.sendErr(in.ID, lmbp.ErrBadRequest, "malformed frame")
+			ds.sendErr(in.ID, lmbp.ErrBadRequest, "malformed frame") // after the handshake: dropped, session kept (§7.4)
 			continue
 		}
 		switch in.Type {
@@ -486,10 +495,15 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 			}
 		case lmbp.TypeModelsUpdate:
 			var mu lmbp.ModelsUpdate
-			if json.Unmarshal(in.Data, &mu) == nil && len(mu.Models) <= 500 {
+			if msg := checkAnnounce(in.Data, false); msg != "" || json.Unmarshal(in.Data, &mu) != nil {
+				if msg == "" {
+					msg = "malformed models.update"
+				}
+				ds.sendErr(in.ID, lmbp.ErrBadRequest, msg) // rejected whole: nothing is applied (§7.4)
+			} else {
 				ds.mu.Lock()
 				ds.models, ds.modelCapMap, ds.modelNames = mu.Models, mu.ModelCapabilities, cleanNames(mu.ModelNames, mu.Models)
-				if mu.MaxConcurrency >= 1 {
+				if mu.MaxConcurrency != 0 {
 					ds.maxConc = min(mu.MaxConcurrency, g.cfg.MaxConc)
 				}
 				hasE2EE := contains(ds.caps, lmbp.CapE2EE)
@@ -669,4 +683,39 @@ func cleanNames(in map[string]string, models []string) map[string]string {
 		out[m] = n
 	}
 	return out
+}
+
+const versionRequired = "LMBP 2.0 required: WebSocket subprotocol lmbp and envelope v 2 (LMBP 1.x is not supported)"
+
+// checkAnnounce validates hello / models.update data against its published
+// schema (spec/schemas/hello.json, models.update.json; spec §7.4). Among
+// other rules: max_concurrency is an integer 1..16 (required in hello),
+// models has at most 500 ids, display names are 1..128 code points.
+// Out-of-range values are rejected, never clamped. "" means acceptable.
+func checkAnnounce(data json.RawMessage, hello bool) string {
+	load, what := schemas.ModelsUpdate, "models.update"
+	if hello {
+		load, what = schemas.Hello, "hello"
+	}
+	sch, err := load()
+	if err != nil {
+		return what + " schema unavailable"
+	}
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		return what + " data must be a JSON object"
+	}
+	if err := sch.Validate(inst); err != nil {
+		var ve *jsonschema.ValidationError
+		if errors.As(err, &ve) {
+			return what + " does not match " + what + ".json: " + firstLeaf(ve)
+		}
+		return what + " does not match " + what + ".json"
+	}
+	return ""
+}
+
+func firstLeaf(ve *jsonschema.ValidationError) string {
+	lines := strings.Split(strings.TrimSpace(ve.Error()), "\n")
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[len(lines)-1]), "- "))
 }

@@ -134,7 +134,7 @@ void main() {
       final ids = <String, String>{};
       for (final (tenant, gw, key) in saas) {
         final link =
-            'lmbp://pair?v=1&gateway=${Uri.encodeComponent(gw)}&tenant=$tenant';
+            'lmbp://pair?v=2&gateway=${Uri.encodeComponent(gw)}&tenant=$tenant';
         final c = api.pairPrepare(link);
         final a = api.pairApprove(c['pair_id'] as String, [
           'local/*',

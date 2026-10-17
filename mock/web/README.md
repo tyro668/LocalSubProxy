@@ -51,7 +51,7 @@ go run ./cmd/localsubproxy server -listen 127.0.0.1:8080 -db /tmp/gw.db -tenants
 #   mock/python/.venv/bin/python mock/python/gateway.py --listen 127.0.0.1:8080 --issuer http://127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json &
 
 # 3) 浏览器打开 http://127.0.0.1:8080/chat ，以 acme / alice / $LSP_TENANT_KEY_ACME 登录，复制页面上的 Connector 命令，例如：
-go run ./cmd/localsubproxy connector -pair-link 'lmbp://pair?v=1&gateway=http%3A%2F%2F127.0.0.1%3A8080&tenant=acme' \
+go run ./cmd/localsubproxy connector -pair-link 'lmbp://pair?v=2&gateway=http%3A%2F%2F127.0.0.1%3A8080&tenant=acme' \
   -adapter-id local -ollama-url http://127.0.0.1:11500 -models qwen3-8b -capabilities vision \
   -identity /tmp/dev/id.json -adapter-file /tmp/dev/adapters.enc -audit-db /tmp/dev/audit.db
 #    在终端确认授权后，把连接器打印的配对码填到页面上，点“批准”。设备上线后就可以对话（模型名为 local/qwen3-8b）。

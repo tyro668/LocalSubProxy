@@ -18,13 +18,12 @@ var FS embed.FS
 const Base = "https://localsubproxy.dev/spec/lmbp/"
 
 var (
-	once    sync.Once
-	taskRun *jsonschema.Schema
-	errLoad error
+	once     sync.Once
+	compiled = map[string]*jsonschema.Schema{}
+	errLoad  error
 )
 
-// TaskRun returns the compiled task.run.payload schema.
-func TaskRun() (*jsonschema.Schema, error) {
+func load(name string) (*jsonschema.Schema, error) {
 	once.Do(func() {
 		c := jsonschema.NewCompiler()
 		c.DefaultDraft(jsonschema.Draft2020)
@@ -49,7 +48,23 @@ func TaskRun() (*jsonschema.Schema, error) {
 				return
 			}
 		}
-		taskRun, errLoad = c.Compile(Base + "task.run.payload.json")
+		for _, n := range []string{"task.run.payload.json", "hello.json", "models.update.json"} {
+			s, err := c.Compile(Base + n)
+			if err != nil {
+				errLoad = err
+				return
+			}
+			compiled[n] = s
+		}
 	})
-	return taskRun, errLoad
+	return compiled[name], errLoad
 }
+
+// TaskRun returns the compiled task.run.payload schema.
+func TaskRun() (*jsonschema.Schema, error) { return load("task.run.payload.json") }
+
+// Hello returns the compiled hello data schema (spec §7.4).
+func Hello() (*jsonschema.Schema, error) { return load("hello.json") }
+
+// ModelsUpdate returns the compiled models.update data schema (spec §7.4).
+func ModelsUpdate() (*jsonschema.Schema, error) { return load("models.update.json") }

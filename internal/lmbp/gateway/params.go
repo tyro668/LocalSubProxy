@@ -124,8 +124,8 @@ func stopList(m map[string]any, k string, allowString bool) ([]string, *ParamErr
 	out := make([]string, len(list))
 	for i, x := range list {
 		s, ok := x.(string)
-		if !ok || s == "" || len(s) > MaxStopLength {
-			return nil, perr(k, "sequence %d must be a non-empty string of at most %d bytes", i, MaxStopLength)
+		if !ok || s == "" || lmbp.CharLen(s) > MaxStopLength {
+			return nil, perr(k, "sequence %d must be a non-empty string of at most %d characters", i, MaxStopLength)
 		}
 		out[i] = s
 	}

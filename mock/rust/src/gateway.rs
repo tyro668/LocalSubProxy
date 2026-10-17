@@ -470,7 +470,7 @@ fn route(g: &mut Guard, req: &Req, res: &mut Res) {
         "/.well-known/lmbp" => return metadata(g, req, res),
         "/lmbp/v1/device/authorize" => return authorize(g, req, res),
         "/lmbp/v1/token" => return token(g, req, res),
-        "/lmbp/v1/connect" => return problem(g, res, 400, "VERSION_UNSUPPORTED", "WebSocket subprotocol lmbp required"),
+        "/lmbp/v1/connect" => return problem(g, res, 400, "VERSION_UNSUPPORTED", lmbp::VERSION_REQUIRED),
         "/lmbp/v1/tenant/devices/approvals" => return approve(g, req, res, mode),
         "/lmbp/v1/tenant/devices" => return list_devices(g, req, res, mode),
         "/v1/models" => return models(g, req, res, mode),
@@ -532,8 +532,8 @@ fn tenant_auth(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode) -> Option<Au
         return None;
     };
     let user = req.headers.get("x-end-user").cloned().unwrap_or_default();
-    if user.is_empty() || user.encode_utf16().count() > 128 {
-        send_err(g, res, mode, 400, "BAD_REQUEST", "X-End-User header required");
+    if !lmbp::valid_header(&user, 128) {
+        send_err(g, res, mode, 400, "BAD_REQUEST", "X-End-User must be 1-128 printable ASCII characters");
         return None;
     }
     Some(Auth { tenant, user })
@@ -546,7 +546,7 @@ fn build_metadata(g: &Guard, iss: &str, t: Option<&Tenant>) -> Value {
         "device_authorization_endpoint" => format!("{}/lmbp/v1/device/authorize", iss),
         "token_endpoint" => format!("{}/lmbp/v1/token", iss), "connect_endpoint" => format!("{}/lmbp/v1/connect", ws),
         "chat_completions_endpoint" => format!("{}/v1/chat/completions", iss),
-        "protocol_versions" => vec!["1.0"], "capabilities" => lmbp::CAPABILITIES.to_vec(), "scopes_supported" => lmbp::SCOPES.to_vec()};
+        "protocol_versions" => lmbp::PROTOCOL_VERSIONS.to_vec(), "profiles" => lmbp::PROFILES.to_vec(), "capabilities" => lmbp::CAPABILITIES.to_vec(), "scopes_supported" => lmbp::SCOPES.to_vec()};
     let Some(t) = t else { return m };
     let p = &t.profile;
     let name = match get(p, "display_name").as_str() {
@@ -611,7 +611,7 @@ fn authorize(g: &mut Guard, req: &Req, res: &mut Res) {
     }
     let ps = match form_params(req, 4096) {
         Some(ps) if ps.get("tenant").map(|t| !t.is_empty()).unwrap_or(false)
-            && ps.get("device_name").map(|n| n.encode_utf16().count() <= 100).unwrap_or(true) => ps,
+            && ps.get("device_name").map(|n| lmbp::char_len(n) <= 100).unwrap_or(true) => ps,
         _ => return oauth_error(g, res, 400, "invalid_request"),
     };
     let pub_ = match lmbp::unb64(ps.get("public_key").map(|s| s.as_str()).unwrap_or("")) {
@@ -947,7 +947,7 @@ pub fn upgrade(req: &Req, mut inp: std::io::BufReader<TcpStream>, mut out: TcpSt
     if req.path != "/lmbp/v1/connect" {
         reject = Some((404, "BAD_REQUEST", "not found".into()));
     } else if !protos.contains(&lmbp::SUBPROTOCOL) {
-        reject = Some((400, "VERSION_UNSUPPORTED", "WebSocket subprotocol lmbp required".into()));
+        reject = Some((400, "VERSION_UNSUPPORTED", lmbp::VERSION_REQUIRED.into()));
     } else if !req.header("origin").is_empty() {
         reject = Some((403, "FORBIDDEN", "browser origins are not allowed".into()));
     } else {
@@ -1041,7 +1041,11 @@ fn on_hello(g: &mut Guard, wsid: u64, mut dev: Device, tok: &str, claims: Obj, i
         io.close(1000, "");
     };
     if !is_version(get(&env, "v")) {
-        return early("VERSION_UNSUPPORTED", "unsupported protocol version");
+        return early("VERSION_UNSUPPORTED", lmbp::VERSION_REQUIRED);
+    }
+    // §7.4 order: v, schema (BAD_REQUEST), device/proof (UNAUTHENTICATED), extension semantics.
+    if let Some(bad) = params::announce_problem(&hello, true) {
+        return early("BAD_REQUEST", &bad);
     }
     let proof_ok = get(&hello, "device_id").as_str() == Some(dev.id.as_str())
         && match lmbp::verify_proof(&dev.pub_, get(&hello, "proof"), &dev.id, lmbp::PROOF_HELLO, tok, lmbp::now()) {
@@ -1074,7 +1078,7 @@ fn on_hello(g: &mut Guard, wsid: u64, mut dev: Device, tok: &str, claims: Obj, i
     } else {
         caps.retain(|c| c != "e2ee");
     }
-    let conc = to_int32(get(&hello, "max_concurrency")).max(1).min(g.cfg.max_conc);
+    let conc = get(&hello, "max_concurrency").as_i64().unwrap_or(1).min(g.cfg.max_conc); // validated 1..16; may lower, never raise
     attach_session(g, wsid, dev, claims, iss, env_id, &hello, caps, conc);
 }
 
@@ -1293,17 +1297,17 @@ fn on_session_message(g: &mut Guard, wsid: u64, dsh: u64, dev_id: &str, raw: &st
         }
         "models.update" => {
             let mu = get(&inp, "data");
-            if let Some(ml) = get(mu, "models").as_array().filter(|m| m.len() <= 500 && mu.is_object()) {
+            if let Some(bad) = params::announce_problem(mu, false) {
+                send_ds_err(g, dsh, id_of(&inp).as_deref(), "BAD_REQUEST", &bad); // rejected whole: nothing applied
+            } else if let Some(ml) = get(mu, "models").as_array() {
                 let max_c = g.cfg.max_conc;
                 let ds = g.ds(dsh);
                 ds.models = ml.clone();
                 ds.model_caps = get(mu, "model_capabilities").as_object().cloned().unwrap_or_default();
                 ds.model_names = clean_names(get(mu, "model_names"), &ml);
-                if let Some(mx) = get(mu, "max_concurrency").as_f64() {
-                    if mx >= 1.0 {
-                        ds.max_conc = (mx.min(max_c as f64)) as i64;
-                        wake_slots(g, dsh);
-                    }
+                if let Some(mx) = get(mu, "max_concurrency").as_i64() {
+                    ds.max_conc = mx.min(max_c);
+                    wake_slots(g, dsh);
                 }
                 let e2ee_cap = g.dstates[&dsh].has_cap("e2ee");
                 if truthy(get(mu, "e2ee_key")) && e2ee_cap {
@@ -1599,8 +1603,8 @@ fn chat(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode, pre_body: Option<Ve
         Err(e) => return json_res(g, res, 400, &params::param_error_body(&e, anthropic)),
     };
     let idem_key = req.header("idempotency-key").to_string();
-    if idem_key.encode_utf16().count() > 255 {
-        return send_err(g, res, mode, 400, "BAD_REQUEST", "Idempotency-Key too long");
+    if !idem_key.is_empty() && !lmbp::valid_header(&idem_key, 255) {
+        return send_err(g, res, mode, 400, "BAD_REQUEST", "Idempotency-Key must be 1-255 printable ASCII characters");
     }
     let body_hash = lmbp::hex(&lmbp::sha256(&body));
     let (tenant, user) = (a.tenant.clone(), a.user.clone());
@@ -2614,7 +2618,7 @@ fn clean_names(names: &Value, models: &[Value]) -> Obj {
         if let Some(n) = m.get(k).and_then(|v| v.as_str()) {
             let t = n.trim();
             if !t.is_empty() {
-                out.insert(k.to_string(), Value::String(t.chars().take(128).collect()));
+                out.insert(k.to_string(), Value::String(t.to_string())); // length bounded by the schema (1-128 code points)
             }
         }
     }

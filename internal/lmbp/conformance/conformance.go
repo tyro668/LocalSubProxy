@@ -44,17 +44,20 @@ type Config struct {
 }
 
 type Result struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Pass   bool   `json:"pass"`
-	Skip   bool   `json:"skip,omitempty"` // not applicable to this run (Pass is true)
-	Detail string `json:"detail,omitempty"`
+	ID      string `json:"id"`
+	Req     string `json:"requirement"` // §13.2 requirement ID
+	Profile string `json:"profile"`
+	Title   string `json:"title"`
+	Pass    bool   `json:"pass"`
+	Skip    bool   `json:"skip,omitempty"` // not applicable to this run (Pass is true)
+	Detail  string `json:"detail,omitempty"`
 }
 
 // skip records a check that does not apply to this run (for example E6
 // without -retention). It never fails the suite.
 func (r *runner) skip(id, title, why string) {
-	r.results = append(r.results, Result{ID: id, Title: title, Pass: true, Skip: true, Detail: why})
+	rq, _ := RequirementOf(id)
+	r.results = append(r.results, Result{ID: id, Req: rq.ID, Profile: rq.Profile, Title: title, Pass: true, Skip: true, Detail: why})
 	if r.cfg.Log != nil {
 		fmt.Fprintf(r.cfg.Log, "SKIP  %-6s %s (%s)\n", id, title, why)
 	}
@@ -71,12 +74,14 @@ type runner struct {
 	devKey  ed25519.PrivateKey
 	devID   string
 	issuer  string
+	runSeq  int64 // envelope seq of the last task.run read by awaitRun
 }
 
 var errStop = errors.New("prerequisite failed")
 
 func (r *runner) check(id, title string, err error) bool {
-	res := Result{ID: id, Title: title, Pass: err == nil}
+	rq, _ := RequirementOf(id)
+	res := Result{ID: id, Req: rq.ID, Profile: rq.Profile, Title: title, Pass: err == nil}
 	if err != nil {
 		res.Detail = err.Error()
 	}
@@ -109,6 +114,17 @@ func Run(ctx context.Context, cfg Config) []Result {
 		}
 	}
 	_ = r.run(ctx)
+	// F0/F1 are recorded on every offending frame; a clean run records one pass each.
+	seen := map[string]bool{}
+	for _, x := range r.results {
+		seen[x.ID] = true
+	}
+	if !seen["F0"] {
+		r.check("F0", "gateway sends only text frames", nil)
+	}
+	if !seen["F1"] && r.schema != nil {
+		r.check("F1", "every gateway frame matches envelope.json", nil)
+	}
 	return r.results
 }
 
@@ -229,6 +245,7 @@ func (r *runner) run(ctx context.Context) error {
 	}
 	r.check("P2", "user_code matches XXXX-XXXX over BCDFGHJKLMNPQRSTVWXZ", want(userCodeRe.MatchString(uc), "got %q", uc))
 	r.check("P3", "device authorization response has Cache-Control: no-store", want(strings.Contains(h.Get("Cache-Control"), "no-store"), "got %q", h.Get("Cache-Control")))
+	r.runV2Pairing()
 	tok := func(proof string) (int, map[string]any) {
 		st, m, _, _ := r.form("/lmbp/v1/token", url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {dc}, "proof": {proof}})
 		return st, m
@@ -315,6 +332,7 @@ func (r *runner) run(ctx context.Context) error {
 		r.check("W3", "hello whose proof is bound to another token is rejected (error/close, no welcome)", want(f.Type != lmbp.TypeWelcome, "got welcome"))
 		conn.Close()
 		r.auditHelloProofs(key, at)
+		r.runV2Handshake(key, at)
 	} else {
 		r.check("W3", "hello whose proof is bound to another token is rejected", fmt.Errorf("could not connect: %v %s", err, status(resp)))
 	}
@@ -341,6 +359,7 @@ func (r *runner) run(ctx context.Context) error {
 		gotPong = err == nil && f.Type == lmbp.TypePong && f.ID == "p1"
 	}
 	r.check("W7", "unknown message type does not kill the session; ping is answered by pong with same id", want(gotPong, "last frame %+v err %v", f, err))
+	r.runV2Session(conn, wel, 2)
 
 	// models visible through the OpenAI surface
 	st, ml, _, _ := r.tenant(http.MethodGet, "/v1/models", nil)
@@ -354,6 +373,7 @@ func (r *runner) run(ctx context.Context) error {
 		}
 	}
 	r.check("O1", "GET /v1/models lists <device_id>/<model> for the owner", want(st == 200 && found, "status %d %v", st, ml))
+	r.runV2Headers()
 
 	// streaming task
 	frames := make(chan lmbp.Envelope, 64)
@@ -371,6 +391,7 @@ func (r *runner) run(ctx context.Context) error {
 	go func() { sse <- r.chat(ctx, full, true) }()
 	run, err := r.awaitRun(frames)
 	r.check("R1", "task.run arrives with no data member and a jws whose typ is lmbp-task+jws", err)
+	r.check("R3", "task.run is a data frame with envelope seq 1 even without flow/resume (§7.2)", want(err == nil && r.runSeq == 1, "seq %d", r.runSeq))
 	if err == nil {
 		r.check("R2", "task.run JWS verifies with gateway_key; payload task_id/device_id/model/exp are correct",
 			want(run.DeviceID == r.devID && run.Model == model && run.Exp > time.Now().Unix() && len(run.Nonce) >= 16, "payload %+v", run))
@@ -480,6 +501,7 @@ func (r *runner) awaitRun(frames <-chan lmbp.Envelope) (lmbp.TaskRun, error) {
 			if f.Type != lmbp.TypeTaskRun {
 				continue
 			}
+			r.runSeq = f.Seq
 			if len(f.Data) > 0 {
 				return lmbp.TaskRun{}, errors.New("task.run carries data")
 			}
@@ -594,6 +616,12 @@ func (r *runner) metadata() error {
 		ok = ok && lmbp.SameOrigin(u, r.issuer)
 	}
 	r.check("M2", "jwks_uri, device_authorization_endpoint, token_endpoint and connect_endpoint are on the issuer origin", want(ok && len(base.ProtocolVersions) > 0, "%+v", base))
+	profOK := containsS(base.Profiles, lmbp.ProfileCore)
+	for _, p := range base.Profiles {
+		profOK = profOK && containsS(lmbp.Profiles, p)
+	}
+	r.check("M8", "metadata protocol_versions lists 2.0 and not 1.0; profiles lists core and only registered profiles (§11, §13)",
+		want(containsS(base.ProtocolVersions, "2.0") && !containsS(base.ProtocolVersions, "1.0") && profOK, "protocol_versions %v profiles %v", base.ProtocolVersions, base.Profiles))
 	st, _, _, _ = r.tenant(http.MethodGet, lmbp.MetadataPath+"?tenant=no-such-tenant-"+lmbp.RandomID(""), nil)
 	if r.meta != nil {
 		r.check("M6", "gateway metadata validates against spec/schemas/gateway-metadata.json", r.validate(r.meta, b))

@@ -32,16 +32,22 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None, manual=None):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None, manual=None, hello_patch=None, env_patch=None):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
     if before_hello is not None:  # e.g. revoke while the gateway awaits the hello
         await before_hello()
-    await ws.send(json.dumps({"v": 1, "type": "hello", "id": "h1", "data": {
+    hello = {
         "device_id": tok["device_id"], "client": "sdk-test", "models": list(models), "model_capabilities": {m: ["tools"] for m in models},
         "max_concurrency": max_concurrency, "capabilities": (["tools", "e2ee"] if x else ["tools"]) + (["flow"] if flood else []),
-        **({"e2ee_key": E.sign_key_statement(key, tok["device_id"], x[1])} if x else {}), "proof": proof(key, tok["device_id"], L.PROOF_HELLO, tok["access_token"])}}))
+        **({"e2ee_key": E.sign_key_statement(key, tok["device_id"], x[1])} if x else {}), "proof": proof(key, tok["device_id"], L.PROOF_HELLO, tok["access_token"])}
+    for k, v in (hello_patch or {}).items():
+        if v is None:
+            hello.pop(k, None)
+        else:
+            hello[k] = v
+    await ws.send(json.dumps({"v": L.VERSION, "type": "hello", "id": "h1", "data": hello, **(env_patch or {})}))
     w = json.loads(await ws.recv())
     assert w["type"] == "welcome", w
     # flood {n, size, stats}: answer every task with n deltas of size bytes,
@@ -56,7 +62,7 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
             return sum(ln for s, ln in fl["frames"] if s > fl["acked"])
         for i in range(n + 1):
             last = i == n
-            m = json.dumps({"v": 1, "type": "task.done" if last else "task.delta", "task_id": run["task_id"], "seq": i + 1,
+            m = json.dumps({"v": L.VERSION, "type": "task.done" if last else "task.delta", "task_id": run["task_id"], "seq": i + 1,
                             "data": {"finish_reason": "stop", "usage": {"prompt_tokens": 1, "completion_tokens": n}} if last else {"text": "x" * size}})
             while unacked() > 0 and unacked() + len(m) > fl["win"]:
                 fl["wake"].clear()
@@ -77,7 +83,7 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
         text = "echo:" + req["messages"][-1]["content"]
         for seq, (typ, v, extra) in enumerate([("task.delta", {"text": text}, {}),
                                                ("task.done", {"finish_reason": "stop"}, {"finish_reason": "stop", "usage": {"prompt_tokens": 1, "completion_tokens": 1}})], 1):
-            await ws.send(json.dumps({"v": 1, "type": typ, "task_id": run["task_id"], "seq": seq,
+            await ws.send(json.dumps({"v": L.VERSION, "type": typ, "task_id": run["task_id"], "seq": seq,
                                       "data": {**extra, "e2ee": E.seal_chunk(k, req["rid"], typ, seq, json.dumps(v).encode())}}))
 
     listeners = []  # manual mode: per-task handlers fed every envelope
@@ -88,7 +94,7 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
             for fn in list(listeners):
                 fn(e)
             if e["type"] == "ping":
-                await ws.send(json.dumps({"v": 1, "type": "pong", "id": e.get("id")}))
+                await ws.send(json.dumps({"v": L.VERSION, "type": "pong", "id": e.get("id")}))
             if e["type"] == "blob.chunk" and e.get("task_id") in pending:
                 run, chunks = pending[e["task_id"]]
                 chunks.append(L.unb64(e["data"]["data"]))
@@ -125,7 +131,7 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
                 if delay:  # hold the task (and its concurrency slot) before answering
                     await asyncio.sleep(delay)
                 seq += 1
-                await ws.send(json.dumps({"v": 1, "type": typ, "task_id": run["task_id"], "seq": seq, "data": data}))
+                await ws.send(json.dumps({"v": L.VERSION, "type": typ, "task_id": run["task_id"], "seq": seq, "data": data}))
             last = run["messages"][-1]
             c = last.get("content")
             text = c if isinstance(c, str) else "".join(x.get("text", "") for x in (c if isinstance(c, list) else []) if isinstance(x, dict) and x.get("type") == "text")

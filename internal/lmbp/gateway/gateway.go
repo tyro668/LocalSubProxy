@@ -331,8 +331,8 @@ func (g *Gateway) tenantAuth(w http.ResponseWriter, r *http.Request) (store.Tena
 		return t, "", false
 	}
 	user := r.Header.Get("X-End-User")
-	if user == "" || len(user) > 128 {
-		httpError(w, r, 400, lmbp.ErrBadRequest, "X-End-User header required")
+	if !lmbp.ValidHeaderValue(user, 128) { // 1-128 printable ASCII (§4.1)
+		httpError(w, r, 400, lmbp.ErrBadRequest, "X-End-User header required (1-128 printable ASCII characters)")
 		return t, "", false
 	}
 	return t, user, true
@@ -347,7 +347,7 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	ps, err := params(r, 4096)
 	req := struct{ Tenant, PublicKey, DeviceName string }{ps["tenant"], ps["public_key"], ps["device_name"]}
-	if err != nil || req.Tenant == "" || len(req.DeviceName) > 100 {
+	if err != nil || req.Tenant == "" || lmbp.CharLen(req.DeviceName) > 100 /* code points, §4.1 */ {
 		oauthError(w, 400, "invalid_request")
 		return
 	}

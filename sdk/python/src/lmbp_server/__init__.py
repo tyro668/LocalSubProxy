@@ -109,7 +109,7 @@ class _Pairing:
         iss = issuer or self._s.engine.cfg["issuer"]
         if not iss:
             raise ValueError("pairing.link needs an issuer (configure LMBPServer(issuer=...) or pass one)")
-        return f"lmbp://pair?v=1&gateway={quote(_L.origin(iss), safe='')}&tenant={quote(tenant, safe='')}"
+        return f"lmbp://pair?v={_L.PAIR_LINK_VERSION}&gateway={quote(_L.origin(iss), safe='')}&tenant={quote(tenant, safe='')}"
 
     def create(self, tenant: str, issuer: Optional[str] = None) -> PairingInfo:
         """Pair link plus its QR code as SVG (needs the ``segno`` package)."""
@@ -183,8 +183,8 @@ class LMBPServer:
     def _decide(self, tenant, end_user, user_code, deny, jkt):
         if tenant not in self.engine.tenants:
             raise PairingError("unknown tenant", "BAD_REQUEST")
-        if not end_user or len(end_user) > 128:
-            raise PairingError("end_user required (<= 128 chars)", "BAD_REQUEST")
+        if not _L.valid_header(end_user, 128):
+            raise PairingError("end_user must be 1-128 printable ASCII characters (it travels as X-End-User)", "BAD_REQUEST")
         d, e = self.engine.pair_decide(tenant, end_user, user_code, deny, jkt)
         if e:
             raise PairingError(e[2], {429: "RATE_LIMITED", 404: "NOT_FOUND", 403: "FORBIDDEN", 409: "FORBIDDEN"}.get(e[0], "BAD_REQUEST"))

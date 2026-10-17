@@ -32,7 +32,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
   const hello = { device_id: tok.device_id, client: 'sdk-test', models, model_capabilities: caps,
     max_concurrency: opts.maxConcurrency ?? 4, capabilities: [...(x ? ['tools', 'e2ee'] : ['tools']), ...(opts.flood ? ['flow'] : []), ...(opts.extraCaps || [])],
     ...(x ? { e2ee_key: E.signKeyStatement(p.priv, p.pub, tok.device_id, x.pub) } : {}), proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token), ...(opts.helloPatch || {}) };
-  ws.send(JSON.stringify({ v: 1, type: 'hello', id: 'h1', data: hello }));
+  ws.send(JSON.stringify({ v: L.VERSION, type: 'hello', id: 'h1', data: hello, ...(opts.envPatch || {}) }));
   const welcome = await new Promise((ok, bad) => ws.once('message', (m) => { const w = JSON.parse(m); w.type === 'welcome' ? ok(w) : bad(new Error(String(m))); }));
   // opts.flood {n, size, stats}: answer every task with n deltas of size
   // bytes, honouring the gateway's flow window (§15.3); stats.sent counts
@@ -41,7 +41,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
   const pending = new Map(); // task_id -> { run, chunks } while an E2EE blob arrives
   ws.on('message', (raw) => {
     const e = JSON.parse(raw);
-    if (e.type === 'ping') return ws.send(JSON.stringify({ v: 1, type: 'pong', id: e.id }));
+    if (e.type === 'ping') return ws.send(JSON.stringify({ v: L.VERSION, type: 'pong', id: e.id }));
     if (e.type === 'blob.chunk' && pending.has(e.task_id)) {
       const pt = pending.get(e.task_id);
       pt.chunks.push(Buffer.from(e.data.data, 'base64url'));
@@ -57,7 +57,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     if (run.e2ee) return void pending.set(run.task_id, { run, chunks: [] });
     if (fl) return void flood(run);
     let seq = 0;
-    const send0 = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
+    const send0 = (type, data) => ws.send(JSON.stringify({ v: L.VERSION, type, task_id: run.task_id, seq: ++seq, data }));
     // opts.delayMs: hold the task (and its concurrency slot) before answering
     const send = opts.delayMs ? (type, data) => setTimeout(() => send0(type, data), opts.delayMs) : send0;
     const last = run.messages.at(-1);
@@ -77,7 +77,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     const unacked = () => fl.frames.filter((f) => f.seq > fl.acked).reduce((a, f) => a + f.len, 0);
     for (let i = 0; i <= n; i++) {
       const last = i === n;
-      const m = JSON.stringify({ v: 1, type: last ? 'task.done' : 'task.delta', task_id: run.task_id, seq: ++seq,
+      const m = JSON.stringify({ v: L.VERSION, type: last ? 'task.done' : 'task.delta', task_id: run.task_id, seq: ++seq,
         data: last ? { finish_reason: 'stop', usage: { prompt_tokens: 1, completion_tokens: n } } : { text: 'x'.repeat(size) } });
       while (unacked() > 0 && unacked() + m.length > fl.win) {
         if (ws.readyState !== ws.OPEN) return;
@@ -94,7 +94,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     const req = JSON.parse(E.openJwe(x.priv, jwe).plaintext.toString());
     const key = Buffer.from(req.response_key, 'base64url');
     let seq = 0;
-    const send = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++seq, data }));
+    const send = (type, data) => ws.send(JSON.stringify({ v: L.VERSION, type, task_id: run.task_id, seq: ++seq, data }));
     const last = req.messages.at(-1);
     const sealed = (type, v) => E.sealChunk(key, req.rid, type, seq + 1, Buffer.from(JSON.stringify(v)));
     send('task.delta', { e2ee: sealed('task.delta', { text: 'echo:' + last.content }) });

@@ -19,7 +19,7 @@ let schemas;
 function schemaSet() {
   if (!schemas) {
     const load = (n) => JSON.parse(fs.readFileSync(new URL(`../../schemas/${n}`, import.meta.url), 'utf8'));
-    schemas = new SchemaSet([load('defs.json'), load('task.run.payload.json')]);
+    schemas = new SchemaSet([load('defs.json'), load('task.run.payload.json'), load('hello.json'), load('models.update.json')]);
   }
   return schemas;
 }
@@ -62,7 +62,7 @@ function stopList(m, k, allowString) {
   } else if (!Array.isArray(list)) throw perr(k, allowString ? 'must be a string or an array of strings' : 'must be an array of strings');
   if (list.length < 1 || list.length > MAX_STOP_SEQUENCES) throw perr(k, `must have 1 to ${MAX_STOP_SEQUENCES} sequences, got ${list.length}`);
   list.forEach((s, i) => {
-    if (typeof s !== 'string' || s === '' || Buffer.byteLength(s) > MAX_STOP_LENGTH) throw perr(k, `sequence ${i} must be a non-empty string of at most ${MAX_STOP_LENGTH} bytes`);
+    if (typeof s !== 'string' || s === '' || [...s].length > MAX_STOP_LENGTH) throw perr(k, `sequence ${i} must be a non-empty string of at most ${MAX_STOP_LENGTH} characters`);
   });
   return [...list];
 }
@@ -182,6 +182,14 @@ export function validateAnthropicParams(m) {
 }
 
 /** validateTaskRun validates the payload about to be signed; throws ParamError. */
+/** announceProblem validates hello / models.update data against its schema
+ * (spec §7.4): '' when valid, else a message naming the first bad field. */
+export function announceProblem(data, hello) {
+  const name = hello ? 'hello' : 'models.update';
+  const e = schemaSet().validate(BASE + name + '.json', JSON.parse(JSON.stringify(data ?? null)));
+  return e ? `${name}${e.path.length ? '.' + e.path.join('.') : ''}: ${e.message}` : '';
+}
+
 export function validateTaskRun(payload) {
   const e = schemaSet().validate(BASE + 'task.run.payload.json', JSON.parse(JSON.stringify(payload)));
   if (e) throw new ParamError(e.path.length ? String(e.path[0]) : '', `request does not satisfy the task.run schema at /${e.path.join('/')}: ${e.message}`);

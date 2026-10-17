@@ -363,6 +363,7 @@ func (r *runner) runExt(ctx context.Context, key ed25519.PrivateKey, at string) 
 	r.runAnthropic(ctx, dev, full, mTools)
 	r.runAudit(ctx, dev, full, mTools)
 	r.runErrata(ctx, dev, full, mTools, mPlain)
+	r.runV2Ext(ctx, dev, full, mPlain)
 
 	// image → blob.chunk
 	img := make([]byte, 40<<10)

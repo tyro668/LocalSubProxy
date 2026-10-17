@@ -14,17 +14,21 @@
 
 ### 跨实现一致的行为（2026-10 一致性审查后）
 
-以下各项在 Go（参考实现与 `sdk/go`）、`sdk/node`、`sdk/python`、`sdk/java` 上行为相同，由 conformance E1–E7 与差分测试覆盖：
+以下各项在 Go（参考实现与 `sdk/go`）、`sdk/node`、`sdk/python`、`sdk/java` 上行为相同，由 conformance 与差分测试覆盖（LMBP 2.0）：
 
 | 行为 | 规范 | 说明 |
 |---|---|---|
-| 在线设备未声明模型 → 404 `MODEL_NOT_FOUND`；设备离线 → 503 `DEVICE_OFFLINE` | §6.6，勘误 E1（行为更正） | 此前所有实现都返回 503 |
-| JSON 响应 `Cache-Control: no-store`；JWKS 与 `/.well-known/lmbp` 为 `public, max-age=300` | §6，勘误 E2（行为更正） | Node/Express、Python/FastAPI、Java 此前不带该头 |
-| 非流式请求的调用方断开 → 2 秒内 `task.cancel(client_disconnected)` | §6.5，勘误 E3 | Java（Spring/Tomcat）此前不发送；Spring 在非 Tomcat 容器上仍有此限制 |
-| 保留期清理：默认 7 天，已结束任务与事件、幂等记录、过期配对授权一起删除；负值不清理 | §14.4，勘误 E6 | 内存与 SQLite/JDBC 存储都实现了。配置：Go `Options.Retention`，Node `retention`（毫秒），Python `retention`（秒），Java `retentionMillis` / `lmbp.retention-seconds`；命令行外壳与示例为 `--retention-seconds` / `LMBP_RETENTION_SECONDS`。自定义 `Store` 不实现 `purge` 时不清理 |
+| 在线设备未声明模型 → 404 `MODEL_NOT_FOUND`；设备离线 → 503 `DEVICE_OFFLINE` | §6.6（E1） | 此前所有实现都返回 503 |
+| JSON 响应 `Cache-Control: no-store`；JWKS 与 `/.well-known/lmbp` 为 `public, max-age=300` | §6（E2） | Node/Express、Python/FastAPI、Java 此前不带该头 |
+| 非流式请求的调用方断开 → 2 秒内 `task.cancel(client_disconnected)` | §6.5（E3） | Java（Spring/Tomcat）此前不发送；Spring 在非 Tomcat 容器上仍有此限制 |
+| 子协议 `lmbp`（不带版本）、信封 `v: 2`、`protocol_versions: ["2.0"]`、`profiles`；1.x 对端的 hello 得到 `VERSION_UNSUPPORTED` 后断开 | §7.1、§7.4、§11 | 2.0 起 |
+| `hello` 按 `hello.json` 校验，`max_concurrency` 越界拒绝；`models.update` 不合法整帧拒绝 | §7.4 | 1.0 截断到 1–16 |
+| 字符串长度按码点；`X-End-User`、`Idempotency-Key` 限可打印 ASCII | §4.1 | 1.0 各语言分别按字节、码点、UTF-16 计 |
+| 未知任务 / 已结束任务 / 本地结束任务的帧 | §8.6 | 状态表 U1、R2、D1–D3、F1 |
+| 保留期清理：默认 7 天，已结束任务与事件、幂等记录、过期配对授权一起删除；负值不清理 | §14.4（E6） | 内存与 SQLite/JDBC 存储都实现了。配置：Go `Options.Retention`，Node `retention`（毫秒），Python `retention`（秒），Java `retentionMillis` / `lmbp.retention-seconds`；命令行外壳与示例为 `--retention-seconds` / `LMBP_RETENTION_SECONDS`。自定义 `Store` 不实现 `purge` 时不清理 |
 
 ## 常用命令
 
 - Go 参考网关：`localsubproxy server -issuer https://<网关公网地址> [-tenant-profiles profiles.json]`。`profiles.json` 配置每个租户在桌面端同意页上显示的身份，格式见 [mock/tenant-profiles.example.json](../mock/tenant-profiles.example.json)。
-- 黑盒一致性测试（112 项，含规范 1.0 勘误 E1–E7）：`LMBP_TENANT_KEY=... go run ./cmd/lmbp-conformance -gateway <url> -tenant <id> [-retention <网关保留期>]`。E6（保留期清理）只在给出 `-retention` 时运行，网关需以同样的短保留期启动（例如 `--retention-seconds 2`），否则记为跳过。`scripts/mock-interop.sh` 默认让每个网关（含 `mock/java`、`mock/rust`）以 2 秒保留期启动并运行 E6；设 `LMBP_RETENTION_SECONDS=` 为空可恢复默认保留期。
+- 黑盒一致性测试（120 项，按配置统计；`-list` 输出需求表）：`LMBP_TENANT_KEY=... go run ./cmd/lmbp-conformance -gateway <url> -tenant <id> [-retention <网关保留期>]`。E6（保留期清理）只在给出 `-retention` 时运行，网关需以同样的短保留期启动（例如 `--retention-seconds 2`），否则记为跳过。`scripts/mock-interop.sh` 默认让每个网关（含 `mock/java`、`mock/rust`）以 2 秒保留期启动并运行 E6；设 `LMBP_RETENTION_SECONDS=` 为空可恢复默认保留期。
 - 契约与测试向量校验：`spec/validate.sh`。

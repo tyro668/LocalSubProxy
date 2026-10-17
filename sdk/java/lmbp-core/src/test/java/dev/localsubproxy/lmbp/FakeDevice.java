@@ -65,7 +65,7 @@ final class FakeDevice implements AutoCloseable {
   void connect(String model) throws Exception {
     CompletableFuture<Void> welcome = new CompletableFuture<>();
     StringBuilder buf = new StringBuilder();
-    ws = http.newWebSocketBuilder().header("Authorization", "Bearer " + token).subprotocols("lmbp")
+    ws = http.newWebSocketBuilder().header("Authorization", "Bearer " + token).subprotocols(Lmbp.SUBPROTOCOL)
         .buildAsync(URI.create("ws" + base.substring(4) + "/lmbp/v1/connect"), new WebSocket.Listener() {
           @Override public CompletionStage<?> onText(WebSocket w, CharSequence data, boolean last) {
             buf.append(data);
@@ -78,9 +78,9 @@ final class FakeDevice implements AutoCloseable {
                 String tid = (String) m.get("task_id");
                 Thread.ofVirtual().start(() -> { // the device only notices a bit later
                   try { Thread.sleep(50); } catch (InterruptedException e) { return; }
-                  send(Json.obj("v", 1L, "type", "task.delta", "task_id", tid, "seq", 3L, "data", Json.obj("text", "late 1")));
-                  send(Json.obj("v", 1L, "type", "task.delta", "task_id", tid, "seq", 4L, "data", Json.obj("text", "late 2")));
-                  send(Json.obj("v", 1L, "type", "task.error", "task_id", tid, "seq", 5L, "data", Json.obj("code", "CANCELLED", "message", "cancelled", "retryable", false)));
+                  send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", tid, "seq", 3L, "data", Json.obj("text", "late 1")));
+                  send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", tid, "seq", 4L, "data", Json.obj("text", "late 2")));
+                  send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.error", "task_id", tid, "seq", 5L, "data", Json.obj("code", "CANCELLED", "message", "cancelled", "retryable", false)));
                 });
               }
               if ("task.run".equals(m.get("type"))) Thread.ofVirtual().start(() -> run((String) m.get("task_id")));
@@ -90,7 +90,7 @@ final class FakeDevice implements AutoCloseable {
           }
         }).get(5, TimeUnit.SECONDS);
     if (beforeHello != null) beforeHello.run();
-    send(Json.obj("v", 1L, "type", "hello", "id", "h1", "data", Json.obj("device_id", deviceId, "proof", proof(deviceId, Lmbp.PROOF_HELLO, token),
+    send(Json.obj("v", (long) Lmbp.VERSION, "type", "hello", "id", "h1", "data", Json.obj("device_id", deviceId, "client", "fake-device", "proof", proof(deviceId, Lmbp.PROOF_HELLO, token),
         "capabilities", List.of("tools"), "models", List.of(model), "model_capabilities", Json.obj(model, List.of("tools")), "max_concurrency", 4L)));
     welcome.get(5, TimeUnit.SECONDS);
   }
@@ -101,17 +101,17 @@ final class FakeDevice implements AutoCloseable {
 
   void run(String taskId) {
     if (mode == Mode.LATE) {
-      send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "hello ")));
-      send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", 2L, "data", Json.obj("text", "world")));
+      send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "hello ")));
+      send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", 2L, "data", Json.obj("text", "world")));
       return;
     }
     if (mode == Mode.HANG) {
-      send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "partial")));
+      send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "partial")));
       return;
     }
     long seq = 0;
-    for (String part : reply) send(Json.obj("v", 1L, "type", "task.delta", "task_id", taskId, "seq", ++seq, "data", Json.obj("text", part)));
-    send(Json.obj("v", 1L, "type", "task.done", "task_id", taskId, "seq", ++seq, "data", Json.obj("finish_reason", "stop", "usage", Json.obj("prompt_tokens", 1L, "completion_tokens", 2L, "total_tokens", 3L))));
+    for (String part : reply) send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", ++seq, "data", Json.obj("text", part)));
+    send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.done", "task_id", taskId, "seq", ++seq, "data", Json.obj("finish_reason", "stop", "usage", Json.obj("prompt_tokens", 1L, "completion_tokens", 2L, "total_tokens", 3L))));
   }
 
   boolean sawCancel(String taskId) {

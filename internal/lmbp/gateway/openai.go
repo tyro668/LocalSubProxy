@@ -242,8 +242,8 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	// Idempotent re-attach.
 	idemKey := r.Header.Get("Idempotency-Key")
-	if len(idemKey) > 255 {
-		apiError(w, 400, lmbp.ErrBadRequest, "Idempotency-Key too long")
+	if idemKey != "" && !lmbp.ValidHeaderValue(idemKey, 255) { // 1-255 printable ASCII (§4.1)
+		apiError(w, 400, lmbp.ErrBadRequest, "Idempotency-Key must be 1-255 printable ASCII characters")
 		return
 	}
 	bh := sha256.Sum256(body)

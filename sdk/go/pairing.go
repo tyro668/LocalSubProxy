@@ -132,8 +132,8 @@ func (p *Pairing) decide(ctx context.Context, tenant, endUser, userCode, jkt str
 	if _, ok := p.s.keys[tenant]; !ok {
 		return ApproveResult{}, ErrUnknownTenant
 	}
-	if endUser == "" || len(endUser) > 128 {
-		return ApproveResult{}, errors.New("endUser required (<= 128 chars)")
+	if !lmbp.ValidHeaderValue(endUser, 128) {
+		return ApproveResult{}, errors.New("endUser must be 1-128 printable ASCII characters (it travels as X-End-User)")
 	}
 	d, err := p.s.gw.Decide(ctx, tenant, endUser, userCode, jkt, deny)
 	if err != nil {

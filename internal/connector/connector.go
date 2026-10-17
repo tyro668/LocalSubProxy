@@ -124,6 +124,9 @@ func New(cfg Config) (*Connector, error) {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 4
 	}
+	if cfg.MaxConcurrency > lmbp.MaxConcurrency { // LMBP 2.0 §7.4: rejected, never clamped
+		return nil, fmt.Errorf("max concurrency %d out of range: LMBP allows 1-%d", cfg.MaxConcurrency, lmbp.MaxConcurrency)
+	}
 	var c *durable.Cipher
 	if cfg.DataKey != "" || cfg.AdapterFile != "" {
 		var err error

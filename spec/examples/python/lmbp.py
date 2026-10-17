@@ -120,7 +120,7 @@ def verify_hello(gw_pub: bytes, device_pub_of, frame: dict, access_token: str, a
     dev_pub = device_pub_of(claims["sub"])  # look up the registered key; check status == active
     if claims.get("cnf", {}).get("jkt") != thumbprint(dev_pub):
         raise LmbpError("token not bound to this device key")
-    if frame.get("v") != 1 or frame.get("type") != "hello" or frame["data"].get("device_id") != claims["sub"]:
+    if frame.get("v") != 2 or frame.get("type") != "hello" or frame["data"].get("device_id") != claims["sub"]:
         raise LmbpError("bad hello")
     verify_proof(dev_pub, frame["data"]["proof"], claims["sub"], "lmbp:hello", access_token, now)
     return claims
@@ -128,7 +128,7 @@ def verify_hello(gw_pub: bytes, device_pub_of, frame: dict, access_token: str, a
 
 def sign_task_run(gw_key: Ed25519PrivateKey, kid: str, payload: dict) -> dict:
     """Build the task.run envelope; the payload travels only inside the JWS."""
-    return {"v": 1, "type": "task.run", "task_id": payload["task_id"],
+    return {"v": 2, "type": "task.run", "task_id": payload["task_id"], "seq": 1,
             "jws": sign_jws(gw_key, TYP_TASK, json_bytes(payload), kid)}
 
 

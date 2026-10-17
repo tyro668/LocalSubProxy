@@ -96,8 +96,8 @@ fn stop_list(m: &Obj, k: &str, allow_string: bool) -> R<Option<Vec<Value>>> {
     }
     for (i, s) in list.iter().enumerate() {
         match s.as_str() {
-            Some(st) if !st.is_empty() && st.len() <= MAX_STOP_LENGTH => {}
-            _ => return perr(k, format!("sequence {} must be a non-empty string of at most {} bytes", i, MAX_STOP_LENGTH)),
+            Some(st) if !st.is_empty() && st.chars().count() <= MAX_STOP_LENGTH => {}
+            _ => return perr(k, format!("sequence {} must be a non-empty string of at most {} characters", i, MAX_STOP_LENGTH)),
         }
     }
     Ok(Some(list))
@@ -337,8 +337,17 @@ fn schemas() -> &'static Schema {
     S.get_or_init(|| {
         let defs: Value = serde_json::from_str(include_str!("../../../spec/schemas/defs.json")).unwrap();
         let run: Value = serde_json::from_str(include_str!("../../../spec/schemas/task.run.payload.json")).unwrap();
-        Schema::new(vec![defs, run])
+        let hello: Value = serde_json::from_str(include_str!("../../../spec/schemas/hello.json")).unwrap();
+        let mu: Value = serde_json::from_str(include_str!("../../../spec/schemas/models.update.json")).unwrap();
+        Schema::new(vec![defs, run, hello, mu])
     })
+}
+
+/// Validates hello / models.update data against its schema (spec §7.4): None when valid, else a message.
+pub fn announce_problem(data: &Value, hello: bool) -> Option<String> {
+    let name = if hello { "hello" } else { "models.update" };
+    let e = schemas().validate(&format!("{}{}.json", BASE, name), data)?;
+    Some(if e.path.is_empty() { format!("{}: {}", name, e.message) } else { format!("{}.{}: {}", name, e.path.join("."), e.message) })
 }
 
 pub fn validate_task_run(payload: &Value) -> R<()> {

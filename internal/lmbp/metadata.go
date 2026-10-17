@@ -65,6 +65,7 @@ type GatewayMetadata struct {
 	ConnectEndpoint             string    `json:"connect_endpoint"`
 	ChatCompletionsEndpoint     string    `json:"chat_completions_endpoint,omitempty"`
 	ProtocolVersions            []string  `json:"protocol_versions"`
+	Profiles                    []string  `json:"profiles"`
 	Capabilities                []string  `json:"capabilities"`
 	ScopesSupported             []string  `json:"scopes_supported"`
 	Tenant                      string    `json:"tenant,omitempty"`
@@ -144,6 +145,9 @@ func VerifyMetadata(pub ed25519.PublicKey, jws, issuer, tenant string, now time.
 	if json.Unmarshal(p, &m) != nil {
 		return m, errors.New("bad metadata payload")
 	}
+	if !speaks(m.ProtocolVersions) {
+		return m, fmt.Errorf("gateway speaks LMBP %v; this device requires %v (§11)", m.ProtocolVersions, ProtocolVersions)
+	}
 	if m.Issuer != issuer {
 		return m, fmt.Errorf("metadata issuer %q does not match gateway %q", m.Issuer, issuer)
 	}
@@ -186,7 +190,7 @@ func SameOrigin(u, origin string) bool {
 
 // PairLink is a parsed lmbp://pair deep link:
 //
-//	lmbp://pair?v=1&gateway=<https origin>&tenant=<tenant id>[&remote=<SaaS origin>]
+//	lmbp://pair?v=2&gateway=<https origin>&tenant=<tenant id>[&remote=<SaaS origin>]
 //
 // The link carries no secret and no display data: everything shown to the
 // user comes from the gateway's signed metadata.
@@ -195,6 +199,9 @@ type PairLink struct {
 	Tenant  string
 	Remote  string // optional SaaS origin (informational / discovery)
 }
+
+// PairLinkVersion is the v parameter of lmbp://pair: the protocol major version.
+const PairLinkVersion = "2"
 
 func ParsePairLink(raw string) (PairLink, error) {
 	var l PairLink
@@ -208,8 +215,8 @@ func ParsePairLink(raw string) (PairLink, error) {
 			return l, fmt.Errorf("duplicate parameter %s", k)
 		}
 	}
-	if q.Get("v") != "1" {
-		return l, errors.New("unsupported pair link version")
+	if v := q.Get("v"); v != PairLinkVersion {
+		return l, fmt.Errorf("unsupported pair link version %q: LMBP 2.0 requires v=%s", v, PairLinkVersion)
 	}
 	if l.Gateway, err = Origin(q.Get("gateway")); err != nil {
 		return l, err
@@ -227,9 +234,22 @@ func ParsePairLink(raw string) (PairLink, error) {
 
 // String renders the canonical link.
 func (l PairLink) String() string {
-	q := url.Values{"v": {"1"}, "gateway": {l.Gateway}, "tenant": {l.Tenant}}
+	q := url.Values{"v": {PairLinkVersion}, "gateway": {l.Gateway}, "tenant": {l.Tenant}}
 	if l.Remote != "" {
 		q.Set("remote", l.Remote)
 	}
 	return PairLinkScheme + "://pair?" + q.Encode()
+}
+
+// speaks reports whether a metadata protocol_versions list shares a version
+// with this implementation.
+func speaks(vs []string) bool {
+	for _, v := range vs {
+		for _, w := range ProtocolVersions {
+			if v == w {
+				return true
+			}
+		}
+	}
+	return false
 }

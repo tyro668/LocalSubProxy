@@ -34,7 +34,7 @@ async def test_pairing_api(serve_app):
     lsp = new(issuer="https://gw.example.com")
     async with serve_app(lsp.asgi()) as base:
         info = lsp.pairing.create(T)
-        assert info.link == "lmbp://pair?v=1&gateway=https%3A%2F%2Fgw.example.com&tenant=acme"
+        assert info.link == "lmbp://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme"
         assert info.qr_svg.startswith("<svg")
         _, a = await start_pairing(base, T, "my-laptop")
         pend = lsp.pairing.lookup(T, a["user_code"].lower().replace("-", ""))

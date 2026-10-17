@@ -127,8 +127,15 @@ public class LmbpClient {
     return RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes a ? a.getRequest() : null;
   }
 
+  /** X-End-User rule (spec §4.1): 1-128 printable ASCII characters. */
+  static boolean validUser(String s) {
+    if (s == null || s.isEmpty() || s.length() > 128) return false;
+    for (int i = 0; i < s.length(); i++) { char c = s.charAt(i); if (c < 0x20 || c > 0x7E) return false; }
+    return true;
+  }
+
   private static String require(String userId) {
-    if (userId == null || userId.isEmpty() || userId.length() > 128) throw new IllegalArgumentException("user id required (1-128 chars)");
+    if (!validUser(userId)) throw new IllegalArgumentException("user id must be 1-128 printable ASCII characters (it travels as X-End-User)");
     return userId;
   }
 }
