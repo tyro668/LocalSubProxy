@@ -107,20 +107,8 @@ func (r *runner) runErrata(ctx context.Context, dev *extDev, full func(string) s
 
 	// E4: §16.2 a device that cannot fetch a remote image answers
 	// CAPABILITY_UNSUPPORTED; the caller sees 400 with that code.
-	img := map[string]any{"model": full(mTools), "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/cat.png"}}}}}}
-	ich := make(chan [2]any, 1)
-	go func() { s, _, b := r.chatRaw(ctx, img, nil); ich <- [2]any{s, b} }()
-	if f, _, err := dev.await(lmbp.TypeTaskRun, nil); err == nil {
-		run, verr := lmbp.VerifyTaskRun(r.gwKey, f.TaskID, f.JWS)
-		mj, _ := json.Marshal(run.Messages)
-		urlKept := verr == nil && strings.Contains(string(mj), "https://example.com/cat.png")
-		_ = dev.send(lmbp.TypeTaskError, f.TaskID, 1, lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: "remote image URLs are not supported"})
-		res := <-ich
-		s, b := res[0].(int), res[1].([]byte)
-		r.check("E4", "a remote image URL is forwarded unchanged and a device CAPABILITY_UNSUPPORTED answer becomes 400 CAPABILITY_UNSUPPORTED",
-			want(urlKept && s == 400 && errCode(b) == lmbp.ErrUnsupported, "url forwarded %v (%v); status %d %s", urlKept, verr, s, b))
-	} else {
-		r.check("E4", "remote image URL", err)
+	if r.runs(lmbp.ProfileMultimodal, "E4") {
+		r.errataRemoteImage(ctx, dev, full(mTools))
 	}
 
 	// E5: §16.5 ignored request fields are accepted and never reach the device.
@@ -160,8 +148,11 @@ func (r *runner) runErrata(ctx context.Context, dev *extDev, full func(string) s
 	}
 	e1 := ign("/v1/chat/completions", map[string]any{"model": full(mPlain), "messages": []any{map[string]any{"role": "user", "content": "x"}},
 		"response_format": map[string]any{"type": "json_object"}, "seed": 7, "logprobs": true, "presence_penalty": 0.5, "user": "u1"}, "response_format", "seed", "logprobs", "presence_penalty", "user")
-	e2 := ign("/v1/messages", map[string]any{"model": full(mPlain), "max_tokens": 5, "messages": []any{map[string]any{"role": "user", "content": "x"}},
-		"thinking": map[string]any{"type": "enabled", "budget_tokens": 1024}, "metadata": map[string]any{"user_id": "u1"}, "service_tier": "auto"}, "thinking", "metadata", "service_tier")
+	var e2 error
+	if r.declares(lmbp.ProfileAnthropic) {
+		e2 = ign("/v1/messages", map[string]any{"model": full(mPlain), "max_tokens": 5, "messages": []any{map[string]any{"role": "user", "content": "x"}},
+			"thinking": map[string]any{"type": "enabled", "budget_tokens": 1024}, "metadata": map[string]any{"user_id": "u1"}, "service_tier": "auto"}, "thinking", "metadata", "service_tier")
+	}
 	r.check("E5", "ignored fields (response_format, seed, logprobs, presence_penalty, user; thinking, metadata, service_tier) are accepted and not forwarded",
 		want(e1 == nil && e2 == nil, "%v; %v", e1, e2))
 
@@ -230,4 +221,24 @@ func mustReq(method, url string) *http.Request {
 
 func (r *runner) tenantH(method, path string) (int, map[string]any, http.Header, error) {
 	return r.tenant(method, path, nil)
+}
+
+// E4: §16.2 a device that cannot fetch a remote image answers
+// CAPABILITY_UNSUPPORTED; the caller sees 400 with that code.
+func (r *runner) errataRemoteImage(ctx context.Context, dev *extDev, model string) {
+	img := map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/cat.png"}}}}}}
+	ich := make(chan [2]any, 1)
+	go func() { s, _, b := r.chatRaw(ctx, img, nil); ich <- [2]any{s, b} }()
+	if f, _, err := dev.await(lmbp.TypeTaskRun, nil); err == nil {
+		run, verr := lmbp.VerifyTaskRun(r.gwKey, f.TaskID, f.JWS)
+		mj, _ := json.Marshal(run.Messages)
+		urlKept := verr == nil && strings.Contains(string(mj), "https://example.com/cat.png")
+		_ = dev.send(lmbp.TypeTaskError, f.TaskID, 1, lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: "remote image URLs are not supported"})
+		res := <-ich
+		s, b := res[0].(int), res[1].([]byte)
+		r.check("E4", "a remote image URL is forwarded unchanged and a device CAPABILITY_UNSUPPORTED answer becomes 400 CAPABILITY_UNSUPPORTED",
+			want(urlKept && s == 400 && errCode(b) == lmbp.ErrUnsupported, "url forwarded %v (%v); status %d %s", urlKept, verr, s, b))
+	} else {
+		r.check("E4", "remote image URL", err)
+	}
 }

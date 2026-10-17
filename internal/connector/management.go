@@ -208,6 +208,10 @@ func (x *Connector) CreateAdapter(a AdapterConfig) (AdapterView, error) {
 		x.mu.Unlock()
 		return AdapterView{}, errors.New("adapter already exists")
 	}
+	if err := x.checkTotalLocked(a); err != nil {
+		x.mu.Unlock()
+		return AdapterView{}, err
+	}
 	if err := x.settleNameLocked(&a); err != nil {
 		x.mu.Unlock()
 		return AdapterView{}, err
@@ -371,6 +375,10 @@ func (x *Connector) updateAdapter(id string, build func(AdapterConfig) (AdapterC
 		// deleted or edited while validating: never write back a stale copy
 		x.mu.Unlock()
 		return AdapterView{}, errors.New("adapter list changed meanwhile; reload and retry")
+	}
+	if err := x.checkTotalLocked(a); err != nil {
+		x.mu.Unlock()
+		return AdapterView{}, err
 	}
 	if err := x.settleNameLocked(&a); err != nil {
 		x.mu.Unlock()

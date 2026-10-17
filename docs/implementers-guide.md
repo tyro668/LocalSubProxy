@@ -11,7 +11,7 @@
 | `spec/asyncapi.yaml` | WebSocket 通道和消息 |
 | `spec/testvectors/vectors.json` | 固定密钥、期望签名和 JWT、正例与反例，以及合法和非法的帧 |
 | `spec/examples/{python,node,rust}` | 关键路径的骨架代码，**都已用测试向量实际运行通过** |
-| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 120 项检查，按 7 个配置统计（规范 §13）；`-list` 输出需求 ID 与检查的对应表 |
+| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 127 项检查，按 7 个配置统计（规范 §13）；`-list` 输出需求 ID 与检查的对应表 |
 | `spec/validate.sh` | 一键校验所有契约，并运行示例骨架 |
 
 ### 代码片段的验证状态
@@ -19,9 +19,9 @@
 | 语言 | 状态 |
 |---|---|
 | Go | 参考实现（`internal/lmbp`）。`go test` 覆盖测试向量、Schema 和一致性测试 |
-| Python | `spec/examples/python`：已在 Python 3.13 + cryptography 上运行，60 项全部通过 |
-| Node.js | `spec/examples/node`：已在 Node 20 上运行，只用 `node:crypto`，Schema 校验用 ajv，59 项全部通过 |
-| Rust | `spec/examples/rust`：已在 rustc 1.85 + ed25519-dalek 2 上运行，`cargo test` 通过。完整的模拟网关见 `mock/rust`（不是 SDK） |
+| Python | `spec/examples/python`：已在 Python 3.13 + cryptography 上运行，305 项全部通过（含 `jose.json` 全部正反例） |
+| Node.js | `spec/examples/node`：已在 Node 20 上运行，只用 `node:crypto`，Schema 校验用 ajv，345 项全部通过（含 `jose.json` 全部正反例） |
+| Rust | `spec/examples/rust`：已在 rustc 1.85 + ed25519-dalek 2 上运行，`cargo test` 通过（含 `jose.json` 全部正反例）。完整的模拟网关见 `mock/rust`（不是 SDK） |
 | Java | 现成 SDK：`sdk/java`（`lmbp-core` 引擎 + `lmbp-spring-boot-starter`，JDK 21），通过 `spec/testvectors/jose.json`（含全部负例）与 `lmbp-conformance`，见 [sdk/java/README.md](../sdk/java/README.md)。下文 Java 片段（Jackson/Spring 写法）**仍仅为示意，未编译**；自己实现时请用测试向量验证。JDK-only 模拟网关 `mock/java` 也可参考 |
 
 本文中 Go、Python、Node、Rust 的片段摘自上述已运行的文件，或是它们的精简版。
@@ -146,7 +146,7 @@
    6. 客户端断开或超时时发送 `task.cancel`；
    7. 设备断线时任务失败（`DEVICE_OFFLINE`）。
 9. **吊销**：把设备状态改为 `revoked`，并关闭在线会话。
-10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 120 项全部通过（E6 需加 `-retention`，否则记为跳过）。
+10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 127 项全部通过（E6 需加 `-retention`，否则记为跳过）。
 
 ---
 

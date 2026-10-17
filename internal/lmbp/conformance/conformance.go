@@ -75,12 +75,36 @@ type runner struct {
 	devID   string
 	issuer  string
 	runSeq  int64 // envelope seq of the last task.run read by awaitRun
+	// profiles the gateway declares in its metadata (§13.1). Checks of an
+	// undeclared profile are reported as skipped, never as failures.
+	profiles []string
+}
+
+// declares reports whether the gateway declared profile p (core always).
+func (r *runner) declares(p string) bool {
+	return p == lmbp.ProfileCore || containsS(r.profiles, p)
+}
+
+// skipUndeclared records the given checks as skipped when profile p is not
+// declared; it returns true if the caller should run them.
+func (r *runner) runs(p string, ids ...string) bool {
+	if r.declares(p) {
+		return true
+	}
+	for _, id := range ids {
+		r.skip(id, "(not run)", "profile "+p+" not declared")
+	}
+	return false
 }
 
 var errStop = errors.New("prerequisite failed")
 
 func (r *runner) check(id, title string, err error) bool {
 	rq, _ := RequirementOf(id)
+	if rq.Profile != "" && !r.declares(rq.Profile) {
+		r.skip(id, title, "profile "+rq.Profile+" not declared")
+		return err == nil
+	}
 	res := Result{ID: id, Req: rq.ID, Profile: rq.Profile, Title: title, Pass: err == nil}
 	if err != nil {
 		res.Detail = err.Error()
@@ -124,6 +148,19 @@ func Run(ctx context.Context, cfg Config) []Result {
 	}
 	if !seen["F1"] && r.schema != nil {
 		r.check("F1", "every gateway frame matches envelope.json", nil)
+	}
+	// No early exit may hide a check: every catalogued check that did not
+	// run fails (core or declared profile) or is skipped (undeclared profile).
+	for _, x := range r.results {
+		seen[x.ID] = true
+	}
+	for _, rq := range Catalog {
+		for _, c := range rq.Checks {
+			if seen[c] || (c == "S0" && r.schema == nil) || (c == "F1" && r.schema == nil) || ((c == "M6" || c == "M7") && r.meta == nil) {
+				continue
+			}
+			r.check(c, "(not run)", errors.New("not run: an earlier step failed"))
+		}
 	}
 	return r.results
 }
@@ -403,7 +440,10 @@ func (r *runner) run(ctx context.Context) error {
 		joined := strings.Join(lines, "\n")
 		r.check("O2", "SSE stream relays deltas as chat.completion.chunk and ends with data: [DONE]",
 			want(strings.Contains(joined, `"content":"Hel"`) && strings.Contains(joined, `"content":"lo"`) && len(lines) > 0 && lines[len(lines)-1] == "data: [DONE]", "got %q", joined))
+		r.check("S4", "without flow or resume, device data frames are acknowledged with a cumulative task.ack up to the terminal frame (ACK is Core, §8.6, §14.1)",
+			r.awaitAck(frames, run.TaskID, 3))
 	}
+	r.checkCoreGap(ctx, conn, frames, full)
 	// cancellation
 	cctx, ccancel := context.WithCancel(ctx)
 	go func() { r.chat(cctx, full, true) }()
@@ -466,8 +506,15 @@ loop:
 	for range frames {
 	}
 	conn2, frames2 := r.runExt(ctx, key, at)
-	if conn2 == nil {
-		return errStop
+	if conn2 == nil { // an extension step failed: the Core checks below still run on a plain session
+		h := lmbp.Hello{DeviceID: r.devID, Client: "lmbp-conformance", Models: []string{model}, MaxConcurrency: 1, Capabilities: lmbp.CoreCapabilities,
+			Proof: lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())}
+		d, _, err := r.dialExt(at, h)
+		if err != nil {
+			r.check("V1", "revoking the device closes its live session", fmt.Errorf("could not open a session: %v", err))
+			return errStop
+		}
+		conn2, frames2 = d.conn, d.frames
 	}
 	defer conn2.Close()
 	frames = frames2
@@ -488,6 +535,69 @@ done:
 	st, m = refresh(assertion())
 	r.check("V2", "revoked device cannot obtain new tokens", want(m["error"] == "invalid_grant", "status %d %v", st, m))
 	return nil
+}
+
+// awaitAck waits for a task.ack of taskID covering seq (other frames are dropped).
+func (r *runner) awaitAck(frames <-chan lmbp.Envelope, taskID string, seq int64) error {
+	tm := time.After(r.cfg.Timeout)
+	var best int64
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				return errors.New("session closed")
+			}
+			if f.Type == lmbp.TypeTaskAck && f.TaskID == taskID {
+				var a lmbp.TaskAck
+				_ = json.Unmarshal(f.Data, &a)
+				if a.Seq > best {
+					best = a.Seq
+				}
+				if best >= seq {
+					return nil
+				}
+			}
+		case <-tm:
+			return fmt.Errorf("no task.ack covering seq %d (highest %d)", seq, best)
+		}
+	}
+}
+
+// checkCoreGap (S5, §8.6 R3): without flow or resume, a device data frame
+// that skips a seq fails the task: no silent loss, task.cancel(protocol_error).
+func (r *runner) checkCoreGap(ctx context.Context, conn *websocket.Conn, frames <-chan lmbp.Envelope, model string) {
+	const title = "without flow or resume, a device data frame that skips a seq fails the task and is answered by task.cancel(protocol_error) (§8.6 R3)"
+	sse := make(chan []string, 1)
+	go func() { sse <- r.chat(ctx, model, true) }()
+	run, err := r.awaitRun(frames)
+	if err != nil {
+		r.check("S5", title, err)
+		<-sse
+		return
+	}
+	_ = r.writeFrame(conn, "task.delta", "", run.TaskID, lmbp.TaskDelta{Text: "skipped one"}, 2)
+	reason := ""
+	tm := time.After(r.cfg.Timeout)
+wait:
+	for reason == "" {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				break wait
+			}
+			if f.Type == lmbp.TypeTaskCancel && f.TaskID == run.TaskID {
+				var c lmbp.TaskCancel
+				_ = json.Unmarshal(f.Data, &c)
+				reason = c.Reason
+			}
+		case <-tm:
+			break wait
+		}
+	}
+	// the device ends the task as it would after any cancel
+	_ = r.writeFrame(conn, "task.error", "", run.TaskID, lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}, 3)
+	body := strings.Join(<-sse, "\n")
+	r.check("S5", title, want(reason == "protocol_error" && !strings.Contains(body, "skipped one") && strings.Contains(body, `"error"`), "cancel reason %q body %q", reason, body))
 }
 
 func (r *runner) awaitRun(frames <-chan lmbp.Envelope) (lmbp.TaskRun, error) {
@@ -616,6 +726,7 @@ func (r *runner) metadata() error {
 		ok = ok && lmbp.SameOrigin(u, r.issuer)
 	}
 	r.check("M2", "jwks_uri, device_authorization_endpoint, token_endpoint and connect_endpoint are on the issuer origin", want(ok && len(base.ProtocolVersions) > 0, "%+v", base))
+	r.profiles = base.Profiles
 	profOK := containsS(base.Profiles, lmbp.ProfileCore)
 	for _, p := range base.Profiles {
 		profOK = profOK && containsS(lmbp.Profiles, p)

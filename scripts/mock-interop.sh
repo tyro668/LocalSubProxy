@@ -7,6 +7,8 @@
 #   scripts/mock-interop.sh node       # just one
 #   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi spring-boot spring-boot-sqlite   # SDK variants
 #   LMBP_RETENTION_SECONDS= scripts/mock-interop.sh go          # gateways keep their default retention; conformance E6 is skipped
+#   scripts/mock-interop.sh go-core     # Go reference gateway with -core-only: every Core (and openai) check passes,
+#                                       # the undeclared extension profiles are not applicable
 set -euo pipefail
 cd "$(dirname "$0")/.."
 impls=("${@:-node python go}")
@@ -39,9 +41,10 @@ start() { # impl port
       [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && (cd mock/python && .venv/bin/pip install -q -r requirements.txt); }
       db=(); [ "$impl" = python-sqlite ] && db=(--db "$tmp/python.db")
       (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json "${db[@]}" $(retflag "--retention-seconds ")) >"$tmp/$impl.log" 2>&1 & ;;
-    go)
+    go|go-core)
       go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
-      "$tmp/localsubproxy" server -listen "127.0.0.1:$port" -db "$tmp/go.db" -tenants acme:LSP_TENANT_KEY_ACME \
+      core=(); [ "$impl" = go-core ] && core=(-core-only)
+      "$tmp/localsubproxy" server "${core[@]}" -listen "127.0.0.1:$port" -db "$tmp/$impl.db" -tenants acme:LSP_TENANT_KEY_ACME \
         -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui $(retflag "-retention " s) >"$tmp/$impl.log" 2>&1 & ;;
     java)
       mock/java/build.sh >/dev/null
@@ -82,6 +85,26 @@ for impl in "${impls[@]}"; do
   start "$impl" "$port"
   echo "== $impl (http://127.0.0.1:$port)"
   rf=(); [ -n "$ret" ] && rf=(-retention "${ret}s")
+  if [ "$impl" = go-core ]; then
+    # Core-only: 0 failed, every core/openai check ran, only undeclared profiles are not applicable.
+    if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" -json >"$tmp/$impl.json" 2>"$tmp/$impl.conf" &&
+       summary=$(python3 - "$tmp/$impl.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+res, decl = d["results"], {"core", "openai"}
+bad = [r["id"] for r in res if not r["pass"] or (r.get("skip") and r["profile"] in decl) or (not r.get("skip") and r["profile"] not in decl)]
+if bad:
+    sys.exit("unexpected results: " + " ".join(bad))
+ran = sum(1 for r in res if not r.get("skip"))
+print(f"{ran} core/openai checks, 0 failed; {len(res) - ran} extension checks not applicable (profiles not declared)")
+PY
+); then
+      echo "   conformance (core-only): $summary"
+    else
+      echo "   conformance (core-only): FAILED"; cat "$tmp/$impl.conf"; python3 -c 'import json,sys; [print(r["id"], r["profile"], r.get("detail","")) for r in json.load(open(sys.argv[1]))["results"] if not r["pass"]]' "$tmp/$impl.json" 2>/dev/null; tail -30 "$tmp/$impl.log"; fail=1
+    fi
+    continue   # no Anthropic surface: the official-client e2e needs the full gateway
+  fi
   if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" >"$tmp/$impl.conf" 2>&1; then
     echo "   conformance: $(tail -1 "$tmp/$impl.conf")"
   else

@@ -377,7 +377,7 @@
 | `task.error` | 设备→网关 | `task.error.json` | 任务失败结束（终止消息） |
 | `task.cancel` | 网关→设备 | `task.cancel.json` | 要求停止任务 |
 | `session.token` | 设备→网关；网关以同名消息回复 | 请求 `session.token.request.json`，回复 `session.token.response.json` | 连接内续期令牌 |
-| `models.update` | 设备→网关 | `models.update.json` | 重新声明模型列表和并发数；不符合模式时网关回复 `error`（`BAD_REQUEST`），整帧不生效，会话保持 |
+| `models.update` | 设备→网关 | `models.update.json` | 重新声明模型列表和并发数；不符合模式时网关回复 `error`（`BAD_REQUEST`），整帧不生效，会话保持；`max_concurrency` 提高时，网关 MUST 在同一临界区内把新增的并发槽按 FIFO 分给排队中的请求并立即唤醒它们 |
 | `ping` / `pong` | 双向 | 无 | 应用层心跳；`pong` 带回 `ping` 的 `id` |
 | `blob.chunk` | 网关→设备 | `blob.chunk.json` | 数据帧：二进制附件分块（§16.3） |
 | `task.ack` | 双向 | `task.ack.json` | 控制帧：确认对方 `seq ≤ data.seq` 的数据帧（§14、§15） |
@@ -442,7 +442,7 @@ RUNNING ──task.done──▶ SUCCEEDED
 `IDLE → TOKEN → CONNECTING → HANDSHAKE → OPEN`。断开后按指数退避重连：1 秒起，翻倍，上限 30 秒，SHOULD 加随机抖动。收到 `invalid_grant` 时进入 `REVOKED`，停止重连。
 
 ### 8.6 取消、确认与窗口回收
-网关对每个任务处于以下状态之一：**未知**（从未存在，或状态已被忘记）、**RUNNING**（已下发，尚未结束）、**DRAINING**（网关已在本地结束并发出 `task.cancel`，等待设备的终止帧）。“数据帧”“确认”见 §14.1；“确认”同时释放对方的续传缓冲和 §15 窗口。
+网关对每个任务处于以下状态之一：**未知**（从未存在，或状态已被忘记）、**RUNNING**（已下发，尚未结束）、**DRAINING**（网关已在本地结束并发出 `task.cancel`，等待设备的终止帧）。“数据帧”“确认”见 §14.1。**确认属于 Core**：无论是否协商 `resume`、`flow`，双方都 MUST 按本表确认数据帧；`flow` 只在此之上增加窗口限制（§15），`resume` 只增加断线后的重传（§14.2）。确认释放对方保留的未确认帧，协商了 `flow` 时同时释放窗口。
 
 | 行 | 网关侧状态 | 事件 | 动作 | 下一状态 |
 |---|---|---|---|---|
@@ -461,10 +461,10 @@ RUNNING ──task.done──▶ SUCCEEDED
 |---|---|---|---|
 | N1 | 执行中 | `task.cancel`（`unknown_task` 以外的原因） | SHOULD 尽快中止模型调用，发送 `task.error`（`CANCELLED`）作为终止帧；未确认的帧照常保留直到被确认 |
 | N2 | 已结束或未知 | `task.cancel`（`unknown_task` 以外的原因） | MUST 忽略 |
-| N3 | 任意 | `task.cancel {reason: "unknown_task"}` | MUST 停止该任务；MAY 丢弃该任务的未确认帧并释放其窗口 |
-| N4 | 任意 | `task.ack {seq}` | 释放该任务 `seq` 及以前帧占用的续传缓冲与窗口 |
+| N3 | 任意 | `task.cancel {reason: "unknown_task"}` | MUST 停止该任务；MAY 丢弃该任务的未确认帧 |
+| N4 | 任意 | `task.ack {seq}` | 释放该任务 `seq` 及以前的未确认帧（协商了 `flow` 时还有窗口）；终止帧已被确认时 MUST 忘记该任务。未协商 `flow`、`resume` 时同样如此 |
 
-conformance 的 S1（U1）、S2（R2、F1）、S3（D1、D2、F1）与 E7 检查本表。
+conformance 的 S1（U1）、S2（R2、F1）、S3（D1、D2、F1）、S4（R2 的确认，未协商 flow）、S5（R3）与 E7 检查本表。
 
 ---
 
@@ -538,8 +538,8 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 ## 11. 版本与能力协商
 
-- **版本号**：本规范为 LMBP 2.0。主版本只由信封的 `v`（整数，本版本为 `2`）表示，WebSocket 子协议名 `lmbp` 不带版本；网关元数据的 `protocol_versions` 以 `"主.次"` 字符串列出网关实现的全部版本（本版本为 `["2.0"]`），配对链接的 `v` 参数是主版本（`v=2`）。
-- **主版本**：不兼容的变更 MUST 递增主版本，并使用新的子协议名，使新旧设备在握手阶段就能区分。设备 MAY 同时提供多个子协议，网关从中选择一个。次版本只增加兼容扩展，不改变 `v` 和子协议名。
+- **版本号**：本规范为 LMBP 2.0。WebSocket 子协议名固定为 `lmbp`，所有版本相同、不带版本号；主版本只由信封的 `v`（整数，本版本为 `2`）表示。网关元数据的 `protocol_versions` 以 `"主.次"` 字符串列出网关实现的全部版本（本版本为 `["2.0"]`），配对链接的 `v` 参数是主版本（`v=2`）。
+- **主版本**：不兼容的变更 MUST 递增信封的 `v`（同时更新 `protocol_versions` 和配对链接的 `v`），子协议名仍为 `lmbp`；新旧对端在 `hello`/`welcome` 中按 `v` 区分（下一条）。次版本只增加兼容扩展，不改变 `v`。
 - **1.x 对端**：2.0 实现 MUST NOT 降级到 1.x。网关：1.x 设备同样以子协议 `lmbp` 升级，升级照常成功；它的 `hello`（`v ≠ 2`）得到 `error`（`VERSION_UNSUPPORTED`，`id` 同 hello），随后网关断开连接（§7.4）；握手后 `v ≠ 2` 的帧见 §7.2。设备：网关选择的子协议不是 `lmbp`、或 `welcome.v ≠ 2`、或 hello 得到 `VERSION_UNSUPPORTED` 时 MUST 断开；`protocol_versions` 不含 `"2.0"` 的网关 MUST NOT 配对；`v` 不是 `2` 的配对链接 MUST 拒绝并提示需要 LMBP 2.0。
 - **兼容扩展**（新增可选成员、新增消息类型、新增错误码）不改变主版本。接收方 MUST 忽略不认识的成员。收到不认识的 `type` 时，网关 MUST 回复 `error`（`BAD_REQUEST`）且 MUST NOT 断开连接；设备 MUST 忽略不认识的 `type`。
 - **能力**：`hello.capabilities` 列出设备支持的能力，`welcome.capabilities` MUST 是它与网关所支持能力的交集。双方 MUST 只使用交集中的能力。本版本定义的能力：
@@ -549,7 +549,7 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | `session.token` | 连接内续期令牌（§7.7） |
 | `models.update` | 连接内更新模型列表 |
 | `resume` | 断线续传（§14） |
-| `flow` | 字节窗口流量控制与 `task.ack`（§15） |
+| `flow` | 字节窗口流量控制（§15）；`task.ack` 本身属于 Core，不需要此能力 |
 | `tools` | function calling（§16.1） |
 | `multimodal` | 内容片段与 `blob.chunk`（§16.2–§16.3） |
 | `e2ee` | 端到端加密（§17） |
@@ -580,8 +580,8 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 | 配置 | 范围 | 依赖的能力 |
 |---|---|---|
-| `core` | §4–§10、§18–§19：配对、令牌、握手、帧、`task.run`、取消状态表（§8.6） | `session.token`、`models.update` |
-| `reliable` | §14 断线续传、§15 流量控制、迟到帧回收 | `resume`、`flow` |
+| `core` | §4–§10、§18–§19：配对、令牌、握手、帧、`task.run`、取消与确认状态表（§8.6）、数据帧编号与确认（§14.1） | `session.token`、`models.update` |
+| `reliable` | §14.2–§14.4 断线续传、§15 流量控制窗口 | `resume`、`flow` |
 | `tools` | §16.1 | `tools` |
 | `multimodal` | §16.2–§16.3 | `multimodal` |
 | `e2ee` | §17 | `e2ee` |
@@ -590,8 +590,10 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 设备的一致性：能验证 `spec/testvectors` 中所有正例、拒绝所有反例，并实现 §7.4–§7.7 与 §8.6 设备侧各行。
 
+conformance 从元数据读取 `profiles`：core 与已声明配置的检查必须通过，未声明配置的检查报告为 SKIP，不计失败；任何检查都不会因前面的步骤失败而被静默跳过（没跑到的检查记为失败）。只实现 core 的网关只协商 `session.token`、`models.update`；参考网关的 `localsubproxy server -core-only` 就是这种配置（`profiles: ["core", "openai"]`，调用方接口仍需 openai），用于证明 Core 可以单独通过。
+
 ### 13.2 需求 ID 与检查
-每条需求有稳定的 ID，ID 一经发布不再改变含义；conformance 检查编号同样稳定（以 E 开头的检查最早来自 1.0 勘误，编号保留）。下表与 `go run ./cmd/lmbp-conformance -list` 的输出一致（`spec/validate.sh` 校验）。
+每条需求有稳定的 ID，ID 一经发布不再改变含义，退役的 ID 不复用（REL-07 已并入 CORE-22）；conformance 检查编号同样稳定（以 E 开头的检查最早来自 1.0 勘误，编号保留）。下表与 `go run ./cmd/lmbp-conformance -list` 的输出一致（`spec/validate.sh` 校验）。
 
 <!-- catalog:begin -->
 | 需求 ID | 条款 | 配置 | 要求 | conformance 检查 |
@@ -607,9 +609,9 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | CORE-09 | §7.1 | core | WebSocket 升级：要求子协议 lmbp（名字不带版本号，带版本号的变体被拒绝），令牌无效 401，选择 lmbp | W1 W2 W4 W8 |
 | CORE-10 | §7.4、§11 | core | 1.x 对端被拒：子协议仍为 lmbp，v 为 1 的 hello 回 error VERSION_UNSUPPORTED 后断开 | W9 |
 | CORE-11 | §7.4 | core | hello 校验：证明绑定本连接令牌，符合 hello.json，max_concurrency 越界拒绝不截断 | W3 W10 W11 |
-| CORE-12 | §7.4、§11 | core | welcome：同 id，能力取交集，max_concurrency 在 1 与声明值之间 | W5 W6 W12 X1 |
+| CORE-12 | §7.4、§11 | core | welcome：同 id，能力取交集（任意交集都合法），max_concurrency 在 1 与声明值之间 | W5 W6 W12 X1 |
 | CORE-13 | §7.2、§7.3 | core | 帧：只发文本帧，符合 envelope.json，未知 type 不断开，握手后 v≠2 的帧回 BAD_REQUEST | F0 F1 F2 W7 |
-| CORE-14 | §7.4 | core | models.update 不符合 models.update.json 时整帧拒绝、不生效 | W13 |
+| CORE-14 | §7.4 | core | models.update：不符合 models.update.json 时整帧拒绝、不生效；提高 max_concurrency 立即按 FIFO 启动排队请求 | W13 Q1 |
 | CORE-15 | §5.6、§7.5 | core | task.run：无 data，JWS 可验证，载荷正确，envelope seq 为 1 | R1 R2 R3 |
 | CORE-16 | §7.7 | core | 连接内续期 session.token | K1 |
 | CORE-17 | §8.2 | core | 吊销立即断开会话，之后不能取得令牌 | V1 V2 |
@@ -617,19 +619,18 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 | CORE-19 | §6 | core | JSON 响应带 Cache-Control: no-store | E2 |
 | CORE-20 | §10 | core | 限制：messages 1–200 条，帧按 UTF-8 字节计、≤ 262144 | Z6a Z6b Z6c Z6d Z6e Z6f Z6g |
 | CORE-21 | §4.1 | core | X-End-User 为 1–128 个可打印 ASCII 字符 | L2 |
-| CORE-22 | §8.6 | core | 未知任务或已结束任务的数据帧：回 task.cancel(unknown_task)，不确认 | S1 S2 |
+| CORE-22 | §8.6 | core | 确认属于 Core，不依赖 flow：按序数据帧累计确认，跳号让任务失败，本地结束的任务迟到帧照常确认直到终止帧；未知或已结束任务的数据帧回 task.cancel(unknown_task)，不确认 | S1 S2 S3 S4 S5 E7 |
 | CORE-23 | §16.1 | core | model_names 只用于展示，未声明模型的条目被忽略 | X-N1 |
-| REL-01 | §14.1 | reliable | 数据帧逐任务编号，累计确认，跳号让任务失败 | X-F1 X-F2 X-F3 |
+| REL-01 | §14、§15 | reliable | 协商 resume 与 flow；协商后确认同样覆盖全部数据帧，网关数据帧（含 blob.chunk）连续编号，续传后跳号仍让任务失败 | X1r X-F1 X-F2 X-F3 |
 | REL-02 | §14.2–§14.3 | reliable | 断线续传：重传不重复、不丢失，续传参数有界 | X-R1 X-R2 Z3 |
 | REL-03 | §14.4 | reliable | SSE 事件带 id，Last-Event-ID 精确重放 | X-H2 X-H3 |
 | REL-04 | §14.4 | reliable | 幂等：同键同体接回，异体 422，按租户和终端用户隔离，排队中的重复请求接回，键为 1–255 个可打印 ASCII | X-H1 X-H4 Z1 Z1b Z7 L3 |
 | REL-05 | §14.4 | reliable | 保留期清理已结束任务及其幂等记录 | E6 |
 | REL-06 | §15 | reliable | 流量控制：窗口 ≥ max_frame_bytes，并发下不超窗 | Z2 Z6h Z6i |
-| REL-07 | §8.6、§15.5 | reliable | 本地结束的任务：迟到帧照常确认直到终止帧，之后按未知任务处理 | E7 S3 |
-| TOOLS-01 | §16.1 | tools | tools：每模型能力、签名载荷携带、tool_calls 合并、缺能力 400 | X-T1 X-T2 X-T3 X-T4 |
-| MM-01 | §16.2–§16.3 | multimodal | 内容片段与 blob：缺 vision 400，大 data: URI 走 blob.chunk | X-M1 X-M2 |
+| TOOLS-01 | §16.1 | tools | tools：协商 tools，每模型能力、签名载荷携带、tool_calls 合并、缺能力 400 | X1t X-T1 X-T2 X-T3 X-T4 |
+| MM-01 | §16.2–§16.3 | multimodal | 内容片段与 blob：协商 multimodal，缺 vision 400，大 data: URI 走 blob.chunk | X1m X-M1 X-M2 |
 | MM-02 | §16.2 | multimodal | 远程图片原样转发，设备不支持时调用方得到 400 CAPABILITY_UNSUPPORTED | E4 |
-| E2EE-01 | §17 | e2ee | 端到端加密：密钥声明、JWE 原样转发、密封输出 | X-E1 X-E2 X-E3 X-E4 X-E5 |
+| E2EE-01 | §17 | e2ee | 端到端加密：协商 e2ee，密钥声明、JWE 原样转发、密封输出 | X1e X-E1 X-E2 X-E3 X-E4 X-E5 |
 | OAI-01 | §6.5 | openai | /v1/models 与 SSE 输出 | O1 O2 |
 | OAI-02 | §6.5 | openai | 调用方断开（流式与非流式）后向设备发送 task.cancel | C1 E3 |
 | OAI-03 | §6.5 | openai | 请求参数校验，共享向量 params.json（长度按码点） | Z8a Z8b Z8c |
@@ -647,13 +648,14 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
   [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lmbp-conformance` 依次扮演设备和租户后端，共 120 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
+`lmbp-conformance` 依次扮演设备和租户后端，共 127 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 
 ## 14. 断线续传（能力 `resume`）
 
 ### 14.1 数据帧与确认
+本节的编号与确认属于 Core（§8.6），不依赖 `resume` 或 `flow`。
 - 数据帧：`task.run`、`blob.chunk`（网关→设备）、`task.delta`、`task.done`、`task.error`（设备→网关）。其余为控制帧，不带 `seq`、不重传。
 - 发送方对每个任务的数据帧按 1、2、3… 编号，保留尚未被确认的帧。接收方用 `task.ack {seq}` 确认“该任务 `seq` 及以前的所有帧”（累计确认）。
 - 接收方 MUST 丢弃 `seq ≤ 已收最大连续 seq` 的帧（重复）；遇到跳号 MUST 让任务失败（§7.5），MUST NOT 静默接受。

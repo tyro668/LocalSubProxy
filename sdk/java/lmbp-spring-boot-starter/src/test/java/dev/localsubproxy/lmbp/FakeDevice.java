@@ -95,7 +95,11 @@ public final class FakeDevice implements AutoCloseable {
     welcome.get(5, TimeUnit.SECONDS);
   }
 
-  synchronized void send(Map<String, Object> m) {
+  public Map<String, Object> frame(String type, String taskId, long seq, Map<String, Object> data) {
+    return Json.obj("v", (long) Lmbp.VERSION, "type", type, "task_id", taskId, "seq", seq, "data", new java.util.LinkedHashMap<>(data));
+  }
+
+  public synchronized void send(Map<String, Object> m) {
     ws.sendText(Json.stringify(m), true).join();
   }
 

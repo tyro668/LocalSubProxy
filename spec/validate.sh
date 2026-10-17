@@ -27,8 +27,8 @@ done
 (cd ../sdk/node && $ST node test/params.test.mjs)
 (cd ../sdk/python && $ST pytest .venv/bin/python -q tests/test_params.py)
 echo "== Go reference vs vectors/schemas";  (cd .. && $ST go ./internal/lmbp/ ./internal/lmbp/conformance/)
-echo "== Python skeleton";                  (cd examples/python && "$VENV/bin/python" test_vectors.py)
-echo "== Node skeleton";                    (cd examples/node && npm install --silent && node test_vectors.mjs)
-if command -v cargo >/dev/null; then echo "== Rust skeleton"; (cd examples/rust && $ST cargo --quiet --test vectors --test ext)
+echo "== Python skeleton (vectors.json + all jose.json cases)";                  (cd examples/python && "$VENV/bin/python" test_vectors.py)
+echo "== Node skeleton (vectors.json + all jose.json cases)";                    (cd examples/node && npm install --silent && node test_vectors.mjs)
+if command -v cargo >/dev/null; then echo "== Rust skeleton (vectors.json + all jose.json cases)"; (cd examples/rust && $ST cargo --quiet --test vectors --test ext)
 elif [ -n "${CI:-}${LMBP_REQUIRE_EXTERNAL:-}" ]; then echo "FAIL Rust skeleton: cargo not installed (required in CI mode)"; exit 1
 else echo "SKIP Rust skeleton (cargo not installed)"; fi

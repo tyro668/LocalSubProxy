@@ -6,7 +6,7 @@
 | 不用桌面界面运行（服务器、systemd / launchd / Windows 计划任务） | [headless.md](headless.md) |
 | 在 SaaS 里接入 | [sdk/go](../sdk/go/README.md) · [sdk/node](../sdk/node/README.md) · [sdk/python](../sdk/python/README.md) · [sdk/java](../sdk/java/README.md) |
 | 了解各实现的差异和成熟度 | [implementations.md](implementations.md) |
-| 读协议规范（LMBP 1.0 正式版） | [lmbp-spec.md](lmbp-spec.md) |
+| 读协议规范（LMBP 2.0 正式版） | [lmbp-spec.md](lmbp-spec.md) |
 | 用其他语言自己实现网关 | [implementers-guide.md](implementers-guide.md)，机器可读契约和测试向量在 [spec/](../spec) |
 | 本机联调、模拟网关、聊天页 | [mock/README.md](../mock/README.md) |
 | 桌面端 UI 与内核的接口 | [desktop-status-contract.md](desktop-status-contract.md) |

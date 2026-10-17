@@ -52,7 +52,11 @@ type Config struct {
 	QueueTimeout time.Duration      // default 15s; how long a request waits for a device concurrency slot
 	MaxConc      int                // gateway cap on per-device concurrency (default 16)
 	Flow         lmbp.Flow          // windows the gateway advertises (defaults DefaultTaskWindow/ConnWindow)
-	Logger       *log.Logger
+	// CoreOnly runs a Core-only gateway (spec §13.1): it negotiates only
+	// session.token and models.update, advertises profiles core and openai,
+	// and serves no /v1/messages. Used to prove Core conformance on its own.
+	CoreOnly bool
+	Logger   *log.Logger
 }
 
 type Gateway struct {
@@ -207,11 +211,28 @@ func (g *Gateway) Handler() http.Handler {
 	m.HandleFunc("/lmbp/v1/tenant/tasks/", g.taskEvents)
 	m.HandleFunc("/v1/models", g.models)
 	m.HandleFunc("/v1/chat/completions", g.chat)
-	m.HandleFunc("/v1/messages", g.messages)
+	if !g.cfg.CoreOnly {
+		m.HandleFunc("/v1/messages", g.messages)
+	}
 	return m
 }
 
 // ---------- helpers ----------
+
+// capabilities and profiles this gateway implements (Core-only or full).
+func (g *Gateway) capabilities() []string {
+	if g.cfg.CoreOnly {
+		return lmbp.CoreCapabilities
+	}
+	return lmbp.Capabilities
+}
+
+func (g *Gateway) profiles() []string {
+	if g.cfg.CoreOnly {
+		return lmbp.CoreProfiles
+	}
+	return lmbp.Profiles
+}
 
 // writeJSONCache writes a cacheable 200 JSON body (Cache-Control set by the caller).
 func writeJSONCache(w http.ResponseWriter, v any) {

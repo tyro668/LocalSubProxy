@@ -2,7 +2,7 @@
 //! key statements) and flow-control / resume bookkeeping.
 //! Crates: x25519-dalek (static_secrets), aes-gcm, sha2 — all RustCrypto/dalek.
 //! (josekit can also open the JWE; pin alg/enc and reject `zip` yourself.)
-use crate::{b64u, thumbprint, unb64u, verify_jws, Result};
+use crate::{b64u, require_claims, thumbprint, time_range, unb64u, verify_jws, Result};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use serde_json::{json, Value};
@@ -21,13 +21,14 @@ pub fn x25519_public(private: &[u8; 32]) -> [u8; 32] { PublicKey::from(&StaticSe
 
 /// Verifies a device key statement against the identity-key thumbprint pinned at pairing.
 pub fn verify_key_statement(device_pub: &[u8], pinned_jkt: &str, device_id: &str, stmt: &str, now: i64) -> Result<(Vec<u8>, String)> {
-    if thumbprint(device_pub) != pinned_jkt { return Err("device key does not match pinned thumbprint".into()); }
-    let c: Value = serde_json::from_slice(&verify_jws(device_pub, stmt, TYP_E2EE_KEY)?).map_err(|e| e.to_string())?;
+    if !pinned_jkt.is_empty() && thumbprint(device_pub) != pinned_jkt { return Err("device key does not match pinned thumbprint".into()); }
+    let c = verify_jws(device_pub, stmt, TYP_E2EE_KEY)?;
+    require_claims(&c, &[], &["iss", "sub"], &[])?;
+    let (iat, exp) = time_range(&c)?;
     let j = &c["jwk"];
     if c["iss"] != device_id || c["sub"] != device_id || j["kty"] != "OKP" || j["crv"] != "X25519" { return Err("bad key statement".into()); }
-    let (iat, exp) = (c["iat"].as_i64().ok_or("iat")?, c["exp"].as_i64().ok_or("exp")?);
     if now > exp || now + 60 < iat { return Err("key statement expired".into()); }
-    let x = unb64u(j["x"].as_str().ok_or("x")?)?;
+    let x = unb64u(j["x"].as_str().ok_or("bad e2ee key")?)?;
     let kid = j["kid"].as_str().unwrap_or("").to_string();
     if x.len() != 32 || kid != x25519_thumbprint(&x) { return Err("bad e2ee key".into()); }
     Ok((x, kid))

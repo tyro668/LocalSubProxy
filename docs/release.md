@@ -20,6 +20,15 @@ git tag v1.2.0 && git push origin v1.2.0
 
 版本号取自 tag（去掉 `v`），通过 `--build-name` 写入 App；`--build-number` 为 Actions 运行序号。
 
+## LMBP 2.0 升级
+
+2.0 拒绝 1.x，没有兼容模式：网关（Go 参考网关或基于 SDK 的网关）、SDK 与桌面端必须一起升级。
+
+- 1.x 桌面端连到 2.0 网关：`hello` 的 `v` 不是 2，得到 `VERSION_UNSUPPORTED` 后被断开；
+- 2.0 桌面端遇到 1.x 网关：`protocol_versions` 不含 `"2.0"`，不配对、不连接；`v` 不是 2 的配对链接被拒绝。
+
+建议同一维护窗口内先升级网关与 SDK，再发布桌面端新版本；期间未升级的一端无法连接。
+
 ## 产物
 
 | 平台 | 文件 |

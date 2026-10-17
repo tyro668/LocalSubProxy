@@ -28,7 +28,8 @@
 #   5. scripts/mock-interop.sh over every gateway variant (go node python
 #      java rust, node-sqlite python-sqlite, sdk-go sdk-go-sqlite, express fastapi,
 #      spring-boot spring-boot-sqlite):
-#      lmbp-conformance + Go connector e2e + official openai/anthropic clients
+#      lmbp-conformance + Go connector e2e + official openai/anthropic clients;
+#      plus go-core (the Go gateway with -core-only): Core passes on its own
 #   6. scripts/chat-ui-e2e.sh: headless-browser chat page on go/node/python/java/rust
 #
 # Not in the matrix (no code to run, by design): the integration guide's Java
@@ -87,7 +88,7 @@ step "Java SDK (sdk/java: core + Spring Boot starter + demo, Maven)" $ST maven s
 step "Java mock (mock/java, JDK only)" $ST selftest mock/java/test.sh
 step "Rust mock (mock/rust)" bash -c 'cd mock/rust && ../../scripts/strict-test.py cargo --release'
 step "spec/validate.sh (schemas, JOSE vectors, skeletons incl. Rust)" spec/validate.sh
-step "mock-interop: conformance + connector e2e + official clients" scripts/mock-interop.sh go node python java rust node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi spring-boot spring-boot-sqlite
+step "mock-interop: conformance + connector e2e + official clients" scripts/mock-interop.sh go node python java rust node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi spring-boot spring-boot-sqlite go-core
 step "chat UI e2e (headless Chrome; go node python java rust)" scripts/chat-ui-e2e.sh go node python java rust
 
 echo

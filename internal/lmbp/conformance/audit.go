@@ -22,12 +22,18 @@ import (
 )
 
 func (r *runner) runAudit(ctx context.Context, dev *extDev, full func(string) string, mTools string) {
-	r.auditIdempotency(ctx, dev, full(mTools))
-	r.auditResumeBounds(ctx, dev, full(mTools))
-	r.auditAnthropicInterleave(ctx, dev, full(mTools))
+	if r.runs(lmbp.ProfileReliable, "Z1", "Z1b", "Z3") {
+		r.auditIdempotency(ctx, dev, full(mTools))
+		r.auditResumeBounds(ctx, dev, full(mTools))
+	}
+	if r.runs(lmbp.ProfileAnthropic, "Z5") {
+		r.auditAnthropicInterleave(ctx, dev, full(mTools))
+	}
 	r.auditLimits(ctx, dev, full(mTools))
-	r.auditParams(ctx, dev, full(mTools))
-	r.auditParamCaps(ctx, dev, full(mParamCaps))
+	if r.runs(lmbp.ProfileOpenAI, "Z8a", "Z8b", "Z8c", "Z8d") {
+		r.auditParams(ctx, dev, full(mTools))
+		r.auditParamCaps(ctx, dev, full(mParamCaps))
+	}
 }
 
 // Z6: normative limits (spec §10), boundary cases on both sides, identical
@@ -517,9 +523,44 @@ func (r *runner) auditQueuedDuplicate(ctx context.Context, key ed25519.PrivateKe
 	h.Flow = &lmbp.Flow{TaskWindow: 262144, ConnWindow: 262144}
 	h.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
 	d, _, err := r.dialExt(at, h)
-	if !r.check("Z7", "duplicate during queueing attaches to the pending task", err) {
+	if err != nil {
+		r.check("Z7", "duplicate during queueing attaches to the pending task", err)
+		r.check("Q1", "raising max_concurrency starts the queued request at once", err)
 		return nil
 	}
+	// Z7 needs reliable (idempotency); Q1 is Core and runs either way, on a
+	// fresh max_concurrency-1 session if the Z7 part failed midway.
+	if r.runs(lmbp.ProfileReliable, "Z7") && !r.queuedDuplicate(ctx, d, model) {
+		d.conn.Close()
+		for range d.frames {
+		}
+		if d = r.redial(key, at, h); d == nil {
+			r.check("Q1", "raising max_concurrency starts the queued request at once", errors.New("could not reconnect"))
+			return nil
+		}
+	}
+	r.checkRaiseWakesQueue(ctx, d, h, model)
+	d.conn.Close()
+	for range d.frames {
+	}
+	hello.Flow = &lmbp.Flow{TaskWindow: 262144, ConnWindow: 262144}
+	return r.redial(key, at, hello)
+}
+
+// redial opens a fresh session with hello (no resume, new proof).
+func (r *runner) redial(key ed25519.PrivateKey, at string, hello lmbp.Hello) *extDev {
+	hello.Resume = nil
+	hello.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
+	d, _, err := r.dialExt(at, hello)
+	if err != nil {
+		return nil
+	}
+	return d
+}
+
+// queuedDuplicate is the Z7 body on a max_concurrency-1 session; false if
+// it could not complete (the session may then be unusable).
+func (r *runner) queuedDuplicate(ctx context.Context, d *extDev, model string) bool {
 	type res struct {
 		st   int
 		task string
@@ -540,7 +581,7 @@ func (r *runner) auditQueuedDuplicate(ctx context.Context, key ed25519.PrivateKe
 	hold := call("hold the only slot", "")
 	fa, _, err := d.await(lmbp.TypeTaskRun, nil)
 	if !r.check("Z7", "duplicate during queueing attaches to the pending task", err) {
-		return nil
+		return false
 	}
 	b1 := call("queued call", "z7-queued")
 	time.Sleep(300 * time.Millisecond)
@@ -576,15 +617,48 @@ more:
 		want(err == nil && runs == 1 && ra.st == 200 && rb.st == 200 && ra.task != "" && ra.task == rb.task &&
 			strings.Contains(string(ra.body), "queued-once") && strings.Contains(string(rb.body), "queued-once"),
 			"err %v runs %d; first %d %s %s; duplicate %d %s %s", err, runs, ra.st, ra.task, ra.body, rb.st, rb.task, rb.body))
-	d.conn.Close()
-	for range d.frames {
+	return err == nil
+}
+
+// Q1: raising max_concurrency with models.update starts queued requests at
+// once, in FIFO order (§7.4). The session declared 1; A holds the slot, B
+// waits; after the raise to 2, B's task.run arrives without waiting for A
+// and B never gets DEVICE_BUSY.
+func (r *runner) checkRaiseWakesQueue(ctx context.Context, d *extDev, h lmbp.Hello, model string) {
+	const title = "raising max_concurrency (models.update 1 -> 2) starts the queued request at once (FIFO), no DEVICE_BUSY"
+	call := func(text string) chan int {
+		ch := make(chan int, 1)
+		go func() {
+			st, _, _ := r.chatRaw(ctx, map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": text}}}, nil)
+			ch <- st
+		}()
+		return ch
 	}
-	hello.Resume = nil
-	hello.Flow = &lmbp.Flow{TaskWindow: 262144, ConnWindow: 262144}
-	hello.Proof = lmbp.SignProof(key, r.devID, lmbp.ProofHello, at, time.Now())
-	d3, _, err := r.dialExt(at, hello)
-	if !r.check("Z7", "reconnect after the queueing check", err) {
-		return nil
+	a := call("q1 holds the only slot")
+	fa, _, err := d.await(lmbp.TypeTaskRun, nil)
+	if !r.check("Q1", title, err) {
+		return
 	}
-	return d3
+	b := call("q1 queued")
+	time.Sleep(500 * time.Millisecond) // B is queued behind A
+	mu, _ := json.Marshal(lmbp.ModelsUpdate{Models: h.Models, ModelCapabilities: h.ModelCapabilities, MaxConcurrency: 2})
+	_ = d.write(lmbp.Envelope{Type: lmbp.TypeModelsUpdate, ID: "q1", Data: mu})
+	t0 := time.Now()
+	fb, before, err := d.await(lmbp.TypeTaskRun, nil)
+	el := time.Since(t0)
+	var stB int
+	if err == nil {
+		_ = d.send(lmbp.TypeTaskDone, fb.TaskID, 1, lmbp.TaskDone{FinishReason: "stop"})
+		stB = <-b
+	}
+	_ = d.send(lmbp.TypeTaskDone, fa.TaskID, 1, lmbp.TaskDone{FinishReason: "stop"})
+	<-a
+	var errFrames []string
+	for _, f := range before {
+		if f.Type == lmbp.TypeError {
+			errFrames = append(errFrames, string(f.Data))
+		}
+	}
+	r.check("Q1", title, want(err == nil && el < 3*time.Second && stB == 200 && len(errFrames) == 0,
+		"err %v after %v; B status %d; error frames %v", err, el, stB, errFrames))
 }

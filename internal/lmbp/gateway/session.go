@@ -141,6 +141,13 @@ func (ds *dstate) release() { ds.mu.Lock(); ds.releaseLocked(); ds.mu.Unlock() }
 
 func (ds *dstate) releaseLocked() {
 	ds.slots--
+	ds.grantLocked()
+}
+
+// grantLocked hands free slots to queued requests in FIFO order and wakes
+// them. It runs whenever a slot frees up or maxConc grows (models.update,
+// a new hello), always under ds.mu.
+func (ds *dstate) grantLocked() {
 	for len(ds.slotWait) > 0 && ds.slots < ds.maxConc {
 		ch := ds.slotWait[0]
 		ds.slotWait = ds.slotWait[1:]
@@ -266,7 +273,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		early(lmbp.ErrUnauthenticated, "invalid key proof")
 		return
 	}
-	caps := intersect(hello.Capabilities, lmbp.Capabilities)
+	caps := intersect(hello.Capabilities, g.capabilities())
 	if hello.E2EEKey != "" && contains(caps, lmbp.CapE2EE) {
 		if _, _, err := lmbp.VerifyE2EEKey(dev.PublicKey, "", dev.ID, hello.E2EEKey, time.Now()); err != nil {
 			early(lmbp.ErrBadRequest, "invalid e2ee key statement")
@@ -406,7 +413,8 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	ds.mu.Lock()
 	if ds.gen == gen {
-		ds.ready = true // now new requests may be routed here
+		ds.ready = true  // now new requests may be routed here
+		ds.grantLocked() // a reconnect with a higher max_concurrency starts queued requests
 	}
 	ds.mu.Unlock()
 	closed := make(chan struct{})
@@ -505,6 +513,7 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 				ds.models, ds.modelCapMap, ds.modelNames = mu.Models, mu.ModelCapabilities, cleanNames(mu.ModelNames, mu.Models)
 				if mu.MaxConcurrency != 0 {
 					ds.maxConc = min(mu.MaxConcurrency, g.cfg.MaxConc)
+					ds.grantLocked() // a raise starts queued requests now
 				}
 				hasE2EE := contains(ds.caps, lmbp.CapE2EE)
 				ds.mu.Unlock()

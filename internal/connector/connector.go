@@ -15,9 +15,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/tyro668/LocalSubProxy/internal/audit"
 	"github.com/tyro668/LocalSubProxy/internal/durable"
@@ -199,6 +201,9 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 	if a.ID == "" || len(a.ID) > 64 || strings.Contains(a.ID, "/") || len(a.Models) == 0 || len(a.Models) > 100 {
 		return errors.New("adapter ID (no '/') and 1-100 models required")
 	}
+	if err := checkPublishedIDs(a.ID, a.Models); err != nil {
+		return err
+	}
 	if len(a.Name) > MaxSchemeNameBytes || len(a.Provider) > 64 || a.ContextWindow < 0 || a.ContextWindow > 2_000_000 || a.MaxOutputTokens < 0 || a.MaxOutputTokens > 1_000_000 || a.Concurrency < 0 || a.Concurrency > 16 {
 		return errors.New("invalid profile settings")
 	}
@@ -206,11 +211,6 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 	case "", "off", "low", "medium", "high":
 	default:
 		return errors.New("invalid reasoning effort")
-	}
-	for _, m := range a.Models {
-		if m == "" || len(m) > 200 {
-			return errors.New("invalid model ID")
-		}
 	}
 	for _, c := range a.Capabilities {
 		if c != lmbp.ModelCapTools && c != lmbp.ModelCapVision && c != lmbp.ModelCapAudio {
@@ -237,6 +237,64 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 		return checkEndpoint(*a)
 	}
 	return nil
+}
+
+// checkPublishedIDs applies the hello constraints (spec §7.4, defs.json
+// modelId) to the IDs a scheme publishes, "schemeID/model": each 1..256 code
+// points without whitespace, and no duplicates. A scheme that breaks them
+// would make the gateway reject the whole hello or models.update.
+func checkPublishedIDs(id string, models []string) error {
+	if strings.IndexFunc(id, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("scheme ID %q contains whitespace", id)
+	}
+	seen := map[string]bool{}
+	for _, m := range models {
+		if m == "" {
+			return errors.New("empty model ID")
+		}
+		if err := lmbp.ValidModelID(id + "/" + m); err != nil {
+			return fmt.Errorf("published ID %s/…: %v", id, err)
+		}
+		if seen[m] {
+			return fmt.Errorf("duplicate model %q", m)
+		}
+		seen[m] = true
+	}
+	return nil
+}
+
+// publishedCountLocked counts the model IDs enabled, valid schemes publish,
+// leaving out scheme except (being replaced).
+func (x *Connector) publishedCountLocked(except string) int {
+	n := 0
+	for _, a := range x.adapters {
+		if a.ID != except && a.Enabled && x.invalid[a.ID] == "" {
+			n += len(a.Models)
+		}
+	}
+	return n
+}
+
+// checkTotalLocked rejects a save that would publish more than lmbp.MaxModels.
+func (x *Connector) checkTotalLocked(a AdapterConfig) error {
+	if !a.Enabled {
+		return nil
+	}
+	if n := x.publishedCountLocked(a.ID) + len(a.Models); n > lmbp.MaxModels {
+		return fmt.Errorf("enabled schemes would publish %d models; the protocol allows at most %d", n, lmbp.MaxModels)
+	}
+	return nil
+}
+
+// sortedAdapterIDsLocked is the stable order used to publish and to decide
+// which schemes exceed the total limit.
+func (x *Connector) sortedAdapterIDsLocked() []string {
+	ids := make([]string, 0, len(x.adapters))
+	for id := range x.adapters {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // checkEndpoint validates where an HTTP adapter sends requests and its key.
@@ -359,11 +417,15 @@ func (x *Connector) Models() []string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	out := []string{}
-	for _, a := range x.adapters {
+	for _, id := range x.sortedAdapterIDsLocked() {
+		a := x.adapters[id]
 		if !a.Enabled || x.invalid[a.ID] != "" {
 			continue
 		}
 		if h, ok := x.health[a.ID]; ok && h.Health != "ready" {
+			continue
+		}
+		if len(out)+len(a.Models) > lmbp.MaxModels { // guarded at save and load; never send an invalid hello
 			continue
 		}
 		for _, m := range a.Models {
@@ -379,6 +441,9 @@ func (x *Connector) ModelCapabilities() map[string][]string {
 	defer x.mu.Unlock()
 	out := map[string][]string{}
 	for _, a := range x.adapters {
+		if x.invalid[a.ID] != "" { // never published; keys could break models.update
+			continue
+		}
 		for _, m := range a.Models {
 			out[a.ID+"/"+m] = capsOf(a)
 		}
@@ -394,7 +459,7 @@ func (x *Connector) ModelNames() map[string]string {
 	out := map[string]string{}
 	for _, a := range x.adapters {
 		n := strings.TrimSpace(a.Name)
-		if n == "" {
+		if n == "" || x.invalid[a.ID] != "" {
 			continue
 		}
 		for _, m := range a.Models {
@@ -913,6 +978,23 @@ func (x *Connector) loadAdapterFile() error {
 			x.invalid[a.ID] = "invalid configuration: " + err.Error()
 		}
 		x.adapters[a.ID] = a
+	}
+	// The total limit is checked in a stable order: the schemes that would
+	// push the published list past lmbp.MaxModels become health errors.
+	total := 0
+	for _, id := range x.sortedAdapterIDsLocked() {
+		a := x.adapters[id]
+		if !a.Enabled || x.invalid[id] != "" {
+			continue
+		}
+		if total+len(a.Models) > lmbp.MaxModels {
+			if x.invalid == nil {
+				x.invalid = map[string]string{}
+			}
+			x.invalid[id] = fmt.Sprintf("invalid configuration: enabled schemes would publish more than %d models", lmbp.MaxModels)
+			continue
+		}
+		total += len(a.Models)
 	}
 	if migrated {
 		return x.saveAdaptersLocked() // single-threaded: called from New

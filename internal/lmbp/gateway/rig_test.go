@@ -232,6 +232,20 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	case <-time.After(5 * time.Second):
 		t.Fatal("device did not connect")
 	}
+	// The device sees the welcome a moment before the gateway marks the
+	// session routable; wait for that so tests never race the handshake.
+	for i := 0; ; i++ {
+		_, dl := r.api(t, "GET", "/lmbp/v1/tenant/devices", nil, nil)
+		if ds, _ := dl["devices"].([]any); len(ds) > 0 {
+			if d, _ := ds[0].(map[string]any); d["online"] == true {
+				break
+			}
+		}
+		if i > 250 {
+			t.Fatal("gateway never reported the device online")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	return r
 }
 

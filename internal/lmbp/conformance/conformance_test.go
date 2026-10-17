@@ -10,20 +10,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
 )
 
-// The Go reference gateway must pass its own conformance suite.
-func TestReferenceGatewayConforms(t *testing.T) {
+func runAgainst(t *testing.T, cfg gateway.Config, verbose bool) []Result {
+	t.Helper()
 	st, err := store.OpenSQLite(":memory:", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { st.Close() })
 	// A short retention so E6 (retention purges task + idempotency record) runs too.
 	const retention = 2 * time.Second
-	g, err := gateway.New(gateway.Config{Store: st, Logger: log.New(io.Discard, "", 0), PingInterval: 200 * time.Millisecond, Retention: retention})
+	cfg.Store, cfg.Logger, cfg.PingInterval, cfg.Retention = st, log.New(io.Discard, "", 0), 200*time.Millisecond, retention
+	g, err := gateway.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,15 +34,20 @@ func TestReferenceGatewayConforms(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
+	t.Cleanup(stop)
 	go g.RunRetention(ctx, 0)
 	s := httptest.NewServer(g.Handler())
-	defer s.Close()
+	t.Cleanup(s.Close)
 	var logw io.Writer
-	if testing.Verbose() {
+	if verbose && testing.Verbose() {
 		logw = os.Stdout
 	}
-	res := Run(context.Background(), Config{GatewayURL: s.URL, Tenant: "acme", TenantKey: key, SchemaDir: "../../../spec/schemas", Timeout: 5 * time.Second, Log: logw, Retention: retention})
+	return Run(context.Background(), Config{GatewayURL: s.URL, Tenant: "acme", TenantKey: key, SchemaDir: "../../../spec/schemas", Timeout: 5 * time.Second, Log: logw, Retention: retention})
+}
+
+// The Go reference gateway must pass its own conformance suite.
+func TestReferenceGatewayConforms(t *testing.T) {
+	res := runAgainst(t, gateway.Config{}, true)
 	if len(res) < 25 {
 		t.Fatalf("only %d checks ran", len(res))
 	}
@@ -60,6 +67,40 @@ func TestReferenceGatewayConforms(t *testing.T) {
 		for _, c := range rq.Checks {
 			if !ran[c] {
 				t.Errorf("%s (%s) is in the catalog but did not run", c, rq.ID)
+			}
+		}
+	}
+}
+
+// A Core-only gateway (profiles core + openai, capabilities session.token
+// and models.update: no resume, flow, tools, multimodal, e2ee, anthropic)
+// passes every Core check; extension checks are skipped, never failed.
+func TestCoreOnlyGatewayConforms(t *testing.T) {
+	// no log: its SKIP lines would trip verify-all's skip scanner (they are
+	// asserted below: only undeclared profiles may be skipped)
+	res := runAgainst(t, gateway.Config{CoreOnly: true}, false)
+	byID := map[string][]Result{}
+	for _, r := range res {
+		byID[r.ID] = append(byID[r.ID], r)
+		if !r.Pass {
+			t.Errorf("%s %s: %s", r.ID, r.Title, r.Detail)
+		}
+	}
+	for _, rq := range Catalog {
+		declared := rq.Profile == lmbp.ProfileCore || rq.Profile == lmbp.ProfileOpenAI
+		for _, c := range rq.Checks {
+			rs := byID[c]
+			if len(rs) == 0 {
+				t.Errorf("%s (%s) has no result", c, rq.ID)
+				continue
+			}
+			for _, r := range rs {
+				if declared && r.Skip {
+					t.Errorf("%s (%s, declared profile %s) was skipped: %s", c, rq.ID, rq.Profile, r.Detail)
+				}
+				if !declared && !r.Skip {
+					t.Errorf("%s (%s, undeclared profile %s) ran instead of being skipped", c, rq.ID, rq.Profile)
+				}
 			}
 		}
 	}

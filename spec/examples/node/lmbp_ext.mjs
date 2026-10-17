@@ -4,7 +4,7 @@
 // package (panva) can also open the JWE: compactDecrypt(jwe, key,
 // { keyManagementAlgorithms: ['ECDH-ES'], contentEncryptionAlgorithms: ['A256GCM'] }).
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, randomBytes } from 'node:crypto';
-import { b64u, unb64u, jsonBytes, thumbprint, verifyJws } from './lmbp.mjs';
+import { b64u, unb64u, jsonBytes, thumbprint, verifyJws, requireClaims, timeRange } from './lmbp.mjs';
 
 export const TYP_E2EE_KEY = 'lmbp-e2ee-key+jwt';
 export const CTY_REQUEST = 'lmbp-request+json';
@@ -19,12 +19,14 @@ export function xPriv(raw) {
 export const xPublicOf = (priv) => unb64u(createPublicKey(priv).export({ format: 'jwk' }).x);
 
 export function verifyKeyStatement(devicePub, pinnedJkt, deviceId, stmt, now) {
-  if (thumbprint(devicePub) !== pinnedJkt) throw new Error('device key does not match pinned thumbprint');
-  const c = JSON.parse(verifyJws(devicePub, stmt, TYP_E2EE_KEY).toString('utf8'));
-  const j = c.jwk ?? {};
+  if (pinnedJkt && thumbprint(devicePub) !== pinnedJkt) throw new Error('device key does not match pinned thumbprint');
+  const c = verifyJws(devicePub, stmt, TYP_E2EE_KEY);
+  requireClaims(c, [], ['iss', 'sub']);
+  timeRange(c);
+  const j = c.jwk && typeof c.jwk === 'object' ? c.jwk : {};
   if (c.iss !== deviceId || c.sub !== deviceId || j.kty !== 'OKP' || j.crv !== 'X25519') throw new Error('bad key statement');
   if (now > c.exp || now + 60 < c.iat) throw new Error('key statement expired');
-  const x = unb64u(j.x);
+  let x; try { x = unb64u(j.x); } catch { throw new Error('bad e2ee key'); }
   if (x.length !== 32 || j.kid !== x25519Thumbprint(x)) throw new Error('bad e2ee key');
   return { x, kid: j.kid };
 }

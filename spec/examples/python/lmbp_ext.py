@@ -15,7 +15,7 @@ import struct
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from lmbp import LmbpError, b64u, json_bytes, thumbprint, unb64u, verify_jws
+from lmbp import LmbpError, b64u, json_bytes, require_claims, thumbprint, time_range, unb64u, verify_jws
 
 TYP_E2EE_KEY = "lmbp-e2ee-key+jwt"
 CTY_REQUEST = "lmbp-request+json"
@@ -28,15 +28,20 @@ def x25519_thumbprint(pub: bytes) -> str:
 
 def verify_key_statement(device_pub: bytes, pinned_jkt: str, device_id: str, stmt: str, now: int) -> tuple[bytes, str]:
     """Returns (x25519 public key, kid). pinned_jkt is the device key thumbprint captured at pairing."""
-    if thumbprint(device_pub) != pinned_jkt:
+    if pinned_jkt and thumbprint(device_pub) != pinned_jkt:
         raise LmbpError("device key does not match pinned thumbprint")
-    c = json.loads(verify_jws(device_pub, stmt, TYP_E2EE_KEY))
-    jwk = c.get("jwk", {})
-    if c.get("iss") != device_id or c.get("sub") != device_id or jwk.get("kty") != "OKP" or jwk.get("crv") != "X25519":
+    c = verify_jws(device_pub, stmt, TYP_E2EE_KEY)
+    require_claims(c, strs=("iss", "sub"))
+    time_range(c)
+    jwk = c.get("jwk") if isinstance(c.get("jwk"), dict) else {}
+    if c["iss"] != device_id or c["sub"] != device_id or jwk.get("kty") != "OKP" or jwk.get("crv") != "X25519":
         raise LmbpError("bad key statement")
     if now > c["exp"] or now + 60 < c["iat"]:
         raise LmbpError("key statement expired")
-    x = unb64u(jwk["x"])
+    try:
+        x = unb64u(jwk.get("x"))
+    except (LmbpError, ValueError, TypeError) as e:
+        raise LmbpError("bad e2ee key") from e
     if len(x) != 32 or jwk.get("kid") != x25519_thumbprint(x):
         raise LmbpError("bad e2ee key")
     return x, jwk["kid"]
