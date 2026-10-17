@@ -49,6 +49,7 @@ public final class LMBPServer implements AutoCloseable {
     cfg.webDir = b.chatUiDir == null ? "" : b.chatUiDir;
     if (b.taskTimeoutMs > 0) cfg.taskTimeout = b.taskTimeoutMs;
     if (b.keepaliveMs > 0) cfg.keepalive = b.keepaliveMs;
+    if (b.retentionMs != 0) cfg.retention = b.retentionMs;
     if (b.signingSeed != null && b.signingSeed.length != 32) throw new IllegalArgumentException("signing seed must be 32 bytes");
     g = new Gateway(cfg, b.signingSeed == null ? null : b.signingSeed.clone(), b.store == null ? new MemoryStore() : b.store, b.logger);
     for (Object[] t : b.tenants) {
@@ -56,6 +57,7 @@ public final class LMBPServer implements AutoCloseable {
       g.registerTenant((String) t[0], (String) t[1], Json.asObj(Json.parse(Json.stringify(prof))));
     }
     pairing = new Pairing(this);
+    g.startRetention();
   }
 
   public static Builder builder() { return new Builder(); }
@@ -66,7 +68,7 @@ public final class LMBPServer implements AutoCloseable {
     private Store store;
     private byte[] signingSeed;
     private int maxConcurrency = 16;
-    private long taskTimeoutMs, keepaliveMs;
+    private long taskTimeoutMs, keepaliveMs, retentionMs;
     private Consumer<String> logger = s -> System.err.println("lmbp: " + s);
     private final List<Object[]> tenants = new ArrayList<>();
 
@@ -83,6 +85,11 @@ public final class LMBPServer implements AutoCloseable {
     public Builder signingSeedHex(String hex) { this.signingSeed = hex == null || hex.isBlank() ? null : HexFormat.of().parseHex(hex.trim()); return this; }
     /** Upper bound on concurrent tasks per device (the device may announce fewer). */
     public Builder maxConcurrency(int n) { if (n < 1) throw new IllegalArgumentException("maxConcurrency >= 1"); this.maxConcurrency = n; return this; }
+    /**
+     * How long finished tasks and their idempotency records are kept (default 7 days; 0 keeps the
+     * default, negative disables purging). Expired pairings are deleted too. Spec §14.4 (errata E6).
+     */
+    public Builder retentionMillis(long ms) { this.retentionMs = ms; return this; }
     /** Hard limit on one task's duration (default 10 minutes). */
     public Builder taskTimeoutMillis(long ms) { this.taskTimeoutMs = ms; return this; }
     /**

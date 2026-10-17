@@ -21,7 +21,9 @@ func TestReferenceGatewayConforms(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	g, err := gateway.New(gateway.Config{Store: st, Logger: log.New(io.Discard, "", 0), PingInterval: 200 * time.Millisecond})
+	// A short retention so E6 (retention purges task + idempotency record) runs too.
+	const retention = 2 * time.Second
+	g, err := gateway.New(gateway.Config{Store: st, Logger: log.New(io.Discard, "", 0), PingInterval: 200 * time.Millisecond, Retention: retention})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,18 +31,23 @@ func TestReferenceGatewayConforms(t *testing.T) {
 	if err := g.RegisterTenant(context.Background(), "acme", "Acme", key); err != nil {
 		t.Fatal(err)
 	}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go g.RunRetention(ctx, 0)
 	s := httptest.NewServer(g.Handler())
 	defer s.Close()
 	var logw io.Writer
 	if testing.Verbose() {
 		logw = os.Stdout
 	}
-	res := Run(context.Background(), Config{GatewayURL: s.URL, Tenant: "acme", TenantKey: key, SchemaDir: "../../../spec/schemas", Timeout: 5 * time.Second, Log: logw})
+	res := Run(context.Background(), Config{GatewayURL: s.URL, Tenant: "acme", TenantKey: key, SchemaDir: "../../../spec/schemas", Timeout: 5 * time.Second, Log: logw, Retention: retention})
 	if len(res) < 25 {
 		t.Fatalf("only %d checks ran", len(res))
 	}
 	for _, r := range res {
-		if !r.Pass {
+		if r.Skip {
+			t.Errorf("%s %s: skipped (%s)", r.ID, r.Title, r.Detail)
+		} else if !r.Pass {
 			t.Errorf("%s %s: %s", r.ID, r.Title, r.Detail)
 		}
 	}

@@ -11,7 +11,7 @@
 | `spec/asyncapi.yaml` | WebSocket 通道和消息 |
 | `spec/testvectors/vectors.json` | 固定密钥、期望签名和 JWT、正例与反例，以及合法和非法的帧 |
 | `spec/examples/{python,node,rust}` | 关键路径的骨架代码，**都已用测试向量实际运行通过** |
-| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 104 项检查 |
+| `cmd/lmbp-conformance` | 黑盒测试你的网关，共 112 项检查（含规范 1.0 勘误 E1–E7） |
 | `spec/validate.sh` | 一键校验所有契约，并运行示例骨架 |
 
 ### 代码片段的验证状态
@@ -95,7 +95,7 @@
 ### 2.5 背压与并发
 - 每个 WebSocket 连接只能有一个写入者。各语言都需要加写锁或使用发送队列：Go 用 `sync.Mutex`；Node 的 `ws` 自带队列，但要关注 `bufferedAmount`；Python 用 `asyncio.Lock`；Rust 用 `mpsc` 通道。
 - 每个任务的缓冲区要有上限。SSE 客户端跟不上时，取消任务或断开会话，**不要无限缓冲**。Node 中 `res.write` 返回 `false` 时要等待 `drain` 事件。
-- 只要 HTTP 客户端断开，就必须发送 `task.cancel`：Node 监听 `req.on('close')`，Starlette 检查 `await request.is_disconnected()`，Go 监听 `r.Context().Done()`，Spring 用 `SseEmitter.onCompletion`/`onError`（注意：Servlet 容器通常只在写入失败时才发现客户端断开，等待设备期间要定期写 SSE 注释作保活，`sdk/java` 的 Spring 适配默认每 1 秒一次）。
+- 只要 HTTP 客户端断开，就必须发送 `task.cancel`：Node 监听 `req.on('close')`，Starlette 检查 `await request.is_disconnected()`，Go 监听 `r.Context().Done()`，Spring 用 `SseEmitter.onCompletion`/`onError`（注意：Servlet 容器通常只在写入失败时才发现客户端断开，等待设备期间要定期写 SSE 注释作保活，`sdk/java` 的 Spring 适配默认每 1 秒一次）。非流式请求在任务结束前不写任何字节，同样要主动检测断开（规范勘误 E3）：`sdk/java` 在 Tomcat 上用一个 Valve 探测连接是否已关闭。
 
 ### 2.6 反向代理
 - Nginx 需要设置 `proxy_set_header Upgrade/Connection`、`proxy_read_timeout 75s`；SSE 需要 `proxy_buffering off`（或在响应头加 `X-Accel-Buffering: no`）。
@@ -141,7 +141,7 @@
    6. 客户端断开或超时时发送 `task.cancel`；
    7. 设备断线时任务失败（`DEVICE_OFFLINE`）。
 9. **吊销**：把设备状态改为 `revoked`，并关闭在线会话。
-10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 104 项全部通过。
+10. **验证**：先跑测试向量，再执行 `lmbp-conformance -gateway http://localhost:PORT`，直到 112 项全部通过（E6 需加 `-retention`，否则记为跳过）。
 
 ---
 

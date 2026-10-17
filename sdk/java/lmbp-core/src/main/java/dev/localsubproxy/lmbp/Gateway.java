@@ -75,6 +75,8 @@ final class Gateway {
     long codeTTL = 600, tokenTTL = 900;
     int maxConc = 16;
     long pingInterval = 20_000, resumeWindow = 30_000, taskTimeout = 10 * 60_000, slowConsumer = 60_000, attachGrace = 30_000, queueTimeout = 15_000, keepalive = 15_000;
+    /** Spec §14.4 (errata E6): finished tasks and their idempotency records are kept this long (ms); negative disables purging. */
+    long retention = RETENTION_DEFAULT;
     Lmbp.Flow flow = new Lmbp.Flow(1 << 20, 4 << 20);
     String webDir = "";
   }
@@ -138,6 +140,32 @@ final class Gateway {
   }
 
   static void cancel(ScheduledFuture<?> f) { if (f != null) f.cancel(false); }
+
+  static final long RETENTION_DEFAULT = 7L * 24 * 3600_000;
+
+  /** How often the retention pass runs: half the period, between 1 s and 1 h. */
+  static long retentionEvery(long ret) { return Math.min(3600_000, Math.max(1000, ret / 2)); }
+
+  ScheduledFuture<?> retentionTimer;
+
+  /** Starts the purge loop (no-op when retention is negative). */
+  void startRetention() {
+    if (cfg.retention < 0) return;
+    retentionTimer = every(retentionEvery(cfg.retention), () -> purge(System.currentTimeMillis()));
+  }
+
+  /** One retention pass; returns the number of tasks removed from the store (-1: the store cannot purge). */
+  int purge(long now) {
+    long cutoff = now - cfg.retention;
+    int[] n = {0};
+    locked(() -> {
+      try { n[0] = store.purge(cutoff); } catch (RuntimeException e) { log("retention purge: " + e.getMessage()); n[0] = 0; return; }
+      if (n[0] < 0) { log("store has no purge(); retention is disabled"); cancel(retentionTimer); return; }
+      tasks.values().removeIf(t -> t.finishedAt > 0 && t.finishedAt < cutoff);
+      if (n[0] > 0) log("retention purge: removed " + n[0] + " tasks");
+    });
+    return n[0];
+  }
 
   // ---------- tenants ----------
   void registerTenant(String id, String apiKey, Map<String, Object> profile) {
@@ -777,14 +805,16 @@ final class Gateway {
     boolean bare = true;
     int i = model.indexOf('/');
     if (i > 0 && model.startsWith("dev_")) { devID = model.substring(0, i); want = model.substring(i + 1); bare = false; }
-    boolean known = false;
+    boolean known = false, up = false;
     for (Store.Device d : list) {
       if (!d.status.equals("active") || (!bare && !d.id.equals(devID))) continue;
       known = known || !bare;
       DState s = online(d.id);
       if (s != null && s.models.contains(want)) return new Resolved(s, want, null, 0);
+      if (s != null) up = true;
     }
-    if (known) return new Resolved(null, null, "DEVICE_OFFLINE", 503);
+    // §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
+    if (known) return up ? new Resolved(null, null, "MODEL_NOT_FOUND", 404) : new Resolved(null, null, "DEVICE_OFFLINE", 503);
     boolean anyOnline = false;
     for (Store.Device d : list) if (online(d.id) != null) anyOnline = true;
     if (!list.isEmpty() && bare && !anyOnline) return new Resolved(null, null, "DEVICE_OFFLINE", 503);
@@ -1137,6 +1167,8 @@ final class Gateway {
   // ---------- helpers ----------
   static void json(Http.Res res, int status, Object body) {
     byte[] b = Json.bytes(body);
+    // §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+    if (res.getHeader("Cache-Control") == null) res.setHeader("Cache-Control", "no-store");
     res.send(status, res.getHeader("Content-Type") != null ? res.getHeader("Content-Type") : "application/json", b);
   }
 
@@ -1349,6 +1381,7 @@ final class Gateway {
 
   /** Gateway-side hub of one task: buffers device frames, fans them out to (re-)attached HTTP subscribers and paces task.ack (§8). */
   static final class Task {
+    long finishedAt;
     final Gateway g;
     final DState ds;
     final String id, tenant, owner, reqModel;
@@ -1518,6 +1551,7 @@ final class Gateway {
         if (hadSlot) ds.release();
       }
       abort.aborted = true;
+      finishedAt = System.currentTimeMillis();
       g.wakeAll();
       g.later(g.cfg.attachGrace + 600_000, () -> { if (g.tasks.get(id) == this) g.tasks.remove(id); });
     }

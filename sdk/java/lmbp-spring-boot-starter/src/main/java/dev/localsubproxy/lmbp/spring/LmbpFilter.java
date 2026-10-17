@@ -16,6 +16,7 @@ import java.io.InputStream;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -25,6 +26,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * goes down the chain unchanged.
  */
 public class LmbpFilter extends OncePerRequestFilter {
+  /** Request attribute holding a {@link BooleanSupplier} that reports a closed client connection. */
+  static final String PROBE_ATTR = "dev.localsubproxy.lmbp.disconnectProbe";
+  /** How often the probe runs while a request waits (spec §6.5 asks for a prompt task.cancel). */
+  static final long PROBE_INTERVAL_MS = 250;
   private final LMBPServer lsp;
 
   public LmbpFilter(LMBPServer lsp) { this.lsp = lsp; }
@@ -38,7 +43,8 @@ public class LmbpFilter extends OncePerRequestFilter {
     if (path.equals(LMBPServer.CONNECT_PATH) && "websocket".equalsIgnoreCase(req.getHeader("Upgrade"))) { chain.doFilter(req, res); return; }
     HttpRequest r = new HttpRequest(req.getMethod(), path, req.getQueryString(), headers(req), body(req));
     // Async mode frees the container thread; a client disconnect surfaces as a failed write
-    // (SSE keep-alives every lmbp.keepalive-ms) or as AsyncListener.onError.
+    // (SSE keep-alives every lmbp.keepalive-ms), as AsyncListener.onError, or through the
+    // container probe below (non-streaming requests).
     AsyncContext ac = req.startAsync(req, res);
     ac.setTimeout(0);
     ac.addListener(new AsyncListener() {
@@ -48,6 +54,23 @@ public class LmbpFilter extends OncePerRequestFilter {
       @Override public void onStartAsync(AsyncEvent e) { }
     });
     ServletOutputStream out = res.getOutputStream();
+    // A non-streaming response writes nothing until the task ends, so a write failure cannot
+    // reveal a disconnect; poll the container's probe (Tomcat) instead.
+    Object probeLock = new Object();
+    boolean[] done = {false};
+    if (req.getAttribute(PROBE_ATTR) instanceof BooleanSupplier probe) {
+      Thread.ofVirtual().name("lmbp-probe").start(() -> {
+        try {
+          for (;;) {
+            Thread.sleep(PROBE_INTERVAL_MS);
+            synchronized (probeLock) {
+              if (done[0]) return;
+              if (probe.getAsBoolean()) { r.abort(); return; }
+            }
+          }
+        } catch (InterruptedException e) { /* stop */ }
+      });
+    }
     Thread.ofVirtual().name("lmbp-http").start(() -> {
       try {
         lsp.handle(r, new HttpSink() {
@@ -66,6 +89,7 @@ public class LmbpFilter extends OncePerRequestFilter {
           }
         });
       } finally {
+        synchronized (probeLock) { done[0] = true; }
         try { ac.complete(); } catch (IllegalStateException e) { /* already completed after an error */ }
       }
     });

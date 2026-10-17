@@ -51,6 +51,8 @@ public interface Store {
     public String id, tenant, owner, device, model, state;
     /** The task was end-to-end encrypted: replays render its frames sealed. */
     public boolean e2ee;
+    /** When the terminal state was stored (ms since epoch, 0 while running); set by {@link #finishTask}. */
+    public long finished;
     public final List<Event> events = new ArrayList<>();
   }
 
@@ -90,4 +92,12 @@ public interface Store {
   void appendEvent(String id, Event ev);
   /** Atomically appends the terminal event and sets the terminal state; {@link Conflict} if already terminal or seq taken, {@link NotFound} if missing. */
   void finishTask(String id, Event ev, String state);
+
+  /**
+   * Retention (spec §14.4, errata E6): deletes tasks that finished before {@code cutoffMillis} together with
+   * their events and idempotency records, and pairings that expired before it; returns the number
+   * of tasks removed. A key never outlives its task, so a replay after the purge runs again.
+   * The default keeps everything and returns -1 (the gateway logs that retention is unsupported).
+   */
+  default int purge(long cutoffMillis) { return -1; }
 }

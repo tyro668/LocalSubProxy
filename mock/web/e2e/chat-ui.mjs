@@ -108,7 +108,7 @@ for (const impl of impls) {
     await page.fill('#code', code); if (jkt) await page.fill('#jkt', jkt);
     await page.click('#approve');
     await page.waitForFunction(() => document.getElementById('pairMsg').textContent.includes('已批准'));
-    await page.waitForSelector('#pairModal.hidden', { timeout: 5000 });
+    await page.waitForSelector('#pairModal.hidden', { state: 'attached', timeout: 5000 });
     await page.waitForSelector('#devices .badge.on', { timeout: 20000 });
     await page.waitForFunction(() => [...document.querySelectorAll('#model option')].some((o) => o.value), null, { timeout: 15000 });
     await page.screenshot({ path: path.join(shots, `chat-${impl}-paired.png`) });

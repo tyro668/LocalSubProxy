@@ -74,6 +74,8 @@ final class Gateway {
     long pingInterval = 20_000, resumeWindow = 30_000, taskTimeout = 10 * 60_000, slowConsumer = 60_000, attachGrace = 30_000, queueTimeout = 15_000;
     Lmbp.Flow flow = new Lmbp.Flow(1 << 20, 4 << 20);
     String webDir = "";
+    /** Retention of finished tasks and their idempotency records, ms (default 7 days; negative disables). */
+    long retention = 7L * 24 * 3600_000;
   }
 
   record Tenant(String id, String name, String keyHash, Map<String, Object> profile) {}
@@ -129,6 +131,15 @@ final class Gateway {
   }
 
   static void cancel(ScheduledFuture<?> f) { if (f != null) f.cancel(false); }
+
+  /** Starts the retention pass: every half the retention period, between 1 s and 1 h (as in every SDK). */
+  void startRetention() {
+    if (cfg.retention < 0) return;
+    every(Math.min(3600_000, Math.max(1000, cfg.retention / 2)), () -> {
+      int n = store.purge(System.currentTimeMillis() - cfg.retention);
+      if (n > 0) log("retention purge: removed " + n + " tasks");
+    });
+  }
 
   // ---------- tenants ----------
   void registerTenant(String id, String apiKey, Map<String, Object> profile) {
@@ -672,9 +683,19 @@ final class Gateway {
   boolean onDeviceData(DState ds, Map<String, Object> inp, int size) {
     String tid = inp.get("task_id") instanceof String s ? s : String.valueOf(inp.get("task_id"));
     Task t = ds.tasks.get(tid);
-    if (t == null) { ds.control(envelope("task.cancel", null, tid, Json.obj("reason", "unknown_task"))); return true; }
     Object sq = inp.get("seq");
     long seq = Json.isNumber(sq) ? (long) ((Number) sq).doubleValue() : 0;
+    if (t == null) {
+      Long acked = ds.reclaimed.get(tid);
+      if (acked != null) {
+        if (seq > acked) ds.reclaimed.put(tid, seq);
+        if ("task.done".equals(inp.get("type")) || "task.error".equals(inp.get("type"))) ds.reclaimed.remove(tid);
+        if (seq > acked) ds.control(envelope("task.ack", null, tid, Json.obj("seq", seq)));
+        return true;
+      }
+      ds.control(envelope("task.cancel", null, tid, Json.obj("reason", "unknown_task")));
+      return true;
+    }
     switch (ds.inb.accept(tid, seq, size)) {
       case Lmbp.DUPLICATE: t.maybeAck(); return true;
       case Lmbp.GAP: t.cancel("protocol_error"); t.failLocal("INTERNAL", "sequence gap from device", false); return true;
@@ -731,14 +752,16 @@ final class Gateway {
     boolean bare = true;
     int i = model.indexOf('/');
     if (i > 0 && model.startsWith("dev_")) { devID = model.substring(0, i); want = model.substring(i + 1); bare = false; }
-    boolean known = false;
+    boolean known = false, up = false;
     for (Store.Device d : list) {
       if (!d.status.equals("active") || (!bare && !d.id.equals(devID))) continue;
       known = known || !bare;
       DState s = online(d.id);
       if (s != null && s.models.contains(want)) return new Resolved(s, want, null, 0);
+      if (s != null) up = true;
     }
-    if (known) return new Resolved(null, null, "DEVICE_OFFLINE", 503);
+    // §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
+    if (known) return up ? new Resolved(null, null, "MODEL_NOT_FOUND", 404) : new Resolved(null, null, "DEVICE_OFFLINE", 503);
     boolean anyOnline = false;
     for (Store.Device d : list) if (online(d.id) != null) anyOnline = true;
     if (!list.isEmpty() && bare && !anyOnline) return new Resolved(null, null, "DEVICE_OFFLINE", 503);
@@ -1083,6 +1106,8 @@ final class Gateway {
   // ---------- helpers ----------
   static void json(Http.Res res, int status, Object body) {
     byte[] b = Json.bytes(body);
+    // §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+    if (res.getHeader("Cache-Control") == null) res.setHeader("Cache-Control", "no-store");
     res.send(status, res.getHeader("Content-Type") != null ? res.getHeader("Content-Type") : "application/json", b);
   }
 
@@ -1230,8 +1255,17 @@ final class Gateway {
     long tokenExp;
     String issuer = "", resumeToken = "";
     final Map<String, Task> tasks = new LinkedHashMap<>();
+    // Tasks ended here (cancel, timeout, ...) whose device may still send frames: those late
+    // frames are ACKed so the device gets its flow credit back (spec §15.5). Bounded.
+    final LinkedHashMap<String, Long> reclaimed = new LinkedHashMap<>();
     int slots;
     final List<SlotWaiter> slotWait = new ArrayList<>();
+
+    void reclaim(String id, long acked) {
+      reclaimed.remove(id);
+      reclaimed.put(id, acked);
+      while (reclaimed.size() > 1024) reclaimed.remove(reclaimed.keySet().iterator().next());
+    }
     boolean dropped;
     long lastSeen = System.currentTimeMillis();
 
@@ -1433,6 +1467,14 @@ final class Gateway {
       broadcast();
       if (ds != null) {
         if (fromDevice) maybeAck();
+        else {
+          long late = recvSeq();
+          if (late > acked) {
+            acked = late;
+            ds.control(envelope("task.ack", null, id, Json.obj("seq", late)));
+          }
+          ds.reclaim(id, late);
+        }
         ds.tasks.remove(id);
         ds.out.forget(id);
         if (ds.inb != null) ds.inb.forget(id);

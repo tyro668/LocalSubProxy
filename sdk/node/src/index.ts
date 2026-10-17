@@ -41,6 +41,11 @@ export interface LMBPServerOptions {
   /** Serve the reference chat page from this directory (mock/web) at / and /chat. */
   chatUIDir?: string;
   log?: (...a: unknown[]) => void;
+  /**
+   * How long finished tasks and their Idempotency-Key records are kept (ms, default 7 days;
+   * negative disables purging). Expired pairings go too. Spec §14.4 (errata E6).
+   */
+  retention?: number;
   /** Advanced engine timings (ms): tokenTTL (s), codeTTL (s), resumeWindow, taskTimeout, attachGrace, slowConsumer, queueTimeout. */
   tuning?: Record<string, number>;
 }
@@ -57,7 +62,7 @@ export class LMBPServer {
   constructor(opts: LMBPServerOptions) {
     this.store = opts.store ?? new MemoryStore();
     this.engine = new Gateway({ issuer: opts.issuer ?? '', store: this.store, seed: opts.signingSeed, maxConc: opts.maxConcurrency ?? 16,
-      webDir: opts.chatUIDir ?? '', log: opts.log ?? console.error, ...(opts.tuning ?? {}) });
+      retention: opts.retention ?? 0, webDir: opts.chatUIDir ?? '', log: opts.log ?? console.error, ...(opts.tuning ?? {}) });
     for (const t of opts.tenants) this.engine.registerTenant(t.id, t.apiKey, t.profile ?? {});
   }
 
@@ -122,6 +127,7 @@ export class LMBPServer {
   }
 
   async close(): Promise<void> {
+    this.engine.stopRetention();
     for (const ds of this.engine.devs.values()) ds.drop?.('UNAVAILABLE', 'gateway shutting down');
     if (this.server) await new Promise<void>((ok) => this.server!.close(() => ok()));
     this.server?.closeAllConnections?.();

@@ -65,18 +65,26 @@ func (g *Gateway) resolve(ctx context.Context, tenant, user, model string) (*dst
 	if i := strings.Index(model, "/"); i > 0 && strings.HasPrefix(model, "dev_") {
 		devID, want, bare = model[:i], model[i+1:], false
 	}
-	known := false
+	known, up := false, false
 	for _, d := range ds {
 		if d.Status != "active" || (!bare && d.ID != devID) {
 			continue
 		}
 		known = known || !bare
-		if s := g.online(d.ID); s != nil && contains(s.modelList(), want) {
-			return s, want, "", 0
+		if s := g.online(d.ID); s != nil {
+			if contains(s.modelList(), want) {
+				return s, want, "", 0
+			}
+			up = true
 		}
 	}
-	if known {
+	// §6.6: a named device that is online but does not declare the model is
+	// MODEL_NOT_FOUND (404, not retryable); only an offline one is 503.
+	if known && !up {
 		return nil, "", lmbp.ErrDeviceOffline, 503
+	}
+	if known {
+		return nil, "", lmbp.ErrModelNotFound, 404
 	}
 	if len(ds) > 0 && bare {
 		online := false

@@ -118,7 +118,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	}
 	s.Pairing = &Pairing{s: s}
 	s.Keys = &Keys{pub: gw.PublicKey()}
-	go gw.RunRetention(ctx, time.Hour)
+	go gw.RunRetention(ctx, 0)
 	return s, nil
 }
 

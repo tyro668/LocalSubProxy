@@ -6,6 +6,7 @@
 #   scripts/mock-interop.sh java rust  # the dependency-free JDK / Rust ports
 #   scripts/mock-interop.sh node       # just one
 #   scripts/mock-interop.sh node-sqlite python-sqlite sdk-go sdk-go-sqlite express fastapi spring-boot spring-boot-sqlite   # SDK variants
+#   LMBP_RETENTION_SECONDS= scripts/mock-interop.sh go          # gateways keep their default retention; conformance E6 is skipped
 set -euo pipefail
 cd "$(dirname "$0")/.."
 impls=("${@:-node python go}")
@@ -15,7 +16,13 @@ pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$tmp"; }
 trap cleanup EXIT
 
-export LSP_TENANT_KEY_ACME LSP_SIGNING_SEED
+export LSP_TENANT_KEY_ACME LSP_SIGNING_SEED LMBP_RETENTION_SECONDS
+# Every gateway runs with a short retention (default 2 s) so conformance E6
+# (finished tasks and their idempotency records are purged) runs too. Set it
+# empty to keep each gateway's default (7 days); E6 is then reported as skipped.
+ret=${LMBP_RETENTION_SECONDS-2}
+LMBP_RETENTION_SECONDS=$ret; [ -n "$ret" ] || unset LMBP_RETENTION_SECONDS
+retflag() { [ -n "$ret" ] && echo "$1$ret${2:-}"; return 0; }
 LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # never printed
 LSP_SIGNING_SEED=${LSP_SIGNING_SEED:-$(openssl rand -hex 32)}   # the Go gateway refuses an ephemeral key
 go build -o "$tmp/lmbp-conformance" ./cmd/lmbp-conformance
@@ -27,21 +34,21 @@ start() { # impl port
       (cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build)
       (cd mock/node && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
       db=(); [ "$impl" = node-sqlite ] && db=(--db "$tmp/node.db")
-      node mock/node/gateway.mjs --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json "${db[@]}" >"$tmp/$impl.log" 2>&1 & ;;
+      node mock/node/gateway.mjs --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json "${db[@]}" $(retflag "--retention-seconds ") >"$tmp/$impl.log" 2>&1 & ;;
     python|python-sqlite)
       [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && (cd mock/python && .venv/bin/pip install -q -r requirements.txt); }
       db=(); [ "$impl" = python-sqlite ] && db=(--db "$tmp/python.db")
-      (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json "${db[@]}") >"$tmp/$impl.log" 2>&1 & ;;
+      (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json "${db[@]}" $(retflag "--retention-seconds ")) >"$tmp/$impl.log" 2>&1 & ;;
     go)
       go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
       "$tmp/localsubproxy" server -listen "127.0.0.1:$port" -db "$tmp/go.db" -tenants acme:LSP_TENANT_KEY_ACME \
-        -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui >"$tmp/$impl.log" 2>&1 & ;;
+        -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui $(retflag "-retention " s) >"$tmp/$impl.log" 2>&1 & ;;
     java)
       mock/java/build.sh >/dev/null
-      java -jar mock/java/build/lmbp-mock.jar --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json >"$tmp/$impl.log" 2>&1 & ;;
+      java -jar mock/java/build/lmbp-mock.jar --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json $(retflag "--retention-seconds ") >"$tmp/$impl.log" 2>&1 & ;;
     rust)
       (cd mock/rust && cargo build -q --release)
-      mock/rust/target/release/lmbp-mock --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json >"$tmp/$impl.log" 2>&1 & ;;
+      mock/rust/target/release/lmbp-mock --listen "127.0.0.1:$port" --tenant-profiles mock/tenant-profiles.example.json $(retflag "--retention-seconds ") >"$tmp/$impl.log" 2>&1 & ;;
     spring-boot|spring-boot-sqlite)   # sdk/java: lmbp-spring-boot-starter in examples/spring-boot-demo
       (cd sdk/java && mvn -B -q -DskipTests install) >"$tmp/$impl.build" 2>&1 || { echo "$impl build failed:"; tail -40 "$tmp/$impl.build"; exit 1; }
       store=memory; [ "$impl" = spring-boot-sqlite ] && store="jdbc:sqlite:$tmp/spring.db"
@@ -74,7 +81,8 @@ for impl in "${impls[@]}"; do
   port=$((port + 1))
   start "$impl" "$port"
   echo "== $impl (http://127.0.0.1:$port)"
-  if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme >"$tmp/$impl.conf" 2>&1; then
+  rf=(); [ -n "$ret" ] && rf=(-retention "${ret}s")
+  if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" >"$tmp/$impl.conf" 2>&1; then
     echo "   conformance: $(tail -1 "$tmp/$impl.conf")"
   else
     echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; echo "   --- $impl gateway log (tail)"; tail -30 "$tmp/$impl.log"; fail=1

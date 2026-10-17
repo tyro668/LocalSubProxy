@@ -15,9 +15,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.web.server.WebServerFactoryCustomizer;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -65,7 +68,7 @@ public class LmbpAutoConfiguration {
     if (p.getDisplayName() != null && !p.getDisplayName().isEmpty()) profile.put("display_name", p.getDisplayName());
     if (p.getIssuer() == null || p.getIssuer().isEmpty()) log.warn("lmbp.issuer is empty: dev mode, the request Host decides the issuer (do not use in production)");
     return LMBPServer.builder().issuer(p.getIssuer()).tenant(p.getTenant(), p.getApiKey(), profile).store(store).signingSeedHex(p.getSigningSeed())
-        .maxConcurrency(p.getMaxConcurrency()).keepaliveMillis(p.getKeepaliveMs()).chatUiDir(p.getChatUiDir()).logger(log::info).build();
+        .maxConcurrency(p.getMaxConcurrency()).keepaliveMillis(p.getKeepaliveMs()).retentionMillis(p.getRetentionSeconds() < 0 ? -1 : p.getRetentionSeconds() * 1000).chatUiDir(p.getChatUiDir()).logger(log::info).build();
   }
 
   @Bean @ConditionalOnMissingBean
@@ -85,6 +88,16 @@ public class LmbpAutoConfiguration {
     r.setName("lmbpFilter");
     r.setAsyncSupported(true);
     return r;
+  }
+
+  /** Tomcat only: lets the filter see a client disconnect while a non-streaming request waits (spec §6.5). */
+  @Configuration(proxyBeanMethods = false)
+  @ConditionalOnClass(name = "org.apache.catalina.startup.Tomcat")
+  static class LmbpTomcatConfig {
+    @Bean
+    WebServerFactoryCustomizer<TomcatServletWebServerFactory> lmbpDisconnectProbe() {
+      return f -> f.addEngineValves(new TomcatDisconnectProbe());
+    }
   }
 
   @Bean

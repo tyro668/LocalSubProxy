@@ -36,6 +36,12 @@ STATUS_OF = {
     "RATE_LIMITED": 429, "UNAUTHENTICATED": 401, "FORBIDDEN": 403, "CONSENT_DENIED": 403,
 }
 DEFAULT_FLOW = {"task_window": 1 << 20, "conn_window": 4 << 20}
+RETENTION_DEFAULT = 7 * 24 * 3600  # seconds (spec §14.4, errata E6)
+
+
+def retention_every(ret):
+    """How often the retention pass runs: half the period, between 1 s and 1 h."""
+    return min(3600.0, max(1.0, ret / 2))
 
 
 def err_status(code):
@@ -74,7 +80,9 @@ def envelope(typ, id=None, task_id=None, data=None):
 
 
 def json_resp(status, body, headers=None, ctype="application/json"):
-    return web.Response(status=status, body=L.dumps(body).encode(), content_type=ctype, headers=headers)
+    # §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+    h = {"Cache-Control": "no-store", **(headers or {})}
+    return web.Response(status=status, body=L.dumps(body).encode(), content_type=ctype, headers=h)
 
 
 def problem_body(status, code, detail):
@@ -507,6 +515,7 @@ class Task:
         if self.done:
             return
         self.done = True
+        self.finished_at = time.time()
         slot, self.slot = self.slot, False
         for h in self.timers + ([self.grace] if self.grace else []):
             h.cancel()
@@ -614,6 +623,44 @@ class Gateway:
         self.devs: dict[str, DState] = {}
         self.tasks: dict[str, Task] = {}
         self.jtis, self.fails, self.pending = {}, {}, {}
+        # Retention (spec §14.4, errata E6): 7 days by default; 0/None keeps the default, negative disables.
+        if not self.cfg.get("retention"):
+            self.cfg["retention"] = RETENTION_DEFAULT
+        self.retention_task = None
+
+    def ensure_retention(self):
+        """Starts the purge loop on the running event loop (first request or connection)."""
+        if self.retention_task is not None or self.cfg["retention"] < 0:
+            return
+        if not callable(getattr(self.store, "purge", None)):
+            self.retention_task = False
+            self.log("lmbp: store has no purge(); retention is disabled")
+            return
+        self.retention_task = asyncio.get_running_loop().create_task(self._retention_loop())
+
+    async def _retention_loop(self):
+        while True:
+            await asyncio.sleep(retention_every(self.cfg["retention"]))
+            self.purge()
+
+    def stop_retention(self):
+        if self.retention_task:
+            self.retention_task.cancel()
+        self.retention_task = None
+
+    def purge(self, now=None):
+        """One retention pass; returns the number of tasks removed from the store."""
+        cutoff = (time.time() if now is None else now) - self.cfg["retention"]
+        try:
+            n = self.store.purge(cutoff)
+        except Exception as e:  # noqa: BLE001 - a failed pass is retried next time
+            self.log("retention purge:", e)
+            return 0
+        for i in [i for i, t in self.tasks.items() if getattr(t, "finished_at", None) and t.finished_at < cutoff]:
+            del self.tasks[i]
+        if n:
+            self.log(f"retention purge: removed {n} tasks")
+        return n
 
     def register_tenant(self, id, api_key, profile=None):
         profile = profile or {}
@@ -647,6 +694,7 @@ class Gateway:
 
     async def route(self, req: Request):
         """Dispatch one request; returns a Response, or None once streamed."""
+        self.ensure_retention()
         p = req.path
         if p == "/healthz":
             return json_resp(200, {"status": "ok"})
@@ -1299,16 +1347,19 @@ class Gateway:
         i = model.find("/")
         if i > 0 and model.startswith("dev_"):
             dev_id, want, bare = model[:i], model[i + 1:], False
-        known = False
+        known = up = False
         for d in ds:
             if d["status"] != "active" or (not bare and d["id"] != dev_id):
                 continue
             known = known or not bare
             s = self.online(d["id"])
-            if s is not None and want in s.models:
-                return s, want, "", 0
+            if s is not None:
+                if want in s.models:
+                    return s, want, "", 0
+                up = True
+        # §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
         if known:
-            return None, "", "DEVICE_OFFLINE", 503
+            return (None, "", "MODEL_NOT_FOUND", 404) if up else (None, "", "DEVICE_OFFLINE", 503)
         if ds and bare and not any(self.online(d["id"]) for d in ds):
             return None, "", "DEVICE_OFFLINE", 503
         return None, "", "MODEL_NOT_FOUND", 404

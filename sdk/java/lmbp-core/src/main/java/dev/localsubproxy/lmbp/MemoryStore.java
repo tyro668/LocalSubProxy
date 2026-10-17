@@ -9,8 +9,8 @@ import java.util.Map;
 /**
  * In-memory {@link Store} (the default). Everything is lost on restart, including the
  * generated signing key unless {@code signingSeed} is configured. Single process only.
- * Tasks and their events are kept until the process exits; for long-running services
- * use {@link JdbcStore}.
+ * Finished tasks, their events and idempotency records are purged after the gateway's
+ * retention period (default 7 days, {@link #purge}).
  */
 public final class MemoryStore implements Store {
   private final Map<String, byte[]> secrets = new HashMap<>();
@@ -65,5 +65,17 @@ public final class MemoryStore implements Store {
     for (Event e : t.events) if (e.seq() == ev.seq()) throw new Conflict("task " + id + ": seq " + ev.seq() + " already stored");
     t.events.add(ev);
     t.state = state;
+    t.finished = System.currentTimeMillis();
+  }
+  @Override public synchronized int purge(long cutoff) {
+    int n = 0;
+    for (var it = tasks.values().iterator(); it.hasNext(); ) {
+      TaskRecord t = it.next();
+      if (TERMINAL.contains(t.state) && t.finished > 0 && t.finished < cutoff) { it.remove(); n++; }
+    }
+    // Idempotency records go with their task: never a key without its task.
+    idem.values().removeIf(r -> !tasks.containsKey(r.taskID()));
+    auths.values().removeIf(a -> a.expires < cutoff);
+    return n;
   }
 }

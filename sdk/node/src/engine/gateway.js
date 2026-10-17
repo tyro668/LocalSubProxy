@@ -29,6 +29,9 @@ const isTerminal = (t) => t === 'task.done' || t === 'task.error';
 const TERMINAL_STATES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
 const stateOf = (ev) => ev.type === 'task.done' ? 'SUCCEEDED' : (ev.data?.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED');
 const errorBody = (code, message, retryable = false) => ({ code, message, retryable });
+export const RETENTION_DEFAULT = 7 * 24 * 3600_000;
+/** How often the retention pass runs: half the period, between 1 s and 1 h. */
+export const retentionEvery = (ret) => Math.min(3600_000, Math.max(1000, Math.floor(ret / 2)));
 
 export class Gateway {
   constructor(cfg = {}) {
@@ -37,6 +40,8 @@ export class Gateway {
       resumeWindow: 30_000, taskTimeout: 10 * 60_000, slowConsumer: 60_000, attachGrace: 30_000, queueTimeout: 15_000,
       flow: { task_window: 1 << 20, conn_window: 4 << 20 }, log: console.error, ...cfg,
     };
+    // Retention (spec §14.4, errata E6): 7 days by default, 0/undefined keeps the default, negative disables.
+    if (!this.cfg.retention) this.cfg.retention = RETENTION_DEFAULT;
     if (cfg.issuer) this.cfg.issuer = L.origin(cfg.issuer);
     this.store = cfg.store ?? new MemoryStore();
     let seed = cfg.seed;
@@ -54,6 +59,26 @@ export class Gateway {
     this.pending = new Map();
     this.wss = new WebSocketServer({ noServer: true, maxPayload: L.MAX_FRAME_BYTES, perMessageDeflate: false,
       handleProtocols: (ps) => (ps.has(L.SUBPROTOCOL) ? L.SUBPROTOCOL : false) });
+    this.startRetention();
+  }
+
+  /** Purges finished tasks (with their idempotency records) older than cfg.retention, every retentionEvery(). */
+  startRetention() {
+    if (this.cfg.retention < 0) return;
+    if (typeof this.store.purge !== 'function') { this.cfg.log('lmbp: store has no purge(); retention is disabled'); return; }
+    this.retentionTimer = setInterval(() => this.purge(), retentionEvery(this.cfg.retention)).unref();
+  }
+
+  stopRetention() { clearInterval(this.retentionTimer); this.retentionTimer = null; }
+
+  /** One retention pass; returns the number of tasks removed from the store. */
+  purge(now = Date.now()) {
+    const cutoff = now - this.cfg.retention;
+    let n = 0;
+    try { n = this.store.purge(cutoff); } catch (e) { this.cfg.log('retention purge:', e); return 0; }
+    for (const [id, t] of this.tasks) if (t.finishedAt && t.finishedAt < cutoff) this.tasks.delete(id);
+    if (n > 0) this.cfg.log(`retention purge: removed ${n} tasks`);
+    return n;
   }
 
   registerTenant(id, apiKey, profile = {}) {
@@ -573,14 +598,16 @@ export class Gateway {
     let want = model, bare = true, devID = '';
     const i = model.indexOf('/');
     if (i > 0 && model.startsWith('dev_')) { devID = model.slice(0, i); want = model.slice(i + 1); bare = false; }
-    let known = false;
+    let known = false, up = false;
     for (const d of ds) {
       if (d.status !== 'active' || (!bare && d.id !== devID)) continue;
       known = known || !bare;
       const s = this.online(d.id);
       if (s && s.models.includes(want)) return { ds: s, model: want };
+      if (s) up = true;
     }
-    if (known) return { code: 'DEVICE_OFFLINE', status: 503 };
+    // §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
+    if (known) return up ? { code: 'MODEL_NOT_FOUND', status: 404 } : { code: 'DEVICE_OFFLINE', status: 503 };
     if (ds.length && bare && !ds.some((d) => this.online(d.id))) return { code: 'DEVICE_OFFLINE', status: 503 };
     return { code: 'MODEL_NOT_FOUND', status: 404 };
   }
@@ -1075,6 +1102,7 @@ class Task {
       if (slot) ds.release();
     }
     this.abort.abort();
+    this.finishedAt = Date.now();
     setTimeout(() => { if (this.g.tasks.get(this.id) === this) this.g.tasks.delete(this.id); }, this.g.cfg.attachGrace + 600_000).unref();
   }
   attach(after) {
@@ -1135,7 +1163,8 @@ function envelope(type, { id, task_id, data } = {}) {
 }
 function json(res, status, body) {
   const b = JSON.stringify(body);
-  res.writeHead(status, { 'Content-Type': res.getHeader('Content-Type') || 'application/json', 'Content-Length': Buffer.byteLength(b) });
+  // §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+  res.writeHead(status, { 'Content-Type': res.getHeader('Content-Type') || 'application/json', 'Cache-Control': res.getHeader('Cache-Control') || 'no-store', 'Content-Length': Buffer.byteLength(b) });
   res.end(b);
 }
 function problemBody(status, code, detail) {

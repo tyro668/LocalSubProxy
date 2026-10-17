@@ -27,7 +27,9 @@ PROFILE = (json.load(open(os.environ["TENANT_PROFILE_FILE"]))[TENANT] if os.envi
            else {"display_name": "Acme Chat (FastAPI)", "requested_scopes": ["lmbp.chat", "lmbp.tools", "lmbp.vision"]})
 
 lsp = LMBPServer([TenantConfig(TENANT, API_KEY, PROFILE)], issuer=os.environ.get("LMBP_ISSUER", ""),
-                 store=SQLiteStore(os.environ["LMBP_DB"]) if os.environ.get("LMBP_DB") else None)
+                 store=SQLiteStore(os.environ["LMBP_DB"]) if os.environ.get("LMBP_DB") else None,
+                 # finished tasks + idempotency records: 7 days unless set (negative disables)
+                 retention=float(os.environ.get("LMBP_RETENTION_SECONDS") or 0))
 
 app = FastAPI(title="Acme Chat")
 app.add_middleware(LMBPMiddleware, server=lsp)  # protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages

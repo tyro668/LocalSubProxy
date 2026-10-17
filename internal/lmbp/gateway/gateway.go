@@ -136,19 +136,25 @@ func New(cfg Config) (*Gateway, error) {
 // PublicKey returns the key devices pin to verify task.run frames.
 func (g *Gateway) PublicKey() ed25519.PublicKey { return g.pub }
 
-// RunRetention purges finished data older than Retention until ctx ends.
+// RetentionEvery is how often the retention pass runs for a retention
+// period: half of it, between one second and one hour (same in every SDK).
+func RetentionEvery(ret time.Duration) time.Duration {
+	return min(time.Hour, max(time.Second, ret/2))
+}
+
+// RunRetention purges finished data older than Retention until ctx ends,
+// every interval (<= 0: RetentionEvery(Retention)).
 func (g *Gateway) RunRetention(ctx context.Context, every time.Duration) {
 	if g.cfg.Retention < 0 {
 		return
 	}
+	if every <= 0 {
+		every = RetentionEvery(g.cfg.Retention)
+	}
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		if n, err := g.cfg.Store.Purge(ctx, time.Now().Add(-g.cfg.Retention)); err != nil {
-			g.cfg.Logger.Printf("retention purge: %v", err)
-		} else if n > 0 {
-			g.cfg.Logger.Printf("retention purge: removed %d tasks", n)
-		}
+		g.Purge(ctx, time.Now())
 		select {
 		case <-ctx.Done():
 			return
@@ -157,11 +163,38 @@ func (g *Gateway) RunRetention(ctx context.Context, every time.Duration) {
 	}
 }
 
+// Purge is one retention pass (spec §14.4, errata E6): finished tasks older than
+// Retention go from the store together with their idempotency records, and
+// from the in-memory registry. It returns the number of stored tasks removed.
+func (g *Gateway) Purge(ctx context.Context, now time.Time) int {
+	cutoff := now.Add(-g.cfg.Retention)
+	n, err := g.cfg.Store.Purge(ctx, cutoff)
+	if err != nil {
+		g.cfg.Logger.Printf("retention purge: %v", err)
+		return 0
+	}
+	g.mu.Lock()
+	for id, t := range g.tasks {
+		t.mu.Lock()
+		old := !t.finishedAt.IsZero() && t.finishedAt.Before(cutoff)
+		t.mu.Unlock()
+		if old {
+			delete(g.tasks, id)
+		}
+	}
+	g.mu.Unlock()
+	if n > 0 {
+		g.cfg.Logger.Printf("retention purge: removed %d tasks", n)
+	}
+	return n
+}
+
 func (g *Gateway) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	m.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/jwk-set+json")
+		w.Header().Set("Cache-Control", "public, max-age=300")
 		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []lmbp.JWK{lmbp.PublicJWK(g.pub)}})
 	})
 	m.HandleFunc(lmbp.MetadataPath, g.metadata)

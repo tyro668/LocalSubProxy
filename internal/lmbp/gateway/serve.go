@@ -95,7 +95,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 			return fmt.Errorf("tenant %s: %w (set %s)", id, err, env)
 		}
 	}
-	go g.RunRetention(ctx, time.Hour)
+	go g.RunRetention(ctx, 0)
 	log.Printf("lmbp gateway listening on %s (gateway key %s, encryption at rest: %v)", o.Listen, lmbp.B64(g.PublicKey()), c != nil)
 	h := g.Handler()
 	if o.Wrap != nil {

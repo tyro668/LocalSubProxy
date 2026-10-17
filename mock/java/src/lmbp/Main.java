@@ -16,6 +16,7 @@ public final class Main {
     String webDir = env("LMBP_WEB_DIR", "");
     boolean noChat = false;
     int maxConc = 16;
+    long retention = 0; // ms; 0 keeps the default (7 days), negative disables
     List<String> tenants = new ArrayList<>();
     for (int i = 0; i < args.length; i++) {
       String a = args[i];
@@ -32,12 +33,13 @@ public final class Main {
         case "--tenant-profiles" -> profiles = v;
         case "--signing-key-env" -> seedEnv = v;
         case "--max-concurrency" -> maxConc = Integer.parseInt(v);
+        case "--retention-seconds" -> retention = (long) (Double.parseDouble(v) * 1000);
         case "--web-dir" -> webDir = v;
         case "--no-chat-ui" -> noChat = true;
         case "--db" -> die("--db is not supported by the Java mock (state is in memory; the signing key comes from " + seedEnv + ")");
         case "-h", "--help" -> {
           System.out.println("usage: lmbp-mock-java [--listen host:port] [--issuer origin] [--tenant ID:ENV]... [--tenant-profiles file]\n"
-              + "                     [--signing-key-env ENV] [--max-concurrency N] [--web-dir dir] [--no-chat-ui]");
+              + "                     [--signing-key-env ENV] [--max-concurrency N] [--retention-seconds N] [--web-dir dir] [--no-chat-ui]");
           return;
         }
         default -> die("unknown flag " + k);
@@ -51,6 +53,7 @@ public final class Main {
     Gateway.Config cfg = new Gateway.Config();
     cfg.issuer = issuer;
     cfg.maxConc = maxConc;
+    if (retention != 0) cfg.retention = retention;
     if (webDir.isEmpty()) {
       Path guess = Path.of(System.getProperty("lmbp.home", "."), "mock", "web");
       if (!Files.isDirectory(guess)) guess = Path.of("..", "web");
@@ -58,6 +61,7 @@ public final class Main {
     }
     cfg.webDir = noChat ? "" : webDir;
     Gateway g = new Gateway(cfg, seed);
+    g.startRetention();
     int n = 0;
     for (String spec : tenants) {
       int c = spec.indexOf(':');

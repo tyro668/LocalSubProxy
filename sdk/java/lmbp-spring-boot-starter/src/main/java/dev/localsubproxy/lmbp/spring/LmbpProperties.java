@@ -27,6 +27,8 @@ public class LmbpProperties {
   private String chatUiDir = "";
   /** Idle SSE keep-alive interval (ms). Servlet containers detect a vanished client only on a write, so this bounds how fast an abandoned stream is cancelled. */
   private long keepaliveMs = 1000;
+  /** Finished tasks and their idempotency records are kept this long, in seconds (default 7 days; negative disables purging). Spec §14.4 (errata E6). */
+  private long retentionSeconds = 7L * 24 * 3600;
   /** Timeout for SseEmitter streams returned by LmbpClient, in milliseconds. */
   private long sseTimeoutMs = 15 * 60_000L;
 
@@ -50,6 +52,8 @@ public class LmbpProperties {
   public void setProfileFile(String v) { profileFile = v; }
   public String getChatUiDir() { return chatUiDir; }
   public void setChatUiDir(String v) { chatUiDir = v; }
+  public long getRetentionSeconds() { return retentionSeconds; }
+  public void setRetentionSeconds(long v) { retentionSeconds = v; }
   public long getKeepaliveMs() { return keepaliveMs; }
   public void setKeepaliveMs(long v) { keepaliveMs = v; }
   public long getSseTimeoutMs() { return sseTimeoutMs; }

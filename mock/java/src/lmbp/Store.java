@@ -33,6 +33,7 @@ final class Store {
 
   static final class TaskRecord {
     String id, tenant, owner, device, model, state;
+    long finished; // ms since epoch when the task ended (retention), 0 while running
     final List<Event> events = new ArrayList<>();
   }
 
@@ -82,5 +83,18 @@ final class Store {
     for (Event e : t.events) if (e.seq() == ev.seq()) throw new Conflict("task " + id + ": seq " + ev.seq() + " already stored");
     t.events.add(ev);
     t.state = state;
+    t.finished = System.currentTimeMillis();
+  }
+
+  /** Retention (spec §14.4, errata E6): finished tasks older than cutoff go with their idempotency records; expired pairings too. */
+  int purge(long cutoff) {
+    int n = 0;
+    for (var it = tasks.values().iterator(); it.hasNext(); ) {
+      TaskRecord t = it.next();
+      if (TERMINAL.contains(t.state) && t.finished > 0 && t.finished < cutoff) { it.remove(); n++; }
+    }
+    idem.values().removeIf(r -> !tasks.containsKey(r.taskID()));
+    auths.values().removeIf(a -> a.expires > 0 && a.expires < cutoff);
+    return n;
   }
 }

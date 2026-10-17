@@ -111,7 +111,7 @@ public final class StandaloneServer implements AutoCloseable {
       });
       if (!lsp.handles(path) && !path.equals("/")) {
         byte[] b = "{\"error\":\"not found\"}".getBytes(StandardCharsets.UTF_8);
-        sink.start(404, Map.of("Content-Type", "application/json", "Content-Length", String.valueOf(b.length)));
+        sink.start(404, Map.of("Content-Type", "application/json", "Cache-Control", "no-store", "Content-Length", String.valueOf(b.length)));
         sink.write(b);
       } else lsp.handle(req, sink);
       watcher.interrupt();

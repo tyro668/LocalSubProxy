@@ -36,14 +36,28 @@ type Config struct {
 	EndUser    string
 	SchemaDir  string // spec/schemas; empty disables frame validation
 	Timeout    time.Duration
-	Log        io.Writer
+	// Retention is the gateway's configured retention period. When > 0 the
+	// suite checks that finished tasks and their idempotency records are
+	// purged after it (E6); 0 skips that check.
+	Retention time.Duration
+	Log       io.Writer
 }
 
 type Result struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Pass   bool   `json:"pass"`
+	Skip   bool   `json:"skip,omitempty"` // not applicable to this run (Pass is true)
 	Detail string `json:"detail,omitempty"`
+}
+
+// skip records a check that does not apply to this run (for example E6
+// without -retention). It never fails the suite.
+func (r *runner) skip(id, title, why string) {
+	r.results = append(r.results, Result{ID: id, Title: title, Pass: true, Skip: true, Detail: why})
+	if r.cfg.Log != nil {
+		fmt.Fprintf(r.cfg.Log, "SKIP  %-6s %s (%s)\n", id, title, why)
+	}
 }
 
 type runner struct {

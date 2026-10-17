@@ -36,7 +36,7 @@ class LMBPASGI:
             if self.app is not None:
                 return await self.app(scope, receive, send)
             if typ == "http":
-                return await Response(404, b'{"error":"not found"}', "application/json").send_to(Request(scope, receive, send, b""))
+                return await Response(404, b'{"error":"not found"}', "application/json", {"Cache-Control": "no-store"}).send_to(Request(scope, receive, send, b""))
             if typ == "websocket":
                 await receive()
                 await send({"type": "websocket.close", "code": 1008})
