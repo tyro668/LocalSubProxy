@@ -100,9 +100,7 @@ func New(cfg Config, id Identity) (*Client, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
 	}
-	if cfg.MaxConcurrency < 1 {
-		cfg.MaxConcurrency = 1
-	}
+	cfg.MaxConcurrency = clampConc(cfg.MaxConcurrency)
 	if cfg.Client == "" {
 		cfg.Client = "github.com/tyro668/LocalSubProxy/lmbp"
 	}
@@ -242,11 +240,29 @@ func (c *Client) modelCaps() map[string][]string {
 	return nil
 }
 
+// modelNames returns the executor's display names shaped to the schema
+// (1..128 code points, spec §16.1): the gateway rejects anything else, so
+// labels are trimmed and shortened here, on the device that owns them.
 func (c *Client) modelNames() map[string]string {
-	if r, ok := c.cfg.Executor.(NameReporter); ok {
-		return r.ModelNames()
+	r, ok := c.cfg.Executor.(NameReporter)
+	if !ok {
+		return nil
 	}
-	return nil
+	var out map[string]string
+	for m, n := range r.ModelNames() {
+		n = strings.TrimSpace(n)
+		if rs := []rune(n); len(rs) > 128 {
+			n = strings.TrimSpace(string(rs[:128]))
+		}
+		if n == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[m] = n
+	}
+	return out
 }
 
 func (c *Client) keyStatement() string {
@@ -262,15 +278,18 @@ var handshakeHook func()
 // announceHook runs after a models.update is built, before it is sent (tests).
 var announceHook func([]byte)
 
+// clampConc keeps the device's own declaration inside the protocol range
+// 1..16: the gateway rejects anything else (spec §7.4), so a local setting
+// above 16 is announced as 16.
+func clampConc(n int) int { return max(lmbp.MinConcurrency, min(n, lmbp.MaxConcurrency)) }
+
 func (c *Client) declaredConc() int { c.mu.Lock(); defer c.mu.Unlock(); return c.wantConc }
 
 // SetMaxConcurrency changes the declared parallel task limit at runtime. It
 // takes effect locally at once, is announced on the live session
 // (models.update.max_concurrency) and is used by every later hello.
 func (c *Client) SetMaxConcurrency(n int) {
-	if n < 1 {
-		n = 1
-	}
+	n = clampConc(n)
 	c.mu.Lock()
 	c.wantConc, c.maxConc = n, n
 	if c.gwConc > 0 && c.gwConc < n {
@@ -349,11 +368,17 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	}
 	wsURL := "ws" + strings.TrimPrefix(c.id.GatewayURL, "http") + "/lmbp/v1/connect"
 	d := websocket.Dialer{Subprotocols: []string{lmbp.Subprotocol}, HandshakeTimeout: 10 * time.Second}
-	conn, _, err := d.DialContext(ctx, wsURL, http.Header{"Authorization": {"Bearer " + tok}})
+	conn, resp, err := d.DialContext(ctx, wsURL, http.Header{"Authorization": {"Bearer " + tok}})
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusBadRequest {
+			return fmt.Errorf("gateway refused LMBP 2.0 (subprotocol %s): %w", lmbp.Subprotocol, err)
+		}
 		return err
 	}
 	defer conn.Close()
+	if conn.Subprotocol() != lmbp.Subprotocol { // spec §7.1
+		return fmt.Errorf("gateway selected subprotocol %q, want %q", conn.Subprotocol(), lmbp.Subprotocol)
+	}
 	sctx, scancel := context.WithCancel(ctx)
 	defer scancel()
 	stop := context.AfterFunc(sctx, func() { conn.Close() })
@@ -396,6 +421,9 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	}
 	if w.Type != lmbp.TypeWelcome {
 		return fmt.Errorf("handshake rejected: %s", w.Data)
+	}
+	if w.V != lmbp.Version {
+		return fmt.Errorf("welcome has protocol version %d, want %d", w.V, lmbp.Version)
 	}
 	var welcome lmbp.Welcome
 	_ = json.Unmarshal(w.Data, &welcome)
@@ -496,7 +524,7 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 			continue
 		}
 		var e lmbp.Envelope
-		if json.Unmarshal(raw, &e) != nil {
+		if json.Unmarshal(raw, &e) != nil || e.V != lmbp.Version { // malformed or not 2.0: dropped (§7.4)
 			continue
 		}
 		switch e.Type {

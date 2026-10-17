@@ -33,7 +33,7 @@ st = go(lib.LSP_Start, {'data_dir': data})
 call(action='create_adapter', adapter={'id':'local','type':'ollama_http','name':'Local','base_url':'http://127.0.0.1:'+os.environ.get('LMBP_MOCK_MODEL_PORT','11500'),'models':['qwen3-8b'],'enabled':True})
 saas = [('acme', f'http://127.0.0.1:{port}', env['LSP_TENANT_KEY_ACME']), ('beta', f'http://127.0.0.1:{port+1}', env['LSP_TENANT_KEY_BETA'])]
 for tenant, gw, key in saas:
-    link = 'lmbp://pair?v=1&gateway=' + urllib.parse.quote(gw, safe='') + '&tenant=' + tenant
+    link = 'lmbp://pair?v=2&gateway=' + urllib.parse.quote(gw, safe='') + '&tenant=' + tenant
     c = call(action='pair_start', link=link)
     print(tenant, 'consent', c['consent']['saas']['name'], 'available', c['available_models'])
     a = call(action='pair_approve', pair_id=c['pair_id'], allow=['local/*'])

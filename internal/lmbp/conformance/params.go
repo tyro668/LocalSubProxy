@@ -8,6 +8,7 @@ package conformance
 // spec/schemas/task.run.payload.json.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -65,6 +66,11 @@ func (r *runner) auditParams(ctx context.Context, dev *extDev, model string) {
 	var badFail, okFail, schemaFail []string
 	nBad, nOK, nRuns := 0, 0, 0
 	for _, c := range v.Cases {
+		// vectors of an undeclared profile do not apply (§13.1)
+		setJSON, _ := json.Marshal(c.Set)
+		if (c.Endpoint == "messages" && !r.declares(lmbp.ProfileAnthropic)) || (bytes.Contains(setJSON, []byte(`"tool`)) && !r.declares(lmbp.ProfileTools)) {
+			continue
+		}
 		body := map[string]any{}
 		for k, x := range v.Base[c.Endpoint] {
 			body[k] = x

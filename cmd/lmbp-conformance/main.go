@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/tyro668/LocalSubProxy/internal/lmbp"
 	"github.com/tyro668/LocalSubProxy/internal/lmbp/conformance"
 )
 
@@ -23,25 +24,58 @@ func main() {
 	timeout := flag.Duration("timeout", 10*time.Second, "per-step timeout")
 	issuer := flag.String("issuer", "", "expected gateway issuer origin (default: origin of -gateway)")
 	asJSON := flag.Bool("json", false, "print results as JSON")
+	list := flag.Bool("list", false, "print the requirement ↔ check table (spec §13.2) and exit")
+	retention := flag.Duration("retention", 0, "the gateway's retention period; when set, check that finished tasks and idempotency records are purged after it (E6)")
 	flag.Parse()
+	if *list {
+		fmt.Print(conformance.CatalogMarkdown())
+		return
+	}
 	key := os.Getenv("LMBP_TENANT_KEY")
 	if key == "" {
 		fmt.Fprintln(os.Stderr, "LMBP_TENANT_KEY must hold the tenant API key")
 		os.Exit(2)
 	}
-	cfg := conformance.Config{GatewayURL: *gw, Issuer: *issuer, Tenant: *tenant, TenantKey: key, EndUser: *user, SchemaDir: *schemas, Timeout: *timeout}
+	cfg := conformance.Config{GatewayURL: *gw, Issuer: *issuer, Tenant: *tenant, TenantKey: key, EndUser: *user, SchemaDir: *schemas, Timeout: *timeout, Retention: *retention}
 	if !*asJSON {
 		cfg.Log = os.Stdout
 	}
 	res := conformance.Run(context.Background(), cfg)
-	fail := 0
+	fail, skipped := 0, 0
+	type tally struct{ pass, fail, skip int }
+	byProfile := map[string]*tally{}
 	for _, r := range res {
-		if !r.Pass {
+		t := byProfile[r.Profile]
+		if t == nil {
+			t = &tally{}
+			byProfile[r.Profile] = t
+		}
+		switch {
+		case !r.Pass:
 			fail++
+			t.fail++
+		case r.Skip:
+			skipped++
+			t.skip++
+		default:
+			t.pass++
+		}
+	}
+	if !*asJSON {
+		fmt.Println()
+		for _, p := range append(lmbp.Profiles, "") {
+			if t := byProfile[p]; t != nil {
+				if p == "" {
+					p = "(unmapped)"
+				}
+				fmt.Printf("profile %-10s %3d passed, %d failed, %d skipped\n", p, t.pass, t.fail, t.skip)
+			}
 		}
 	}
 	if *asJSON {
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"results": res, "failed": fail})
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"results": res, "failed": fail, "skipped": skipped})
+	} else if skipped > 0 {
+		fmt.Printf("\n%d checks, %d failed, %d skipped\n", len(res), fail, skipped)
 	} else {
 		fmt.Printf("\n%d checks, %d failed\n", len(res), fail)
 	}

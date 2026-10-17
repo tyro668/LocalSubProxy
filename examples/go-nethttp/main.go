@@ -18,7 +18,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	aopt "github.com/anthropics/anthropic-sdk-go/option"
@@ -55,10 +57,20 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	// Finished tasks + idempotency records: 7 days unless set (negative disables).
+	var retention time.Duration
+	if s := os.Getenv("LMBP_RETENTION_SECONDS"); s != "" {
+		n, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			log.Fatalf("LMBP_RETENTION_SECONDS: %v", err)
+		}
+		retention = time.Duration(n * float64(time.Second))
+	}
 	srv, err := lmbpserver.New(ctx, lmbpserver.Options{
-		Tenants: []lmbpserver.Tenant{{ID: tenant, APIKey: apiKey, Profile: profile}},
-		Issuer:  os.Getenv("LMBP_ISSUER"), // e.g. https://saas.example.com in production
-		Store:   st,
+		Tenants:   []lmbpserver.Tenant{{ID: tenant, APIKey: apiKey, Profile: profile}},
+		Issuer:    os.Getenv("LMBP_ISSUER"), // e.g. https://saas.example.com in production
+		Store:     st,
+		Retention: retention,
 	})
 	if err != nil {
 		log.Fatal(err)

@@ -27,7 +27,7 @@ def _schema_set() -> SchemaSet:
     global _schemas
     if _schemas is None:
         d = resources.files("lmbp_server") / "schemas"
-        _schemas = SchemaSet([json.loads((d / n).read_text("utf-8")) for n in ("defs.json", "task.run.payload.json")])
+        _schemas = SchemaSet([json.loads((d / n).read_text("utf-8")) for n in ("defs.json", "task.run.payload.json", "hello.json", "models.update.json")])
     return _schemas
 
 
@@ -101,8 +101,8 @@ def _stop_list(m, k, allow_string):
     if not 1 <= len(v) <= MAX_STOP_SEQUENCES:
         raise _perr(k, f"must have 1 to {MAX_STOP_SEQUENCES} sequences, got {len(v)}")
     for i, s in enumerate(v):
-        if not isinstance(s, str) or s == "" or len(s.encode()) > MAX_STOP_LENGTH:
-            raise _perr(k, f"sequence {i} must be a non-empty string of at most {MAX_STOP_LENGTH} bytes")
+        if not isinstance(s, str) or s == "" or len(s) > MAX_STOP_LENGTH:
+            raise _perr(k, f"sequence {i} must be a non-empty string of at most {MAX_STOP_LENGTH} characters")
     return list(v)
 
 
@@ -268,6 +268,17 @@ def validate_anthropic_params(m: dict) -> None:
             raise _perr("tool_choice", f"type must be auto, any, tool or none, got {json.dumps(ty)}")
         if not names:
             raise _perr("tool_choice", "requires tools")
+
+
+def announce_problem(data, hello: bool) -> str:
+    """Validate hello / models.update data against its schema (spec §7.4):
+    "" when valid, else a message naming the first bad field."""
+    name = "hello" if hello else "models.update"
+    e = _schema_set().validate(BASE + name + ".json", json.loads(json.dumps(data)))
+    if not e:
+        return ""
+    path, msg = e
+    return name + ("." + ".".join(map(str, path)) if path else "") + ": " + msg
 
 
 def validate_task_run(payload: dict) -> None:

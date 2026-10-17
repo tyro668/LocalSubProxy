@@ -26,7 +26,7 @@ fn die(msg: &str) -> ! {
 }
 
 const USAGE: &str = "usage: lmbp-mock-rust [--listen host:port] [--issuer origin] [--tenant ID:ENV]... [--tenant-profiles file]
-                      [--signing-key-env ENV] [--max-concurrency N] [--web-dir dir] [--no-chat-ui]";
+                      [--signing-key-env ENV] [--max-concurrency N] [--retention-seconds N] [--web-dir dir] [--no-chat-ui]";
 
 fn main() {
     let mut listen = env("LMBP_LISTEN", "127.0.0.1:8080");
@@ -36,6 +36,7 @@ fn main() {
     let mut web_dir = env("LMBP_WEB_DIR", "");
     let mut no_chat = false;
     let mut max_conc: i64 = 16;
+    let mut retention: i64 = 0; // ms; 0 keeps the default (7 days), negative disables
     let mut tenants = vec![];
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -60,6 +61,7 @@ fn main() {
             "--tenant-profiles" => profiles = v,
             "--signing-key-env" => seed_env = v,
             "--max-concurrency" => max_conc = v.parse().unwrap_or_else(|_| die("--max-concurrency must be an integer")),
+            "--retention-seconds" => retention = (v.parse::<f64>().unwrap_or_else(|_| die("--retention-seconds must be a number")) * 1000.0) as i64,
             "--web-dir" => web_dir = v,
             "--no-chat-ui" => no_chat = true,
             "--db" => die(&format!("--db is not supported by the Rust mock (state is in memory; the signing key comes from {})", seed_env)),
@@ -91,7 +93,10 @@ fn main() {
         }
         web_dir = guess.to_string_lossy().into_owned();
     }
-    let cfg = gateway::Config { issuer, max_conc, web_dir: if no_chat { String::new() } else { web_dir }, ..Default::default() };
+    let mut cfg = gateway::Config { issuer, max_conc, web_dir: if no_chat { String::new() } else { web_dir }, ..Default::default() };
+    if retention != 0 {
+        cfg.retention = retention;
+    }
     let kid = gateway::init(cfg, seed).unwrap_or_else(|e| die(&e));
     let mut g = gateway::lock();
     let mut n = 0;

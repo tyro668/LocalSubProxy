@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { LMBPServer } from '../dist/index.js';
 import { pairAndConnect } from '../test-support/simdevice.mjs';
+import * as L from '../dist/engine/lmbp.js';
 
 const KEY = 'k'.repeat(40);
 const until = async (cond, ms, what) => {
@@ -25,7 +26,7 @@ test('local cancel: late device frames and terminal frame are ACKed (credit retu
   const manual = (run, ws) => {
     const st = { acked: 0, cancels: [], sent: 0 };
     runs.set(run.task_id, st);
-    const send = (type, data) => ws.send(JSON.stringify({ v: 1, type, task_id: run.task_id, seq: ++st.sent, data }));
+    const send = (type, data) => ws.send(JSON.stringify({ v: L.VERSION, type, task_id: run.task_id, seq: ++st.sent, data }));
     ws.on('message', (raw) => {
       const e = JSON.parse(raw);
       if (e.task_id !== run.task_id) return;

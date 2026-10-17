@@ -26,6 +26,8 @@ const lsp = new LMBPServer({
   tenants: [{ id: tenant, apiKey, profile }],
   issuer: process.env.LMBP_ISSUER,                         // e.g. https://saas.example.com in production
   store: process.env.LMBP_DB ? new SqliteStore(process.env.LMBP_DB) : undefined,
+  // finished tasks + idempotency records: 7 days unless set (negative disables)
+  retention: process.env.LMBP_RETENTION_SECONDS ? Number(process.env.LMBP_RETENTION_SECONDS) * 1000 : undefined,
 });
 
 const app = express();

@@ -23,7 +23,7 @@ for (const c of V.ath) check('ath', L.ath(c.credential) === c.ath);
 function doVerify(kind, compact, key, e) {
   switch (kind) {
     case 'access_token': { const c = L.verifyAccessToken(key, compact, e.aud, NOW); if (c.cnf.jkt !== e['cnf.jkt']) throw new Error('jkt'); return; }
-    case 'client_assertion': { const c = JSON.parse(L.verifyJws(key, compact, L.TYP.assertion)); if (c.aud !== e.aud) throw new Error('aud'); return; }
+    case 'client_assertion': L.verifyClientAssertion(key, compact, e.aud, NOW); return;
     case 'proof': L.verifyProof(key, compact, e, NOW); return;
     case 'task_run': L.verifyTaskRun(key, { task_id: e.envelope_task_id, jws: compact }); return;
     default: throw new Error('kind');
@@ -47,7 +47,7 @@ const hello = V.valid_frames.find((f) => f.name === 'hello').frame;
 try { L.verifyHello(pub('gateway'), () => pub('device'), hello, at.compact, { now: NOW }); check('verifyHello(vector hello)', true); }
 catch (err) { check('verifyHello(vector hello)', false, String(err)); }
 const tr = V.jws.find((j) => j.name === 'task_run');
-const env = L.signTaskRun(priv('gateway'), 'k', tr.payload);
+const env = L.signTaskRun(priv('gateway'), L.thumbprint(pub('gateway')), tr.payload);
 check('signTaskRun round trip', JSON.stringify(L.verifyTaskRun(pub('gateway'), env)) === JSON.stringify(tr.payload));
 
 try {
@@ -97,6 +97,24 @@ for (const n of E.negative) {
     check(`e2ee negative ${n.name}: rejected`, false, 'accepted');
   } catch { check(`e2ee negative ${n.name}: rejected`, true); }
 }
+// ---- spec/testvectors/jose.json: every verify path, strict §5.2 rules ----
+const JV = JSON.parse(readFileSync(join(ROOT, 'testvectors', 'jose.json'), 'utf8'));
+const jpub = (n) => L.unb64u(JV.keys[n].public_b64url);
+function joseVerify(v) {
+  const c = v.context, k = jpub(v.verify_with_key), now = JV.now;
+  switch (v.kind) {
+    case 'proof': return L.verifyProof(k, v.compact, c, now);
+    case 'client_assertion': return L.verifyClientAssertion(k, v.compact, c.aud, now);
+    case 'access_token': return L.verifyAccessToken(k, v.compact, c.aud, now);
+    case 'e2ee_key': return X.verifyKeyStatement(k, '', c.device_id, v.compact, now);
+    case 'task_run': return L.verifyTaskRun(k, { task_id: c.envelope_task_id, jws: v.compact }, now);
+    case 'metadata': return L.verifyMetadata(k, v.compact, c.issuer, c.tenant, now);
+    default: throw new Error(`unknown kind ${v.kind}`);
+  }
+}
+for (const v of JV.valid) { try { joseVerify(v); check(`jose valid ${v.name}`, true); } catch (err) { check(`jose valid ${v.name}`, false, String(err)); } }
+for (const v of JV.negative) { let ok = false; try { joseVerify(v); } catch { ok = true; } check(`jose negative ${v.name}: rejected`, ok, v.must_reject_because); }
+check('jose: all cases ran', JV.valid.length > 0 && JV.negative.length > 200);
 for (const f of V.flow) {
   let ok = true;
   if (f.role === 'sender') {

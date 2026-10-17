@@ -33,6 +33,8 @@ type ServeOptions struct {
 	// Profiles is an optional JSON file {"tenant": TenantProfile, ...} with the
 	// SaaS identity shown on the desktop consent screen.
 	Profiles string
+	// CoreOnly runs a Core-only gateway (Config.CoreOnly; conformance testing).
+	CoreOnly bool
 	// Wrap, if set, wraps the gateway handler (e.g. to add the mock chat UI).
 	Wrap func(http.Handler) http.Handler
 }
@@ -68,7 +70,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 	if o.Issuer == "" && !o.AllowEphemeralKey {
 		return errors.New("set -issuer to the gateway's public https origin (tokens and metadata are bound to it)")
 	}
-	g, err := New(Config{Store: st, SigningKey: sk, Retention: o.Retention, Issuer: o.Issuer})
+	g, err := New(Config{Store: st, SigningKey: sk, Retention: o.Retention, Issuer: o.Issuer, CoreOnly: o.CoreOnly})
 	if err != nil {
 		return err
 	}
@@ -95,7 +97,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 			return fmt.Errorf("tenant %s: %w (set %s)", id, err, env)
 		}
 	}
-	go g.RunRetention(ctx, time.Hour)
+	go g.RunRetention(ctx, 0)
 	log.Printf("lmbp gateway listening on %s (gateway key %s, encryption at rest: %v)", o.Listen, lmbp.B64(g.PublicKey()), c != nil)
 	h := g.Handler()
 	if o.Wrap != nil {

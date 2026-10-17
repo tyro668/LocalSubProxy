@@ -75,6 +75,8 @@ final class Gateway {
     long codeTTL = 600, tokenTTL = 900;
     int maxConc = 16;
     long pingInterval = 20_000, resumeWindow = 30_000, taskTimeout = 10 * 60_000, slowConsumer = 60_000, attachGrace = 30_000, queueTimeout = 15_000, keepalive = 15_000;
+    /** Spec §14.4 (errata E6): finished tasks and their idempotency records are kept this long (ms); negative disables purging. */
+    long retention = RETENTION_DEFAULT;
     Lmbp.Flow flow = new Lmbp.Flow(1 << 20, 4 << 20);
     String webDir = "";
   }
@@ -138,6 +140,32 @@ final class Gateway {
   }
 
   static void cancel(ScheduledFuture<?> f) { if (f != null) f.cancel(false); }
+
+  static final long RETENTION_DEFAULT = 7L * 24 * 3600_000;
+
+  /** How often the retention pass runs: half the period, between 1 s and 1 h. */
+  static long retentionEvery(long ret) { return Math.min(3600_000, Math.max(1000, ret / 2)); }
+
+  ScheduledFuture<?> retentionTimer;
+
+  /** Starts the purge loop (no-op when retention is negative). */
+  void startRetention() {
+    if (cfg.retention < 0) return;
+    retentionTimer = every(retentionEvery(cfg.retention), () -> purge(System.currentTimeMillis()));
+  }
+
+  /** One retention pass; returns the number of tasks removed from the store (-1: the store cannot purge). */
+  int purge(long now) {
+    long cutoff = now - cfg.retention;
+    int[] n = {0};
+    locked(() -> {
+      try { n[0] = store.purge(cutoff); } catch (RuntimeException e) { log("retention purge: " + e.getMessage()); n[0] = 0; return; }
+      if (n[0] < 0) { log("store has no purge(); retention is disabled"); cancel(retentionTimer); return; }
+      tasks.values().removeIf(t -> t.finishedAt > 0 && t.finishedAt < cutoff);
+      if (n[0] > 0) log("retention purge: removed " + n[0] + " tasks");
+    });
+    return n[0];
+  }
 
   // ---------- tenants ----------
   void registerTenant(String id, String apiKey, Map<String, Object> profile) {
@@ -234,7 +262,7 @@ final class Gateway {
       Tenant tt = tenants.get(req.trustedTenant);
       if (tt == null) { err.send(401, "UNAUTHENTICATED", "unknown tenant"); return null; }
       String u = req.trustedUser;
-      if (u == null || u.isEmpty() || u.length() > 128) { err.send(400, "BAD_REQUEST", "end user id required (1-128 chars)"); return null; }
+      if (!Lmbp.validHeader(u, 128)) { err.send(400, "BAD_REQUEST", "end user must be 1-128 printable ASCII characters"); return null; }
       return new Auth(tt, u);
     }
     String a = req.header("authorization");
@@ -245,7 +273,7 @@ final class Gateway {
     for (Tenant t : tenants.values()) if (MessageDigest.isEqual(t.keyHash().getBytes(StandardCharsets.UTF_8), h)) found = t;
     if (found == null) { err.send(401, "UNAUTHENTICATED", "invalid tenant API key"); return null; }
     String user = req.headers.get("x-end-user");
-    if (user == null || user.isEmpty() || user.length() > 128) { err.send(400, "BAD_REQUEST", "X-End-User header required"); return null; }
+    if (!Lmbp.validHeader(user, 128)) { err.send(400, "BAD_REQUEST", "X-End-User must be 1-128 printable ASCII characters"); return null; }
     return new Auth(found, user);
   }
 
@@ -254,7 +282,7 @@ final class Gateway {
     String ws = "ws" + iss.substring(4);
     Map<String, Object> m = Json.obj("issuer", iss, "jwks_uri", iss + "/.well-known/jwks.json", "device_authorization_endpoint", iss + "/lmbp/v1/device/authorize",
         "token_endpoint", iss + "/lmbp/v1/token", "connect_endpoint", ws + "/lmbp/v1/connect", "chat_completions_endpoint", iss + "/v1/chat/completions",
-        "protocol_versions", List.of("1.0"), "capabilities", Lmbp.CAPABILITIES, "scopes_supported", Lmbp.SCOPES);
+        "protocol_versions", Lmbp.PROTOCOL_VERSIONS, "profiles", Lmbp.PROFILES, "capabilities", Lmbp.CAPABILITIES, "scopes_supported", Lmbp.SCOPES);
     if (t == null) return m;
     Map<String, Object> p = t.profile();
     Map<String, Object> saas = Json.obj("name", p.get("display_name") instanceof String dn && !dn.isEmpty() ? dn : t.name());
@@ -289,7 +317,7 @@ final class Gateway {
   void authorize(HttpRequest req, Http.Res res) {
     if (!req.method.equals("POST")) { oauthError(res, 405, "invalid_request"); return; }
     Map<String, String> ps = params(req, 4096);
-    if (ps == null || ps.get("tenant") == null || ps.get("tenant").isEmpty() || (ps.get("device_name") != null && ps.get("device_name").length() > 100)) { oauthError(res, 400, "invalid_request"); return; }
+    if (ps == null || ps.get("tenant") == null || ps.get("tenant").isEmpty() || (ps.get("device_name") != null && Lmbp.charLen(ps.get("device_name")) > 100)) { oauthError(res, 400, "invalid_request"); return; }
     byte[] pub;
     try { pub = Lmbp.unb64(ps.getOrDefault("public_key", "")); } catch (RuntimeException e) { oauthError(res, 400, "invalid_request"); return; }
     if (pub.length != 32) { oauthError(res, 400, "invalid_request"); return; }
@@ -497,7 +525,7 @@ final class Gateway {
       List<String> protos = new ArrayList<>();
       for (String s : req.header("sec-websocket-protocol").split(",")) protos.add(s.trim());
       if (!req.path.equals("/lmbp/v1/connect")) { status = 404; code = "BAD_REQUEST"; reject = "not found"; }
-      else if (!protos.contains(Lmbp.SUBPROTOCOL)) { status = 400; code = "VERSION_UNSUPPORTED"; reject = "WebSocket subprotocol lmbp required"; }
+      else if (!protos.contains(Lmbp.SUBPROTOCOL)) { status = 400; code = "VERSION_UNSUPPORTED"; reject = Lmbp.VERSION_REQUIRED; }
       else if (!req.header("origin").isEmpty()) { status = 403; code = "FORBIDDEN"; reject = "browser origins are not allowed"; }
       else {
         try { claims = verifyAccess(tok, iss); } catch (RuntimeException e) { status = 401; code = "UNAUTHENTICATED"; reject = String.valueOf(e.getMessage()); }
@@ -541,7 +569,10 @@ final class Gateway {
         try { ws.send(Json.stringify(envelope("error", envID, null, errorBody(cm[0], cm[1], false)))); } catch (RuntimeException e) { /* closed */ }
         ws.close();
       };
-      if (!isVersion(Json.get(env, "v"))) { early.accept(new String[] {"VERSION_UNSUPPORTED", "unsupported protocol version"}); return; }
+      if (!isVersion(Json.get(env, "v"))) { early.accept(new String[] {"VERSION_UNSUPPORTED", Lmbp.VERSION_REQUIRED}); return; }
+      // §7.4 order: v, schema (BAD_REQUEST), device/proof (UNAUTHENTICATED), extension semantics.
+      String schemaBad = Params.announceProblem(hello, true);
+      if (schemaBad != null) { early.accept(new String[] {"BAD_REQUEST", schemaBad}); return; }
       try {
         if (!dev.id.equals(hello.get("device_id"))) throw new IllegalArgumentException("device");
         Map<String, Object> pc = Lmbp.verifyProof(dev.pub, hello.get("proof"), dev.id, Lmbp.PROOF_HELLO, tok);
@@ -563,7 +594,7 @@ final class Gateway {
         if (!store.setDeviceE2EEKey(dev.id, (String) hello.get("e2ee_key"))) { early.accept(new String[] {"UNAUTHENTICATED", "device revoked"}); return; }
         dev.e2eeKey = (String) hello.get("e2ee_key");
       } else caps.remove("e2ee");
-      int conc = (int) Math.min(Math.max(toInt32(hello.get("max_concurrency")), 1), cfg.maxConc);
+      int conc = Math.min(((Number) hello.get("max_concurrency")).intValue(), cfg.maxConc); // validated 1..16; may lower, never raise
       attachSession(ws, dev, claims, iss, envID, hello, caps, conc);
       // a revoke that raced the activation (its drop ran before we attached)
       Store.Device after = store.getDevice(dev.id);
@@ -666,15 +697,17 @@ final class Gateway {
           if (!refreshSession(ds, dev, Json.asObj(inp))) { ds.sendErr(idOf(inp), "UNAUTHENTICATED", "session token rejected"); ws.close(); }
         }
         case "models.update" -> {
+          String muBad = Params.announceProblem(Json.get(inp, "data"), false);
+          if (muBad != null) { ds.sendErr(idOf(inp), "BAD_REQUEST", muBad); break; } // rejected whole: nothing applied
           Map<String, Object> mu = Json.asObj(Json.get(inp, "data"));
-          List<Object> ml = mu == null ? null : Json.asList(mu.get("models"));
-          if (ml != null && ml.size() <= 500) {
+          List<Object> ml = Json.asList(mu.get("models"));
+          {
             ds.models = ml;
             Map<String, Object> mc = Json.asObj(mu.get("model_capabilities"));
             ds.modelCaps = mc != null ? mc : new LinkedHashMap<>();
             ds.modelNames = cleanNames(mu.get("model_names"), ml);
             Object mx = mu.get("max_concurrency");
-            if (Json.isNumber(mx) && ((Number) mx).doubleValue() >= 1) { ds.maxConc = (int) Math.min(((Number) mx).doubleValue(), cfg.maxConc); ds.wakeSlots(); }
+            if (mx != null) { ds.maxConc = Math.min(((Number) mx).intValue(), cfg.maxConc); ds.wakeSlots(); }
             if (Json.truthy(mu.get("e2ee_key")) && ds.caps.contains("e2ee")) {
               try { Lmbp.verifyE2EEKey(dev.pub, dev.id, mu.get("e2ee_key")); if (store.setDeviceE2EEKey(dev.id, (String) mu.get("e2ee_key"))) dev.e2eeKey = (String) mu.get("e2ee_key"); } catch (RuntimeException e) { /* ignore */ }
             }
@@ -777,14 +810,16 @@ final class Gateway {
     boolean bare = true;
     int i = model.indexOf('/');
     if (i > 0 && model.startsWith("dev_")) { devID = model.substring(0, i); want = model.substring(i + 1); bare = false; }
-    boolean known = false;
+    boolean known = false, up = false;
     for (Store.Device d : list) {
       if (!d.status.equals("active") || (!bare && !d.id.equals(devID))) continue;
       known = known || !bare;
       DState s = online(d.id);
       if (s != null && s.models.contains(want)) return new Resolved(s, want, null, 0);
+      if (s != null) up = true;
     }
-    if (known) return new Resolved(null, null, "DEVICE_OFFLINE", 503);
+    // §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
+    if (known) return up ? new Resolved(null, null, "MODEL_NOT_FOUND", 404) : new Resolved(null, null, "DEVICE_OFFLINE", 503);
     boolean anyOnline = false;
     for (Store.Device d : list) if (online(d.id) != null) anyOnline = true;
     if (!list.isEmpty() && bare && !anyOnline) return new Resolved(null, null, "DEVICE_OFFLINE", 503);
@@ -817,7 +852,7 @@ final class Gateway {
     Params.Sampling params;
     try { params = Params.validateChatParams(r); } catch (Params.ParamError e) { json(res, 400, Params.paramErrorBody(e, anthropic)); return; }
     String idemKey = req.header("idempotency-key");
-    if (idemKey.length() > 255) { err.send(400, "BAD_REQUEST", "Idempotency-Key too long"); return; }
+    if (!idemKey.isEmpty() && !Lmbp.validHeader(idemKey, 255)) { err.send(400, "BAD_REQUEST", "Idempotency-Key must be 1-255 printable ASCII characters"); return; }
     String bodyHash = HexFormat.of().formatHex(Lmbp.sha256(body));
     String tenant = a.t().id(), user = a.user();
     String reqModel = (String) r.get("model");
@@ -1137,6 +1172,8 @@ final class Gateway {
   // ---------- helpers ----------
   static void json(Http.Res res, int status, Object body) {
     byte[] b = Json.bytes(body);
+    // §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+    if (res.getHeader("Cache-Control") == null) res.setHeader("Cache-Control", "no-store");
     res.send(status, res.getHeader("Content-Type") != null ? res.getHeader("Content-Type") : "application/json", b);
   }
 
@@ -1349,6 +1386,7 @@ final class Gateway {
 
   /** Gateway-side hub of one task: buffers device frames, fans them out to (re-)attached HTTP subscribers and paces task.ack (§8). */
   static final class Task {
+    long finishedAt;
     final Gateway g;
     final DState ds;
     final String id, tenant, owner, reqModel;
@@ -1518,6 +1556,7 @@ final class Gateway {
         if (hadSlot) ds.release();
       }
       abort.aborted = true;
+      finishedAt = System.currentTimeMillis();
       g.wakeAll();
       g.later(g.cfg.attachGrace + 600_000, () -> { if (g.tasks.get(id) == this) g.tasks.remove(id); });
     }
@@ -1580,7 +1619,7 @@ final class Gateway {
     for (Object id : models) {
       if (m.get(String.valueOf(id)) instanceof String n && !n.isBlank()) {
         String t = n.strip();
-        out.put(String.valueOf(id), t.codePointCount(0, t.length()) > 128 ? t.substring(0, t.offsetByCodePoints(0, 128)) : t);
+        out.put(String.valueOf(id), t); // length bounded by the schema (1-128 code points)
       }
     }
     return out;

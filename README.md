@@ -6,7 +6,7 @@ LocalSubProxy 是 macOS / Windows 桌面应用：让你授权的远端服务（S
 
 ![LocalSubProxy 架构图](docs/images/architecture.svg)
 
-桌面端主动连出到网关，本机无需开放端口。设备与网关之间使用开放协议 **LMBP 1.0**（正式版），见 [规范](docs/lmbp-spec.md)。
+桌面端主动连出到网关，本机无需开放端口。设备与网关之间使用开放协议 **LMBP 2.0**（正式版），见 [规范](docs/lmbp-spec.md)。2.0 不兼容 1.x：网关（含 SDK 实现）与桌面端必须一起升级，见 [发布说明](docs/release.md#lmbp-20-升级)。
 
 ## 快速上手
 

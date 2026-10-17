@@ -140,7 +140,7 @@ A = ('acme', f'http://127.0.0.1:{port}', env['LSP_TENANT_KEY_ACME'])
 B = ('beta', f'http://127.0.0.1:{port + 1}', env['LSP_TENANT_KEY_BETA'])
 ids = {}
 for tenant, gw, key in (A, B):
-    c = k.call(action='pair_start', link='lmbp://pair?v=1&gateway=' + urllib.parse.quote(gw, safe='') + '&tenant=' + tenant)
+    c = k.call(action='pair_start', link='lmbp://pair?v=2&gateway=' + urllib.parse.quote(gw, safe='') + '&tenant=' + tenant)
     a = k.call(action='pair_approve', pair_id=c['pair_id'], allow=['slow/*'])
     http(gw, key, 'POST', '/lmbp/v1/tenant/devices/approvals', {'user_code': a['user_code']})
     for _ in range(100):

@@ -25,8 +25,23 @@ import java.util.regex.Pattern;
 final class Lmbp {
   private Lmbp() {}
 
-  public static final int VERSION = 1;
+  public static final int VERSION = 2;
   public static final String SUBPROTOCOL = "lmbp";
+  public static final List<String> PROTOCOL_VERSIONS = List.of("2.0");
+  public static final String PAIR_LINK_VERSION = "2";
+  /** Conformance profiles (spec §13.1); metadata.profiles lists those this gateway meets. */
+  public static final List<String> PROFILES = List.of("core", "reliable", "tools", "multimodal", "e2ee", "openai", "anthropic");
+  public static final String VERSION_REQUIRED = "LMBP 2.0 required: WebSocket subprotocol lmbp and envelope v 2 (LMBP 1.x is not supported)";
+
+  /** Unicode code points, the unit of every string limit (spec §4.1). */
+  public static int charLen(String s) { return s.codePointCount(0, s.length()); }
+
+  /** 1..max printable ASCII (0x20-0x7E): X-End-User and Idempotency-Key (spec §4.1). */
+  public static boolean validHeader(String s, int max) {
+    if (s == null || s.isEmpty() || s.length() > max) return false;
+    for (int i = 0; i < s.length(); i++) { char c = s.charAt(i); if (c < 0x20 || c > 0x7E) return false; }
+    return true;
+  }
   public static final List<String> CAPABILITIES = List.of("session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee");
   public static final List<String> SCOPES = List.of("lmbp.chat", "lmbp.tools", "lmbp.vision", "lmbp.audio");
   public static final Pattern TENANT_ID_RE = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$");

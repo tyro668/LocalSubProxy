@@ -29,7 +29,7 @@
       <resource>
         <directory>${project.basedir}/../../../spec/schemas</directory>
         <targetPath>dev/localsubproxy/lmbp/schemas</targetPath>
-        <includes><include>defs.json</include><include>task.run.payload.json</include></includes>
+        <includes><include>defs.json</include><include>task.run.payload.json</include><include>hello.json</include><include>models.update.json</include></includes>
       </resource>
     </resources>
     <plugins>

@@ -52,6 +52,7 @@ type gtask struct {
 	events            []event
 	notify            chan struct{}
 	done              bool
+	finishedAt        time.Time     // when the task ended (retention drops the in-memory hub with the stored task)
 	decided           bool          // a terminal outcome was chosen (decide); only its holder commits and publishes
 	seen              int64         // highest device seq onDeviceFrame started to handle
 	subs              map[int]int64 // subscriber → delivered seq
@@ -472,6 +473,9 @@ func (t *gtask) finishWith(state string, fromDevice, _ bool) {
 		}
 	}
 	t.stop()
+	t.mu.Lock()
+	t.finishedAt = time.Now()
+	t.mu.Unlock()
 	time.AfterFunc(t.g.cfg.AttachGrace+10*time.Minute, func() {
 		t.g.mu.Lock()
 		if t.g.tasks[t.id] == t {

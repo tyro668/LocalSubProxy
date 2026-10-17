@@ -151,7 +151,7 @@ func TestHeadlessEndToEnd(t *testing.T) {
 	// pair: the SaaS approves the printed code through its tenant API
 	pr, pw := io.Pipe()
 	pair := exec.Command(bin, "pair", "--data-dir", data, "--yes", "--allow", "local/qwen3-8b",
-		fmt.Sprintf("lmbp://pair?v=1&gateway=%s&tenant=acme", strings.ReplaceAll(strings.ReplaceAll(gw, ":", "%3A"), "/", "%2F")))
+		fmt.Sprintf("lmbp://pair?v=2&gateway=%s&tenant=acme", strings.ReplaceAll(strings.ReplaceAll(gw, ":", "%3A"), "/", "%2F")))
 	pair.Stdout, pair.Stderr = pw, pw
 	if err := pair.Start(); err != nil {
 		t.Fatal(err)

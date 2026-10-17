@@ -67,8 +67,8 @@ final class Params {
     if (list.size() < 1 || list.size() > MAX_STOP_SEQUENCES) throw perr(k, "must have 1 to " + MAX_STOP_SEQUENCES + " sequences, got " + list.size());
     for (int i = 0; i < list.size(); i++) {
       Object s = list.get(i);
-      if (!(s instanceof String str) || str.isEmpty() || Json.utf8Len(str) > MAX_STOP_LENGTH)
-        throw perr(k, "sequence " + i + " must be a non-empty string of at most " + MAX_STOP_LENGTH + " bytes");
+      if (!(s instanceof String str) || str.isEmpty() || Lmbp.charLen(str) > MAX_STOP_LENGTH)
+        throw perr(k, "sequence " + i + " must be a non-empty string of at most " + MAX_STOP_LENGTH + " characters");
     }
     return new ArrayList<>(list);
   }
@@ -210,7 +210,7 @@ final class Params {
   static synchronized JsonSchema schemaSet() {
     if (schemas == null) {
       List<Object> docs = new ArrayList<>();
-      for (String n : new String[] {"defs.json", "task.run.payload.json"}) {
+      for (String n : new String[] {"defs.json", "task.run.payload.json", "hello.json", "models.update.json"}) {
         try (InputStream in = Params.class.getResourceAsStream("/schemas/" + n)) {
           if (in == null) throw new IllegalStateException("bundled schema " + n + " missing");
           docs.add(Json.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8)));
@@ -219,6 +219,16 @@ final class Params {
       schemas = new JsonSchema(docs);
     }
     return schemas;
+  }
+
+  /** Validates hello / models.update data against its schema (spec §7.4): null when valid, else a message. */
+  static String announceProblem(Object data, boolean hello) {
+    String name = hello ? "hello" : "models.update";
+    JsonSchema.Err e = schemaSet().validate(BASE + name + ".json", Json.parse(Json.stringify(data)));
+    if (e == null) return null;
+    List<String> ps = new ArrayList<>();
+    for (Object p : e.path()) ps.add(String.valueOf(p));
+    return name + (ps.isEmpty() ? "" : "." + String.join(".", ps)) + ": " + e.message();
   }
 
   static void validateTaskRun(Map<String, Object> payload) {

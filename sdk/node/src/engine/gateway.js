@@ -12,7 +12,7 @@ import { WebSocketServer } from 'ws';
 import * as L from './lmbp.js';
 import { MemoryStore } from '../store.js';
 import * as A from '../anthropic.js';
-import { validateChatParams, validateAnthropicParams, validateTaskRun, paramErrorBody, ParamError } from './params.js';
+import { validateChatParams, validateAnthropicParams, validateTaskRun, announceProblem, paramErrorBody, ParamError } from './params.js';
 
 const PROBLEM_BASE = 'https://localsubproxy.dev/problems/';
 const USER_CODE_CHARS = 'BCDFGHJKLMNPQRSTVWXZ';
@@ -29,6 +29,9 @@ const isTerminal = (t) => t === 'task.done' || t === 'task.error';
 const TERMINAL_STATES = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
 const stateOf = (ev) => ev.type === 'task.done' ? 'SUCCEEDED' : (ev.data?.code === 'CANCELLED' ? 'CANCELLED' : 'FAILED');
 const errorBody = (code, message, retryable = false) => ({ code, message, retryable });
+export const RETENTION_DEFAULT = 7 * 24 * 3600_000;
+/** How often the retention pass runs: half the period, between 1 s and 1 h. */
+export const retentionEvery = (ret) => Math.min(3600_000, Math.max(1000, Math.floor(ret / 2)));
 
 export class Gateway {
   constructor(cfg = {}) {
@@ -37,6 +40,8 @@ export class Gateway {
       resumeWindow: 30_000, taskTimeout: 10 * 60_000, slowConsumer: 60_000, attachGrace: 30_000, queueTimeout: 15_000,
       flow: { task_window: 1 << 20, conn_window: 4 << 20 }, log: console.error, ...cfg,
     };
+    // Retention (spec §14.4, errata E6): 7 days by default, 0/undefined keeps the default, negative disables.
+    if (!this.cfg.retention) this.cfg.retention = RETENTION_DEFAULT;
     if (cfg.issuer) this.cfg.issuer = L.origin(cfg.issuer);
     this.store = cfg.store ?? new MemoryStore();
     let seed = cfg.seed;
@@ -54,6 +59,26 @@ export class Gateway {
     this.pending = new Map();
     this.wss = new WebSocketServer({ noServer: true, maxPayload: L.MAX_FRAME_BYTES, perMessageDeflate: false,
       handleProtocols: (ps) => (ps.has(L.SUBPROTOCOL) ? L.SUBPROTOCOL : false) });
+    this.startRetention();
+  }
+
+  /** Purges finished tasks (with their idempotency records) older than cfg.retention, every retentionEvery(). */
+  startRetention() {
+    if (this.cfg.retention < 0) return;
+    if (typeof this.store.purge !== 'function') { this.cfg.log('lmbp: store has no purge(); retention is disabled'); return; }
+    this.retentionTimer = setInterval(() => this.purge(), retentionEvery(this.cfg.retention)).unref();
+  }
+
+  stopRetention() { clearInterval(this.retentionTimer); this.retentionTimer = null; }
+
+  /** One retention pass; returns the number of tasks removed from the store. */
+  purge(now = Date.now()) {
+    const cutoff = now - this.cfg.retention;
+    let n = 0;
+    try { n = this.store.purge(cutoff); } catch (e) { this.cfg.log('retention purge:', e); return 0; }
+    for (const [id, t] of this.tasks) if (t.finishedAt && t.finishedAt < cutoff) this.tasks.delete(id);
+    if (n > 0) this.cfg.log(`retention purge: removed ${n} tasks`);
+    return n;
   }
 
   registerTenant(id, apiKey, profile = {}) {
@@ -108,7 +133,7 @@ export class Gateway {
     if (p === '/.well-known/lmbp') return this.metadata(req, res, u);
     if (p === '/lmbp/v1/device/authorize') return this.authorize(req, res);
     if (p === '/lmbp/v1/token') return this.token(req, res);
-    if (p === '/lmbp/v1/connect') return problem(res, 400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lmbp required');
+    if (p === '/lmbp/v1/connect') return problem(res, 400, 'VERSION_UNSUPPORTED', L.VERSION_REQUIRED);
     if (p === '/lmbp/v1/tenant/devices/approvals') return this.approve(req, res, err);
     if (p === '/lmbp/v1/tenant/devices') return this.listDevices(req, res, err);
     let m;
@@ -135,7 +160,7 @@ export class Gateway {
     const ip = req[Symbol.for('lmbp.inProcessTenant')];
     if (ip) {
       const user = req.headers['x-end-user'];
-      if (!user || user.length > 128) { err(400, 'BAD_REQUEST', 'end user required'); return null; }
+      if (!L.validHeader(user, 128)) { err(400, 'BAD_REQUEST', 'end user must be 1-128 printable ASCII characters'); return null; }
       return { t: ip, user };
     }
     let a = req.headers.authorization || '';
@@ -145,7 +170,7 @@ export class Gateway {
     const t = [...this.tenants.values()].find((t) => crypto.timingSafeEqual(Buffer.from(t.keyHash), Buffer.from(h)));
     if (!t) { err(401, 'UNAUTHENTICATED', 'invalid tenant API key'); return null; }
     const user = req.headers['x-end-user'];
-    if (!user || user.length > 128) { err(400, 'BAD_REQUEST', 'X-End-User header required'); return null; }
+    if (!L.validHeader(user, 128)) { err(400, 'BAD_REQUEST', 'X-End-User must be 1-128 printable ASCII characters'); return null; }
     return { t, user };
   }
 
@@ -154,7 +179,7 @@ export class Gateway {
     const ws = 'ws' + iss.slice(4);
     const m = { issuer: iss, jwks_uri: iss + '/.well-known/jwks.json', device_authorization_endpoint: iss + '/lmbp/v1/device/authorize',
       token_endpoint: iss + '/lmbp/v1/token', connect_endpoint: ws + '/lmbp/v1/connect', chat_completions_endpoint: iss + '/v1/chat/completions',
-      protocol_versions: ['1.0'], capabilities: L.CAPABILITIES, scopes_supported: L.SCOPES };
+      protocol_versions: L.PROTOCOL_VERSIONS, profiles: L.PROFILES, capabilities: L.CAPABILITIES, scopes_supported: L.SCOPES };
     if (!t) return m;
     const p = t.profile || {};
     const saas = { name: p.display_name || t.name };
@@ -183,7 +208,7 @@ export class Gateway {
   async authorize(req, res) {
     if (req.method !== 'POST') return oauthError(res, 405, 'invalid_request');
     const ps = await params(req, 4096);
-    if (!ps || !ps.tenant || (ps.device_name?.length ?? 0) > 100) return oauthError(res, 400, 'invalid_request');
+    if (!ps || !ps.tenant || (typeof ps.device_name === 'string' ? L.charLen(ps.device_name) : 0) > 100) return oauthError(res, 400, 'invalid_request');
     let pub;
     try { pub = L.unb64(ps.public_key || ''); } catch { return oauthError(res, 400, 'invalid_request'); }
     if (pub.length !== 32) return oauthError(res, 400, 'invalid_request');
@@ -348,7 +373,7 @@ export class Gateway {
     };
     if (u.pathname !== '/lmbp/v1/connect') return reject(404, 'BAD_REQUEST', 'not found');
     const protos = String(req.headers['sec-websocket-protocol'] || '').split(',').map((s) => s.trim());
-    if (!protos.includes(L.SUBPROTOCOL)) return reject(400, 'VERSION_UNSUPPORTED', 'WebSocket subprotocol lmbp required');
+    if (!protos.includes(L.SUBPROTOCOL)) return reject(400, 'VERSION_UNSUPPORTED', L.VERSION_REQUIRED);
     if (req.headers.origin) return reject(403, 'FORBIDDEN', 'browser origins are not allowed');
     const tok = String(req.headers.authorization || '').replace(/^Bearer /, '');
     const iss = this.issuer(req);
@@ -374,7 +399,10 @@ export class Gateway {
       try { env = JSON.parse(raw.toString()); hello = env.data; } catch { return ws.close(); }
       if (isBinary || env?.type !== 'hello' || !hello || typeof hello !== 'object') return ws.close();
       const early = (code, msg) => { ws.send(JSON.stringify(envelope('error', { id: env.id, data: errorBody(code, msg) }))); ws.close(); };
-      if (env.v !== L.VERSION) return early('VERSION_UNSUPPORTED', 'unsupported protocol version');
+      if (env.v !== L.VERSION) return early('VERSION_UNSUPPORTED', L.VERSION_REQUIRED);
+      // §7.4 order: v, schema (BAD_REQUEST), device/proof (UNAUTHENTICATED), extension semantics.
+      const schemaBad = announceProblem(hello, true);
+      if (schemaBad) return early('BAD_REQUEST', schemaBad);
       try {
         if (hello.device_id !== dev.id) throw new Error('device');
         const pc = L.verifyProof(dev.pub, hello.proof, dev.id, L.PROOF.hello, tok);
@@ -395,7 +423,7 @@ export class Gateway {
         if (!this.saveE2EEKey(dev.id, hello.e2ee_key)) return early('UNAUTHENTICATED', 'device revoked');
         dev.e2eeKey = hello.e2ee_key;
       } else caps = caps.filter((c) => c !== 'e2ee');
-      const conc = Math.min(Math.max(hello.max_concurrency | 0, 1), this.cfg.maxConc);
+      const conc = Math.min(hello.max_concurrency, this.cfg.maxConc); // validated 1..16; the gateway may lower, never raise
       this.attachSession(ws, dev, claims, iss, env, hello, caps, conc);
     }));
   }
@@ -474,9 +502,11 @@ export class Gateway {
           break;
         case 'models.update': {
           const mu = inp.data;
-          if (mu && Array.isArray(mu.models) && mu.models.length <= 500) {
+          const muBad = announceProblem(mu, false);
+          if (muBad) { ds.sendErr(inp.id, 'BAD_REQUEST', muBad); break; } // rejected whole: nothing applied
+          {
             ds.models = mu.models; ds.modelCaps = mu.model_capabilities || {}; ds.modelNames = cleanNames(mu.model_names, mu.models);
-            if (mu.max_concurrency >= 1) { ds.maxConc = Math.min(mu.max_concurrency, this.cfg.maxConc); ds.wakeSlots(); }
+            if (mu.max_concurrency !== undefined) { ds.maxConc = Math.min(mu.max_concurrency, this.cfg.maxConc); ds.wakeSlots(); }
             if (mu.e2ee_key && ds.caps.includes('e2ee')) { try { L.verifyE2EEKey(dev.pub, dev.id, mu.e2ee_key); if (this.saveE2EEKey(dev.id, mu.e2ee_key)) dev.e2eeKey = mu.e2ee_key; } catch { /* ignore */ } }
           }
           break;
@@ -573,14 +603,16 @@ export class Gateway {
     let want = model, bare = true, devID = '';
     const i = model.indexOf('/');
     if (i > 0 && model.startsWith('dev_')) { devID = model.slice(0, i); want = model.slice(i + 1); bare = false; }
-    let known = false;
+    let known = false, up = false;
     for (const d of ds) {
       if (d.status !== 'active' || (!bare && d.id !== devID)) continue;
       known = known || !bare;
       const s = this.online(d.id);
       if (s && s.models.includes(want)) return { ds: s, model: want };
+      if (s) up = true;
     }
-    if (known) return { code: 'DEVICE_OFFLINE', status: 503 };
+    // §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
+    if (known) return up ? { code: 'MODEL_NOT_FOUND', status: 404 } : { code: 'DEVICE_OFFLINE', status: 503 };
     if (ds.length && bare && !ds.some((d) => this.online(d.id))) return { code: 'DEVICE_OFFLINE', status: 503 };
     return { code: 'MODEL_NOT_FOUND', status: 404 };
   }
@@ -621,7 +653,7 @@ export class Gateway {
       throw e;
     }
     const idemKey = req.headers['idempotency-key'] || '';
-    if (idemKey.length > 255) return err(400, 'BAD_REQUEST', 'Idempotency-Key too long');
+    if (idemKey && !L.validHeader(idemKey, 255)) return err(400, 'BAD_REQUEST', 'Idempotency-Key must be 1-255 printable ASCII characters');
     const bodyHash = L.sha256(body).toString('hex');
     const prior = idemKey ? this.store.getIdempotency(a.t.id, a.user, idemKey) : null;
     if (prior && (prior.tenant !== a.t.id || prior.owner !== a.user)) return err(500, 'INTERNAL', 'idempotency store returned a foreign record');
@@ -1075,6 +1107,7 @@ class Task {
       if (slot) ds.release();
     }
     this.abort.abort();
+    this.finishedAt = Date.now();
     setTimeout(() => { if (this.g.tasks.get(this.id) === this) this.g.tasks.delete(this.id); }, this.g.cfg.attachGrace + 600_000).unref();
   }
   attach(after) {
@@ -1135,7 +1168,8 @@ function envelope(type, { id, task_id, data } = {}) {
 }
 function json(res, status, body) {
   const b = JSON.stringify(body);
-  res.writeHead(status, { 'Content-Type': res.getHeader('Content-Type') || 'application/json', 'Content-Length': Buffer.byteLength(b) });
+  // §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+  res.writeHead(status, { 'Content-Type': res.getHeader('Content-Type') || 'application/json', 'Cache-Control': res.getHeader('Cache-Control') || 'no-store', 'Content-Length': Buffer.byteLength(b) });
   res.end(b);
 }
 function problemBody(status, code, detail) {
@@ -1301,7 +1335,7 @@ function cleanNames(names, models) {
   if (!names || typeof names !== 'object' || Array.isArray(names) || !Array.isArray(models)) return out;
   for (const m of models) {
     const n = typeof names[m] === 'string' ? names[m].trim() : '';
-    if (n) out[m] = [...n].slice(0, 128).join('');
+    if (n) out[m] = n; // length already bounded by the schema (1-128 code points)
   }
   return out;
 }

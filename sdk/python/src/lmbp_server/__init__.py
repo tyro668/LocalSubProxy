@@ -109,7 +109,7 @@ class _Pairing:
         iss = issuer or self._s.engine.cfg["issuer"]
         if not iss:
             raise ValueError("pairing.link needs an issuer (configure LMBPServer(issuer=...) or pass one)")
-        return f"lmbp://pair?v=1&gateway={quote(_L.origin(iss), safe='')}&tenant={quote(tenant, safe='')}"
+        return f"lmbp://pair?v={_L.PAIR_LINK_VERSION}&gateway={quote(_L.origin(iss), safe='')}&tenant={quote(tenant, safe='')}"
 
     def create(self, tenant: str, issuer: Optional[str] = None) -> PairingInfo:
         """Pair link plus its QR code as SVG (needs the ``segno`` package)."""
@@ -156,15 +156,21 @@ class LMBPServer:
 
     def __init__(self, tenants: list[TenantConfig | dict], issuer: str = "", store: Optional[Store] = None,
                  signing_seed: Optional[bytes] = None, max_concurrency: int = 16, chat_ui_dir: str = "",
-                 log: Optional[Callable[..., None]] = None, **tuning: Any):
+                 log: Optional[Callable[..., None]] = None, retention: float = 0, **tuning: Any):
+        """``retention``: seconds finished tasks and their Idempotency-Key records
+        are kept (default 7 days; negative disables purging). Spec §14.4 (errata E6)."""
         self.store: Store = store if store is not None else MemoryStore()
         self.engine = Gateway(issuer=issuer, seed=signing_seed, max_conc=max_concurrency, web_dir=chat_ui_dir,
-                              log=log, store=self.store, **tuning)
+                              log=log, store=self.store, retention=retention, **tuning)
         for t in tenants:
             t = t if isinstance(t, TenantConfig) else TenantConfig(**t)
             self.engine.register_tenant(t.id, t.api_key, t.profile)
         self.keys = _Keys(self.engine)
         self.pairing = _Pairing(self)
+
+    def close(self) -> None:
+        """Stops the retention loop (the store stays open; close it yourself)."""
+        self.engine.stop_retention()
 
     def asgi(self, app: Any = None) -> LMBPASGI:
         """ASGI app; with ``app``, unknown paths fall through to it."""
@@ -177,8 +183,8 @@ class LMBPServer:
     def _decide(self, tenant, end_user, user_code, deny, jkt):
         if tenant not in self.engine.tenants:
             raise PairingError("unknown tenant", "BAD_REQUEST")
-        if not end_user or len(end_user) > 128:
-            raise PairingError("end_user required (<= 128 chars)", "BAD_REQUEST")
+        if not _L.valid_header(end_user, 128):
+            raise PairingError("end_user must be 1-128 printable ASCII characters (it travels as X-End-User)", "BAD_REQUEST")
         d, e = self.engine.pair_decide(tenant, end_user, user_code, deny, jkt)
         if e:
             raise PairingError(e[2], {429: "RATE_LIMITED", 404: "NOT_FOUND", 403: "FORBIDDEN", 409: "FORBIDDEN"}.get(e[0], "BAD_REQUEST"))

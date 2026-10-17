@@ -9,6 +9,7 @@ import json
 import httpx
 
 from lmbp_server import LMBPServer, MemoryStore, TenantConfig
+from lmbp_server import protocol as L
 from simdevice import pair_and_connect
 
 KEY = "k" * 40
@@ -33,7 +34,7 @@ async def test_local_cancel_late_frames_acked(serve_app):
 
         def send(typ, data):
             st["sent"] += 1
-            return ws.send(json.dumps({"v": 1, "type": typ, "task_id": tid, "seq": st["sent"], "data": data}))
+            return ws.send(json.dumps({"v": L.VERSION, "type": typ, "task_id": tid, "seq": st["sent"], "data": data}))
 
         async def late():
             await asyncio.sleep(0.05)  # the device only notices a bit later

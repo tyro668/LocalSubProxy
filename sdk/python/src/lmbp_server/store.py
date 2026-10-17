@@ -13,11 +13,12 @@ import datetime
 import json
 import sqlite3
 import threading
+import time
 from typing import Any, Optional, Protocol, runtime_checkable
 
 DeviceAuth = dict  # code_hash, user_code, tenant, pub (bytes), name, status, expires (unix s), interval, last_poll, device_id, owner
 Device = dict      # id, tenant, owner, name, pub (bytes), status ("active"|"revoked"), created (datetime), e2ee_key
-TaskRecord = dict  # id, tenant, owner, device, model, state, events: list[TaskEvent]
+TaskRecord = dict  # id, tenant, owner, device, model, state, events: list[TaskEvent], finished (unix s, set by finish_task)
 TaskEvent = dict   # seq, type, data
 
 
@@ -65,6 +66,13 @@ class Store(Protocol):
     # non-terminal states only. Recovery relies on this: a stored terminal
     # event always agrees with the stored state.
     def finish_task(self, task_id: str, ev: TaskEvent, state: str) -> None: ...
+
+    # purge (optional, spec §14.4 retention, errata E6) deletes tasks that finished before
+    # ``cutoff`` (unix seconds) together with their events and Idempotency-Key
+    # records, and pairings that expired before it; returns the number of
+    # tasks removed. A key never outlives its task, so a replay after the purge
+    # runs again. Stores without it keep everything (the gateway logs that).
+    # def purge(self, cutoff: float) -> int: ...
 
     def close(self) -> None: ...
 
@@ -145,6 +153,18 @@ class MemoryStore:
         # One synchronous step: event and state change together.
         t["events"].append(ev)
         t["state"] = state
+        t["finished"] = time.time()
+
+    def purge(self, cutoff):
+        old = [i for i, t in self.tasks.items() if t.get("state") in TERMINAL_STATES and t.get("finished", float("inf")) < cutoff]
+        for i in old:
+            del self.tasks[i]
+        # Idempotency records go with their task: never a key without its task.
+        for k in [k for k, r in self.idem.items() if r["task_id"] not in self.tasks]:
+            del self.idem[k]
+        for h in [h for h, a in self.auths.items() if a["expires"] < cutoff]:
+            del self.auths[h]
+        return len(old)
 
     def close(self):
         pass
@@ -281,11 +301,29 @@ class SQLiteStore:
                 if self.db.execute("SELECT 1 FROM lmbp_events WHERE task_id = ? AND seq = ?", (task_id, ev["seq"])).fetchone():
                     raise StoreConflict(f"task {task_id}: seq {ev['seq']} already stored")
                 self.db.execute("INSERT INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)", (task_id, ev["seq"], _enc(ev)))
-                self.db.execute("UPDATE lmbp_tasks SET doc = ? WHERE id = ?", (_enc({**t, "events": [], "state": state}), task_id))
+                self.db.execute("UPDATE lmbp_tasks SET doc = ? WHERE id = ?", (_enc({**t, "events": [], "state": state, "finished": time.time()}), task_id))
                 self.db.execute("COMMIT")
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
+
+    def purge(self, cutoff):
+        """One transaction: finished tasks before cutoff with their events and idempotency records, and expired pairings."""
+        old = ("SELECT id FROM lmbp_tasks WHERE json_extract(doc, '$.state') IN ('SUCCEEDED','FAILED','CANCELLED')"
+               " AND json_extract(doc, '$.finished') < ?")
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                self.db.execute(f"DELETE FROM lmbp_events WHERE task_id IN ({old})", (cutoff,))
+                # Idempotency records go with their task: never a key without its task.
+                self.db.execute(f"DELETE FROM lmbp_idempotency WHERE json_extract(doc, '$.task_id') IN ({old})", (cutoff,))
+                n = self.db.execute(f"DELETE FROM lmbp_tasks WHERE id IN ({old})", (cutoff,)).rowcount
+                self.db.execute("DELETE FROM lmbp_device_auths WHERE json_extract(doc, '$.expires') < ?", (cutoff,))
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+        return n
 
     def close(self):
         with self._lock:

@@ -2,8 +2,19 @@
 // the reliable flow-controlled delivery state machines (LMBP spec §8, §15).
 import crypto from 'node:crypto';
 
-export const VERSION = 1;
+export const VERSION = 2;
 export const SUBPROTOCOL = 'lmbp';
+export const PROTOCOL_VERSIONS = ['2.0'];
+export const PAIR_LINK_VERSION = '2';
+// Conformance profiles (spec §13.1); metadata.profiles lists those this gateway meets.
+export const PROFILES = ['core', 'reliable', 'tools', 'multimodal', 'e2ee', 'openai', 'anthropic'];
+export const MIN_CONCURRENCY = 1;
+export const MAX_CONCURRENCY = 16;
+export const VERSION_REQUIRED = 'LMBP 2.0 required: WebSocket subprotocol lmbp and envelope v 2 (LMBP 1.x is not supported)';
+/** charLen counts Unicode code points, the unit of every string limit (spec §4.1). */
+export const charLen = (s) => [...s].length;
+/** validHeader: 1..max printable ASCII (0x20-0x7E), for X-End-User and Idempotency-Key (spec §4.1). */
+export const validHeader = (s, max) => typeof s === 'string' && s.length >= 1 && s.length <= max && /^[\x20-\x7E]+$/.test(s);
 export const CAPABILITIES = ['session.token', 'models.update', 'resume', 'flow', 'tools', 'multimodal', 'e2ee'];
 export const SCOPES = ['lmbp.chat', 'lmbp.tools', 'lmbp.vision', 'lmbp.audio'];
 export const TENANT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

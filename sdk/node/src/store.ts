@@ -48,6 +48,8 @@ export interface TaskRecord {
   events: TaskEvent[];
   /** The task was end-to-end encrypted: replays render its frames sealed. */
   e2ee?: boolean;
+  /** When the terminal state was stored (ms since epoch); set by finishTask, used by purge. */
+  finished?: number;
 }
 
 export interface Store {
@@ -91,6 +93,15 @@ export interface Store {
    * on this: a stored terminal event always agrees with the stored state.
    */
   finishTask(taskID: string, ev: TaskEvent, state: string): void;
+
+  /**
+   * Optional retention (spec §14.4, errata E6): delete tasks that finished before cutoff
+   * (ms since epoch) together with their events and Idempotency-Key records,
+   * and pairings that expired before cutoff. Returns the number of tasks
+   * removed. A key never outlives its task, so a replay after the purge runs
+   * again. Stores without it keep everything (the gateway logs a warning).
+   */
+  purge?(cutoff: number): number;
 
   close?(): void;
 }
@@ -154,6 +165,17 @@ export class MemoryStore implements Store {
     // Single synchronous step: event and state change together.
     t.events.push(ev);
     t.state = state;
+    t.finished = Date.now();
+  }
+  purge(cutoff: number) {
+    let n = 0;
+    for (const [id, t] of this.tasks) {
+      if (TERMINAL_STATES.has(t.state) && (t.finished ?? Infinity) < cutoff) { this.tasks.delete(id); n++; }
+    }
+    // Idempotency records go with their task: never a key without its task.
+    for (const [k, i] of this.idem) if (!this.tasks.has(i.taskID)) this.idem.delete(k);
+    for (const [h, a] of this.auths) if (a.expires < cutoff) this.auths.delete(h);
+    return n;
   }
 }
 
@@ -266,8 +288,25 @@ export class SqliteStore implements Store {
       if (TERMINAL_STATES.has(t.state)) throw new StoreConflict(`task ${id} already ${t.state}`);
       if (this.db.prepare('SELECT 1 FROM lmbp_events WHERE task_id = ? AND seq = ?').get(id, ev.seq)) throw new StoreConflict(`task ${id}: seq ${ev.seq} already stored`);
       this.db.prepare('INSERT INTO lmbp_events (task_id, seq, doc) VALUES (?, ?, ?)').run(id, ev.seq, enc(ev));
-      this.db.prepare('UPDATE lmbp_tasks SET doc = ? WHERE id = ?').run(enc({ ...t, events: [], state }), id);
+      this.db.prepare('UPDATE lmbp_tasks SET doc = ? WHERE id = ?').run(enc({ ...t, events: [], state, finished: Date.now() }), id);
       this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw e;
+    }
+  }
+  /** One transaction: finished tasks before cutoff with their events and idempotency records, and expired pairings. */
+  purge(cutoff: number) {
+    const old = "SELECT id FROM lmbp_tasks WHERE json_extract(doc, '$.state') IN ('SUCCEEDED','FAILED','CANCELLED') AND json_extract(doc, '$.finished') < ?";
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`DELETE FROM lmbp_events WHERE task_id IN (${old})`).run(cutoff);
+      // Idempotency records go with their task: never a key without its task.
+      this.db.prepare(`DELETE FROM lmbp_idempotency WHERE json_extract(doc, '$.taskID') IN (${old})`).run(cutoff);
+      const r: any = this.db.prepare(`DELETE FROM lmbp_tasks WHERE id IN (${old})`).run(cutoff);
+      this.db.prepare("DELETE FROM lmbp_device_auths WHERE json_extract(doc, '$.expires') < ?").run(cutoff);
+      this.db.exec('COMMIT');
+      return r?.changes ?? 0;
     } catch (e) {
       try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
       throw e;

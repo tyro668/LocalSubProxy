@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://localsubproxy.dev/spec/lmbp/models.update.json",
+  "title": "models.update",
+  "description": "device→gateway",
+  "type": "object",
+  "required": [
+    "models"
+  ],
+  "properties": {
+    "models": {
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "defs.json#/$defs/modelId"
+      }
+    },
+    "max_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "model_capabilities": {
+      "$ref": "defs.json#/$defs/modelCapabilities"
+    },
+    "model_names": {
+      "$ref": "defs.json#/$defs/modelNames"
+    },
+    "e2ee_key": {
+      "$ref": "defs.json#/$defs/compactJws"
+    }
+  }
+}

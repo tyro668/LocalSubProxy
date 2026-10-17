@@ -18,6 +18,7 @@ async function main() {
     'signing-key-env': { type: 'string', default: 'LMBP_SIGNING_SEED' },
     'max-concurrency': { type: 'string', default: '16' },
     db: { type: 'string', default: process.env.LMBP_DB || '' },
+    'retention-seconds': { type: 'string', default: process.env.LMBP_RETENTION_SECONDS || '' },
     'web-dir': { type: 'string', default: process.env.LMBP_WEB_DIR || new URL('../web', import.meta.url).pathname },
     'no-chat-ui': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
@@ -27,6 +28,7 @@ async function main() {
   --tenant id:ENV       register tenant <id> whose API key (>= 32 chars) is read from env var ENV
   --tenant-profiles F   JSON {"<tenant>": {"api_key_env": "...", "display_name": "...", "requested_scopes": [...], ...}}
   --db FILE             persist state in SQLite (better-sqlite3); default in memory
+  --retention-seconds N keep finished tasks and idempotency records N seconds (default 7 days; negative disables)
   --web-dir DIR         directory with the shared chat page (default ../web); served at / and /chat
   --no-chat-ui          do not serve the chat page
   LMBP_SIGNING_SEED     hex Ed25519 seed (32 bytes); ephemeral key if unset`);
@@ -49,7 +51,8 @@ async function main() {
   }
   if (!tenants.length) console.error('warning: no tenants registered (use --tenant id:ENV_VAR)');
   const lsp = new LMBPServer({ tenants, issuer: o.issuer, signingSeed: seedHex ? Buffer.from(seedHex, 'hex') : undefined,
-    maxConcurrency: Number(o['max-concurrency']), chatUIDir: o['no-chat-ui'] ? '' : o['web-dir'], store: o.db ? new SqliteStore(o.db) : undefined });
+    maxConcurrency: Number(o['max-concurrency']), chatUIDir: o['no-chat-ui'] ? '' : o['web-dir'], store: o.db ? new SqliteStore(o.db) : undefined,
+    retention: o['retention-seconds'] ? Number(o['retention-seconds']) * 1000 : undefined });
   const i = o.listen.lastIndexOf(':');
   const addr = await lsp.listen(Number(o.listen.slice(i + 1)), o.listen.slice(0, i) || '0.0.0.0');
   console.error(`lmbp node mock gateway listening on ${addr.address}:${addr.port} issuer=${lsp.engine.cfg.issuer || '(request origin, dev mode)'} kid=${lsp.keys.kid()}`);

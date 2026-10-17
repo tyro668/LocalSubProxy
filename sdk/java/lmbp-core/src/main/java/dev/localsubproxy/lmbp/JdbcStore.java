@@ -16,14 +16,15 @@ import javax.sql.DataSource;
 
 /**
  * {@link Store} over JDBC. Tested with SQLite (xerial sqlite-jdbc); the SQL is plain
- * {@code CREATE TABLE IF NOT EXISTS} / {@code INSERT} / {@code UPDATE} / {@code SELECT}
+ * {@code CREATE TABLE IF NOT EXISTS} / {@code ALTER TABLE ADD COLUMN} / {@code INSERT} / {@code UPDATE} / {@code DELETE} / {@code SELECT}
  * with a configurable large-text column type so other databases can work, but only SQLite
  * is verified in this repository.
  *
  * <p><b>Scale limits (stated honestly):</b> single gateway instance per database (live
  * sessions, fan-out and JTI replay protection are in memory); every call runs in its own
- * short transaction on a connection from the {@link DataSource}; task events are kept
- * forever (no pruning yet), so the event table grows with every streamed token batch.
+ * short transaction on a connection from the {@link DataSource}; finished tasks with their
+ * events and idempotency records are deleted after the gateway's retention period
+ * ({@link #purge}, default 7 days).
  * Byte values are stored base64url-encoded in text columns.
  */
 public final class JdbcStore implements Store {
@@ -43,6 +44,11 @@ public final class JdbcStore implements Store {
     tx(c -> { try (Statement s = c.createStatement()) { for (String d : ddl) s.executeUpdate(d); } return null; });
     // added later: whether a task was end-to-end encrypted (replays stay sealed)
     try { tx(c -> { try (Statement s = c.createStatement()) { s.executeUpdate("ALTER TABLE lmbp_tasks ADD COLUMN e2ee INTEGER DEFAULT 0 NOT NULL"); } return null; }); }
+    catch (RuntimeException e) { /* column exists */ }
+    // added later: retention (spec §14.4, errata E6) needs when a task finished and when a pairing expires (ms since epoch; 0 = unknown, kept)
+    try { tx(c -> { try (Statement s = c.createStatement()) { s.executeUpdate("ALTER TABLE lmbp_tasks ADD COLUMN finished BIGINT DEFAULT 0 NOT NULL"); } return null; }); }
+    catch (RuntimeException e) { /* column exists */ }
+    try { tx(c -> { try (Statement s = c.createStatement()) { s.executeUpdate("ALTER TABLE lmbp_device_auths ADD COLUMN expires BIGINT DEFAULT 0 NOT NULL"); } return null; }); }
     catch (RuntimeException e) { /* column exists */ }
   }
 
@@ -120,8 +126,8 @@ public final class JdbcStore implements Store {
 
   @Override public void putDeviceAuth(DeviceAuth a) {
     String doc = authDoc(a);
-    tx(c -> { upsert(c, "UPDATE lmbp_device_auths SET user_code = ?, tenant = ?, doc = ? WHERE code_hash = ?", new Object[] {a.userCode, a.tenant, doc, a.codeHash},
-        "INSERT INTO lmbp_device_auths (code_hash, user_code, tenant, doc) VALUES (?, ?, ?, ?)", new Object[] {a.codeHash, a.userCode, a.tenant, doc}); return null; });
+    tx(c -> { upsert(c, "UPDATE lmbp_device_auths SET user_code = ?, tenant = ?, doc = ?, expires = ? WHERE code_hash = ?", new Object[] {a.userCode, a.tenant, doc, a.expires, a.codeHash},
+        "INSERT INTO lmbp_device_auths (code_hash, user_code, tenant, doc, expires) VALUES (?, ?, ?, ?, ?)", new Object[] {a.codeHash, a.userCode, a.tenant, doc, a.expires}); return null; });
   }
 
   @Override public DeviceAuth getDeviceAuth(String h) { return authOf(tx(c -> one(c, "SELECT doc FROM lmbp_device_auths WHERE code_hash = ?", h))); }
@@ -212,11 +218,12 @@ public final class JdbcStore implements Store {
   @Override public TaskRecord getTask(String id) {
     return tx(c -> {
       TaskRecord t;
-      try (PreparedStatement p = ps(c, "SELECT tenant, owner, device, model, state, e2ee FROM lmbp_tasks WHERE id = ?", id); ResultSet r = p.executeQuery()) {
+      try (PreparedStatement p = ps(c, "SELECT tenant, owner, device, model, state, e2ee, finished FROM lmbp_tasks WHERE id = ?", id); ResultSet r = p.executeQuery()) {
         if (!r.next()) return null;
         t = new TaskRecord();
         t.id = id; t.tenant = r.getString(1); t.owner = r.getString(2); t.device = r.getString(3); t.model = r.getString(4); t.state = r.getString(5);
         t.e2ee = r.getInt(6) != 0;
+        t.finished = r.getLong(7);
       }
       try (PreparedStatement p = ps(c, "SELECT seq, type, data FROM lmbp_task_events WHERE task_id = ? ORDER BY seq", id); ResultSet r = p.executeQuery()) {
         while (r.next()) t.events.add(new Event(r.getLong(1), r.getString(2), Json.asObj(Json.parse(r.getString(3)))));
@@ -241,8 +248,21 @@ public final class JdbcStore implements Store {
       if (cur == null) throw new NotFound("task " + id + " not found");
       if (TERMINAL.contains(cur)) throw new Conflict("task " + id + " already " + cur);
       insertEvent(c, id, ev);
-      exec(c, "UPDATE lmbp_tasks SET state = ? WHERE id = ?", state, id);
+      exec(c, "UPDATE lmbp_tasks SET state = ?, finished = ? WHERE id = ?", state, System.currentTimeMillis(), id);
       return null;
+    });
+  }
+
+  /** One transaction: finished tasks before the cutoff with their events and idempotency records, and expired pairings. */
+  @Override public int purge(long cutoff) {
+    String old = "SELECT id FROM lmbp_tasks WHERE state IN ('SUCCEEDED','FAILED','CANCELLED') AND finished > 0 AND finished < ?";
+    return tx(c -> {
+      exec(c, "DELETE FROM lmbp_task_events WHERE task_id IN (" + old + ")", cutoff);
+      // Idempotency records go with their task: never a key without its task.
+      exec(c, "DELETE FROM lmbp_idempotency WHERE task_id IN (" + old + ")", cutoff);
+      int n = exec(c, "DELETE FROM lmbp_tasks WHERE id IN (" + old + ")", cutoff);
+      exec(c, "DELETE FROM lmbp_device_auths WHERE expires > 0 AND expires < ?", cutoff);
+      return n;
     });
   }
 

@@ -55,6 +55,8 @@ pub struct TaskRecord {
     pub model: String,
     pub state: String,
     pub events: Vec<Event>,
+    /// ms since epoch when the task ended (retention); 0 while running.
+    pub finished: i64,
 }
 
 pub enum StoreErr {
@@ -148,6 +150,17 @@ impl Store {
         }
         t.events.push(ev);
         t.state = state.into();
+        t.finished = crate::lmbp::now_ms();
         Ok(())
+    }
+    /// Retention (spec §14.4, errata E6): finished tasks older than cutoff (ms) go
+    /// with their idempotency records; expired pairings too. Returns the tasks removed.
+    pub fn purge(&mut self, cutoff: i64) -> usize {
+        let before = self.tasks.len();
+        self.tasks.retain(|_, t| !(TERMINAL.contains(&t.state.as_str()) && t.finished > 0 && t.finished < cutoff));
+        let tasks = &self.tasks;
+        self.idem.retain(|_, r| tasks.contains_key(&r.task_id));
+        self.auths.retain(|a| !(a.expires > 0 && a.expires < cutoff));
+        before - self.tasks.len()
     }
 }

@@ -70,7 +70,7 @@ class StarterTest {
   }
 
   @Test void clientFacade() {
-    assertEquals("lmbp://pair?v=1&gateway=http%3A%2F%2F127.0.0.1&tenant=acme", lmbp.pairLink("alice"));
+    assertEquals("lmbp://pair?v=2&gateway=http%3A%2F%2F127.0.0.1&tenant=acme", lmbp.pairLink("alice"));
     assertEquals(List.of(), lmbp.models("alice"));
     LmbpApiException e = assertThrows(LmbpApiException.class, () -> lmbp.chat("alice", Map.of("model", "dev_x/m", "messages", List.of(Map.of("role", "user", "content", "hi")))));
     assertEquals("MODEL_NOT_FOUND", e.code());

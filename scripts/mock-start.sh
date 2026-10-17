@@ -136,7 +136,7 @@ JSON
 fi
 
 enc=$(printf '%s' "$gw" | sed -e 's/%/%25/g' -e 's/:/%3A/g' -e 's#/#%2F#g')
-link="lmbp://pair?v=1&gateway=$enc&tenant=acme"
+link="lmbp://pair?v=2&gateway=$enc&tenant=acme"
 cdir="$dir/connector"
 say ""
 say "mock stack is up ($impl gateway)"
@@ -157,7 +157,7 @@ if [ "$gateways" = 2 ]; then
   say "second SaaS (multi-SaaS testing; add it as another connection in the desktop app)"
   say "  chat page   $gw2/chat"
   say "  login       tenant: beta   user: alice   key: $LSP_TENANT_KEY_BETA"
-  say "  pair link   lmbp://pair?v=1&gateway=$enc2&tenant=beta"
+  say "  pair link   lmbp://pair?v=2&gateway=$enc2&tenant=beta"
 fi
 say ""
 say "logs: $dir/logs/   stop: scripts/mock-stop.sh"

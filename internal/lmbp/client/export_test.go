@@ -20,3 +20,11 @@ func (c *Client) OutboxWaiting() int {
 	c.mu.Unlock()
 	return o.Waiting()
 }
+
+// Pending reports the tasks the device still holds and their unacked frames.
+func (c *Client) Pending() (tasks, frames int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f, _ := c.out.Usage()
+	return len(c.tasks), f
+}

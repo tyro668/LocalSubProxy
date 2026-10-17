@@ -43,7 +43,7 @@ type vecIdentity struct {
 
 func genIdentity(gk ed25519.PrivateKey, kid string, at Claims) *vecIdentity {
 	m := GatewayMetadata{Issuer: vecIssuer, JWKSURI: vecIssuer + "/.well-known/jwks.json", DeviceAuthorizationEndpoint: vecIssuer + "/lmbp/v1/device/authorize",
-		TokenEndpoint: vecIssuer + "/lmbp/v1/token", ConnectEndpoint: "wss://gw.example.com/lmbp/v1/connect", ProtocolVersions: []string{"1.0"}, Capabilities: Capabilities, ScopesSupported: Scopes,
+		TokenEndpoint: vecIssuer + "/lmbp/v1/token", ConnectEndpoint: "wss://gw.example.com/lmbp/v1/connect", ProtocolVersions: ProtocolVersions, Profiles: Profiles, Capabilities: Capabilities, ScopesSupported: Scopes,
 		Tenant: "acme", Audience: TokenAudience(vecIssuer, "acme"), SaaS: &SaaSInfo{Name: "Acme CRM", LogoURI: "https://acme.example/logo.png", HomepageURI: "https://acme.example",
 			PolicyURI: "https://acme.example/privacy", PairingURI: "https://acme.example/lsp/link"}, RequestedModels: []string{"lm/qwen3-8b"}, RequestedScopes: []string{ScopeChat, ScopeTools},
 		Iat: vecIat, Exp: vecIat + 3600}
@@ -77,15 +77,16 @@ func genIdentity(gk ed25519.PrivateKey, kid string, at Claims) *vecIdentity {
 			{"wrong_typ", mkJWS("", "", "", gk, TypAccessToken, kid, m, nil).Compact, vecIssuer, "acme", "typ must be lmbp-metadata+jwt"},
 		},
 		PairLinks: []vecLink{
-			{Link: "lmbp://pair?v=1&gateway=https%3A%2F%2Fgw.example.com&tenant=acme", Gateway: vecIssuer, Tenant: "acme"},
-			{Link: "lmbp://pair?v=1&gateway=https://GW.example.com:443&tenant=acme&remote=https://acme.example", Gateway: vecIssuer, Tenant: "acme", Remote: "https://acme.example"},
+			{Link: "lmbp://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme", Gateway: vecIssuer, Tenant: "acme"},
+			{Link: "lmbp://pair?v=2&gateway=https://GW.example.com:443&tenant=acme&remote=https://acme.example", Gateway: vecIssuer, Tenant: "acme", Remote: "https://acme.example"},
 		},
 		BadPairLinks: []vecLink{
-			{Link: "lmbp://pair?gateway=https://gw.example.com&tenant=acme", Why: "missing v=1"},
-			{Link: "lmbp://pair?v=1&gateway=http://gw.example.com&tenant=acme", Why: "gateway must be https (non-loopback)"},
-			{Link: "lmbp://pair?v=1&gateway=https://gw.example.com/x&tenant=acme", Why: "gateway must be an origin"},
-			{Link: "lmbp://pair?v=1&gateway=https://gw.example.com&tenant=a/b", Why: "tenant pattern"},
-			{Link: "lmbp://pair?v=1&gateway=https://gw.example.com&tenant=acme&tenant=beta", Why: "duplicate parameter"},
+			{Link: "lmbp://pair?gateway=https://gw.example.com&tenant=acme", Why: "missing v=2"},
+			{Link: "lmbp://pair?v=2&gateway=http://gw.example.com&tenant=acme", Why: "gateway must be https (non-loopback)"},
+			{Link: "lmbp://pair?v=2&gateway=https://gw.example.com/x&tenant=acme", Why: "gateway must be an origin"},
+			{Link: "lmbp://pair?v=2&gateway=https://gw.example.com&tenant=a/b", Why: "tenant pattern"},
+			{Link: "lmbp://pair?v=2&gateway=https://gw.example.com&tenant=acme&tenant=beta", Why: "duplicate parameter"},
+			{Link: "lmbp://pair?v=1&gateway=https://gw.example.com&tenant=acme", Why: "v=1 is an LMBP 1.x link (2.0 requires v=2)"},
 			{Link: "https://pair?v=1&gateway=https://gw.example.com&tenant=acme", Why: "scheme must be lmbp"},
 		},
 		ForeignToken: mkJWS("", "", "", gk, TypAccessToken, kid, foreign, nil).Compact,

@@ -79,6 +79,8 @@ pub struct Config {
     pub queue_timeout: u64,
     pub flow: Flow,
     pub web_dir: String,
+    /// Retention of finished tasks and their idempotency records, ms (default 7 days; negative disables).
+    pub retention: i64,
 }
 
 impl Default for Config {
@@ -96,6 +98,7 @@ impl Default for Config {
             queue_timeout: 15_000,
             flow: Flow { task_window: 1 << 20, conn_window: 4 << 20 },
             web_dir: String::new(),
+            retention: 7 * 24 * 3_600_000,
         }
     }
 }
@@ -130,6 +133,9 @@ pub struct DState {
     pub issuer: String,
     pub resume_token: String,
     pub tasks: Vec<(String, u64)>,
+    /// Tasks ended here (cancel, timeout, ...) whose device may still send frames:
+    /// those late frames are ACKed so the device gets its flow credit back (spec §15.5).
+    pub reclaimed: VecDeque<(String, i64)>,
     pub slots: i64,
     slot_wait: VecDeque<u64>,
     slot_ok: HashSet<u64>,
@@ -254,6 +260,18 @@ pub fn init(mut cfg: Config, seed: Option<[u8; 32]>) -> lmbp::R<String> {
         return Err("gateway already initialized".into());
     }
     std::thread::Builder::new().name("lmbp-timer".into()).spawn(timer_loop).unwrap();
+    let mut g = lock();
+    let ret = g.cfg.retention;
+    if ret >= 0 {
+        // every half the retention period, between 1 s and 1 h (as in every SDK)
+        g.every((ret / 2).clamp(1000, 3_600_000) as u64, move |g| {
+            let n = g.store.purge(lmbp::now_ms() - ret);
+            if n > 0 {
+                log(&format!("retention purge: removed {} tasks", n));
+            }
+        });
+    }
+    drop(g);
     Ok(kid)
 }
 
@@ -452,7 +470,7 @@ fn route(g: &mut Guard, req: &Req, res: &mut Res) {
         "/.well-known/lmbp" => return metadata(g, req, res),
         "/lmbp/v1/device/authorize" => return authorize(g, req, res),
         "/lmbp/v1/token" => return token(g, req, res),
-        "/lmbp/v1/connect" => return problem(g, res, 400, "VERSION_UNSUPPORTED", "WebSocket subprotocol lmbp required"),
+        "/lmbp/v1/connect" => return problem(g, res, 400, "VERSION_UNSUPPORTED", lmbp::VERSION_REQUIRED),
         "/lmbp/v1/tenant/devices/approvals" => return approve(g, req, res, mode),
         "/lmbp/v1/tenant/devices" => return list_devices(g, req, res, mode),
         "/v1/models" => return models(g, req, res, mode),
@@ -514,8 +532,8 @@ fn tenant_auth(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode) -> Option<Au
         return None;
     };
     let user = req.headers.get("x-end-user").cloned().unwrap_or_default();
-    if user.is_empty() || user.encode_utf16().count() > 128 {
-        send_err(g, res, mode, 400, "BAD_REQUEST", "X-End-User header required");
+    if !lmbp::valid_header(&user, 128) {
+        send_err(g, res, mode, 400, "BAD_REQUEST", "X-End-User must be 1-128 printable ASCII characters");
         return None;
     }
     Some(Auth { tenant, user })
@@ -528,7 +546,7 @@ fn build_metadata(g: &Guard, iss: &str, t: Option<&Tenant>) -> Value {
         "device_authorization_endpoint" => format!("{}/lmbp/v1/device/authorize", iss),
         "token_endpoint" => format!("{}/lmbp/v1/token", iss), "connect_endpoint" => format!("{}/lmbp/v1/connect", ws),
         "chat_completions_endpoint" => format!("{}/v1/chat/completions", iss),
-        "protocol_versions" => vec!["1.0"], "capabilities" => lmbp::CAPABILITIES.to_vec(), "scopes_supported" => lmbp::SCOPES.to_vec()};
+        "protocol_versions" => lmbp::PROTOCOL_VERSIONS.to_vec(), "profiles" => lmbp::PROFILES.to_vec(), "capabilities" => lmbp::CAPABILITIES.to_vec(), "scopes_supported" => lmbp::SCOPES.to_vec()};
     let Some(t) = t else { return m };
     let p = &t.profile;
     let name = match get(p, "display_name").as_str() {
@@ -593,7 +611,7 @@ fn authorize(g: &mut Guard, req: &Req, res: &mut Res) {
     }
     let ps = match form_params(req, 4096) {
         Some(ps) if ps.get("tenant").map(|t| !t.is_empty()).unwrap_or(false)
-            && ps.get("device_name").map(|n| n.encode_utf16().count() <= 100).unwrap_or(true) => ps,
+            && ps.get("device_name").map(|n| lmbp::char_len(n) <= 100).unwrap_or(true) => ps,
         _ => return oauth_error(g, res, 400, "invalid_request"),
     };
     let pub_ = match lmbp::unb64(ps.get("public_key").map(|s| s.as_str()).unwrap_or("")) {
@@ -929,7 +947,7 @@ pub fn upgrade(req: &Req, mut inp: std::io::BufReader<TcpStream>, mut out: TcpSt
     if req.path != "/lmbp/v1/connect" {
         reject = Some((404, "BAD_REQUEST", "not found".into()));
     } else if !protos.contains(&lmbp::SUBPROTOCOL) {
-        reject = Some((400, "VERSION_UNSUPPORTED", "WebSocket subprotocol lmbp required".into()));
+        reject = Some((400, "VERSION_UNSUPPORTED", lmbp::VERSION_REQUIRED.into()));
     } else if !req.header("origin").is_empty() {
         reject = Some((403, "FORBIDDEN", "browser origins are not allowed".into()));
     } else {
@@ -1023,7 +1041,11 @@ fn on_hello(g: &mut Guard, wsid: u64, mut dev: Device, tok: &str, claims: Obj, i
         io.close(1000, "");
     };
     if !is_version(get(&env, "v")) {
-        return early("VERSION_UNSUPPORTED", "unsupported protocol version");
+        return early("VERSION_UNSUPPORTED", lmbp::VERSION_REQUIRED);
+    }
+    // §7.4 order: v, schema (BAD_REQUEST), device/proof (UNAUTHENTICATED), extension semantics.
+    if let Some(bad) = params::announce_problem(&hello, true) {
+        return early("BAD_REQUEST", &bad);
     }
     let proof_ok = get(&hello, "device_id").as_str() == Some(dev.id.as_str())
         && match lmbp::verify_proof(&dev.pub_, get(&hello, "proof"), &dev.id, lmbp::PROOF_HELLO, tok, lmbp::now()) {
@@ -1056,7 +1078,7 @@ fn on_hello(g: &mut Guard, wsid: u64, mut dev: Device, tok: &str, claims: Obj, i
     } else {
         caps.retain(|c| c != "e2ee");
     }
-    let conc = to_int32(get(&hello, "max_concurrency")).max(1).min(g.cfg.max_conc);
+    let conc = get(&hello, "max_concurrency").as_i64().unwrap_or(1).min(g.cfg.max_conc); // validated 1..16; may lower, never raise
     attach_session(g, wsid, dev, claims, iss, env_id, &hello, caps, conc);
 }
 
@@ -1093,6 +1115,7 @@ fn attach_session(g: &mut Guard, wsid: u64, dev: Device, claims: Obj, iss: &str,
             issuer: String::new(),
             resume_token: String::new(),
             tasks: vec![],
+            reclaimed: VecDeque::new(),
             slots: 0,
             slot_wait: VecDeque::new(),
             slot_ok: HashSet::new(),
@@ -1274,17 +1297,17 @@ fn on_session_message(g: &mut Guard, wsid: u64, dsh: u64, dev_id: &str, raw: &st
         }
         "models.update" => {
             let mu = get(&inp, "data");
-            if let Some(ml) = get(mu, "models").as_array().filter(|m| m.len() <= 500 && mu.is_object()) {
+            if let Some(bad) = params::announce_problem(mu, false) {
+                send_ds_err(g, dsh, id_of(&inp).as_deref(), "BAD_REQUEST", &bad); // rejected whole: nothing applied
+            } else if let Some(ml) = get(mu, "models").as_array() {
                 let max_c = g.cfg.max_conc;
                 let ds = g.ds(dsh);
                 ds.models = ml.clone();
                 ds.model_caps = get(mu, "model_capabilities").as_object().cloned().unwrap_or_default();
                 ds.model_names = clean_names(get(mu, "model_names"), &ml);
-                if let Some(mx) = get(mu, "max_concurrency").as_f64() {
-                    if mx >= 1.0 {
-                        ds.max_conc = (mx.min(max_c as f64)) as i64;
-                        wake_slots(g, dsh);
-                    }
+                if let Some(mx) = get(mu, "max_concurrency").as_i64() {
+                    ds.max_conc = mx.min(max_c);
+                    wake_slots(g, dsh);
                 }
                 let e2ee_cap = g.dstates[&dsh].has_cap("e2ee");
                 if truthy(get(mu, "e2ee_key")) && e2ee_cap {
@@ -1308,11 +1331,26 @@ fn on_session_message(g: &mut Guard, wsid: u64, dsh: u64, dev_id: &str, raw: &st
 fn on_device_data(g: &mut Guard, dsh: u64, inp: &Value, size: i64) -> bool {
     let tid = json::js_string(get(inp, "task_id"));
     let tk = g.dstates[&dsh].tasks.iter().find(|t| t.0 == tid).map(|t| t.1);
+    let seq = get(inp, "seq").as_f64().map(|f| f as i64).unwrap_or(0);
     let Some(tk) = tk else {
+        let d = g.ds(dsh);
+        if let Some(i) = d.reclaimed.iter().position(|r| r.0 == tid) {
+            let acked = d.reclaimed[i].1;
+            if seq > acked {
+                d.reclaimed[i].1 = seq;
+            }
+            let ty = json::js_string(get(inp, "type"));
+            if ty == "task.done" || ty == "task.error" {
+                d.reclaimed.remove(i);
+            }
+            if seq > acked {
+                control(g, dsh, &envelope("task.ack", None, Some(&tid), Some(obj! {"seq" => seq})));
+            }
+            return true;
+        }
         control(g, dsh, &envelope("task.cancel", None, Some(&tid), Some(obj! {"reason" => "unknown_task"})));
         return true;
     };
-    let seq = get(inp, "seq").as_f64().map(|f| f as i64).unwrap_or(0);
     match g.ds(dsh).inb.as_mut().unwrap().accept(&tid, seq, size) {
         lmbp::DUPLICATE => {
             task_maybe_ack(g, tk);
@@ -1495,7 +1533,7 @@ fn resolve(g: &Guard, tenant: &str, user: &str, model: &str) -> Result<(u64, Str
             bare = false;
         }
     }
-    let mut known = false;
+    let (mut known, mut up) = (false, false);
     for d in &list {
         if d.status != "active" || (!bare && d.id != dev_id) {
             continue;
@@ -1505,10 +1543,12 @@ fn resolve(g: &Guard, tenant: &str, user: &str, model: &str) -> Result<(u64, Str
             if g.dstates[&h].models.iter().any(|m| m.as_str() == Some(want.as_str())) {
                 return Ok((h, want));
             }
+            up = true;
         }
     }
+    // §6.6: a named device that is online but lacks the model is 404; only an offline one is 503.
     if known {
-        return Err(("DEVICE_OFFLINE", 503));
+        return Err(if up { ("MODEL_NOT_FOUND", 404) } else { ("DEVICE_OFFLINE", 503) });
     }
     let any_online = list.iter().any(|d| g.online(&d.id).is_some());
     if !list.is_empty() && bare && !any_online {
@@ -1563,8 +1603,8 @@ fn chat(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode, pre_body: Option<Ve
         Err(e) => return json_res(g, res, 400, &params::param_error_body(&e, anthropic)),
     };
     let idem_key = req.header("idempotency-key").to_string();
-    if idem_key.encode_utf16().count() > 255 {
-        return send_err(g, res, mode, 400, "BAD_REQUEST", "Idempotency-Key too long");
+    if !idem_key.is_empty() && !lmbp::valid_header(&idem_key, 255) {
+        return send_err(g, res, mode, 400, "BAD_REQUEST", "Idempotency-Key must be 1-255 printable ASCII characters");
     }
     let body_hash = lmbp::hex(&lmbp::sha256(&body));
     let (tenant, user) = (a.tenant.clone(), a.user.clone());
@@ -1713,7 +1753,7 @@ fn chat(g: &mut Guard, req: &Req, res: &mut Res, mode: Mode, pre_body: Option<Ve
             return json_res(g, res, 400, &params::param_error_body(&e, anthropic));
         }
     }
-    let rec = TaskRecord { id: task_id.clone(), tenant: tenant.clone(), owner: user.clone(), device: dev_id, model: model.clone(), state: "QUEUED".into(), events: vec![] };
+    let rec = TaskRecord { id: task_id.clone(), tenant: tenant.clone(), owner: user.clone(), device: dev_id, model: model.clone(), state: "QUEUED".into(), events: vec![], finished: 0 };
     let ik = if idem_key.is_empty() { None } else { Some(idem_key.as_str()) };
     let irec = ik.map(|_| Idempotency { tenant: tenant.clone(), owner: user.clone(), task_id: task_id.clone(), body_hash: body_hash.clone() });
     if g.store.create_task(rec, ik, irec).is_err() {
@@ -2051,6 +2091,10 @@ fn chunk(t: &TInfo, delta: Value, finish: Value, usage: &Value, extra: Option<Va
 pub fn json_res(g: &mut Guard, res: &mut Res, status: u16, body: &Value) {
     let b = json::stringify(body);
     let ct = res.get_header("Content-Type").unwrap_or("application/json").to_string();
+    // §6.1: every JSON response is no-store unless the route set its own policy (JWKS/metadata).
+    if res.get_header("Cache-Control").is_none() {
+        res.set_header("Cache-Control", "no-store");
+    }
     res.send(g, status, &ct, b.as_bytes());
 }
 
@@ -2438,6 +2482,18 @@ fn task_finish(g: &mut Guard, tk: u64, _state: &str, from_device: bool) {
     if let Some(dsh) = ds {
         if from_device {
             task_maybe_ack(g, tk);
+        } else {
+            let late = task_recv_seq(g, tk);
+            if late > g.tobj[&tk].acked {
+                g.tobj.get_mut(&tk).unwrap().acked = late;
+                control(g, dsh, &envelope("task.ack", None, Some(&id), Some(obj! {"seq" => late})));
+            }
+            let d = g.ds(dsh);
+            d.reclaimed.retain(|r| r.0 != id);
+            d.reclaimed.push_back((id.clone(), late));
+            while d.reclaimed.len() > 1024 {
+                d.reclaimed.pop_front();
+            }
         }
         let d = g.ds(dsh);
         d.tasks.retain(|x| x.1 != tk);
@@ -2562,7 +2618,7 @@ fn clean_names(names: &Value, models: &[Value]) -> Obj {
         if let Some(n) = m.get(k).and_then(|v| v.as_str()) {
             let t = n.trim();
             if !t.is_empty() {
-                out.insert(k.to_string(), Value::String(t.chars().take(128).collect()));
+                out.insert(k.to_string(), Value::String(t.to_string())); // length bounded by the schema (1-128 code points)
             }
         }
     }

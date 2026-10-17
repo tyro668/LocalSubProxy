@@ -42,9 +42,7 @@ def verify(kind, compact, key, exp):
         if c["cnf"]["jkt"] != exp["cnf.jkt"]:
             raise lmbp.LmbpError("jkt")
     elif kind == "client_assertion":
-        c = json.loads(lmbp.verify_jws(key, compact, lmbp.TYP_ASSERTION))
-        if c["aud"] != exp["aud"]:
-            raise lmbp.LmbpError("aud")
+        lmbp.verify_client_assertion(key, compact, exp["aud"], NOW)
     elif kind == "proof":
         lmbp.verify_proof(key, compact, exp["iss"], exp["aud"], exp["credential"], NOW)
     elif kind == "task_run":
@@ -83,7 +81,7 @@ except Exception as e:  # noqa: BLE001
 
 # sign_task_run → verify_task_run round trip, including non-ASCII and </script>.
 tr = next(j for j in V["jws"] if j["name"] == "task_run")
-env = lmbp.sign_task_run(priv("gateway"), "k", tr["payload"])
+env = lmbp.sign_task_run(priv("gateway"), lmbp.thumbprint(pub("gateway")), tr["payload"])
 check("sign_task_run round trip", lmbp.verify_task_run(pub("gateway"), env) == tr["payload"])
 check("sse_chunk shape", lmbp.sse_chunk("t", "m", 1, "hi").startswith(b'data: {"id":"chatcmpl-t"'))
 
@@ -154,6 +152,42 @@ for n in E["negative"]:
         check(f"e2ee negative {n['name']}: rejected", False, "accepted")
     except Exception:  # noqa: BLE001
         check(f"e2ee negative {n['name']}: rejected", True)
+# ---- spec/testvectors/jose.json: every verify path, strict §5.2 rules ----
+JV = json.loads((ROOT / "testvectors" / "jose.json").read_text(encoding="utf-8"))
+
+
+def jose_verify(v):
+    c, k, now = v["context"], lmbp.unb64u(JV["keys"][v["verify_with_key"]]["public_b64url"]), JV["now"]
+    kind = v["kind"]
+    if kind == "proof":
+        return lmbp.verify_proof(k, v["compact"], c["iss"], c["aud"], c["credential"], now)
+    if kind == "client_assertion":
+        return lmbp.verify_client_assertion(k, v["compact"], c["aud"], now)
+    if kind == "access_token":
+        return lmbp.verify_access_token(k, v["compact"], c["aud"], now)
+    if kind == "e2ee_key":
+        return x.verify_key_statement(k, "", c["device_id"], v["compact"], now)
+    if kind == "task_run":
+        return lmbp.verify_task_run(k, {"task_id": c["envelope_task_id"], "jws": v["compact"]}, now)
+    if kind == "metadata":
+        return lmbp.verify_metadata(k, v["compact"], c["issuer"], c["tenant"], now)
+    raise ValueError(f"unknown kind {kind}")
+
+
+for v in JV["valid"]:
+    try:
+        jose_verify(v)
+        check(f"jose valid {v['name']}", True)
+    except Exception as e:  # noqa: BLE001
+        check(f"jose valid {v['name']}", False, repr(e))
+for v in JV["negative"]:
+    try:
+        jose_verify(v)
+        check(f"jose negative {v['name']}: rejected", False, v["must_reject_because"])
+    except Exception:  # noqa: BLE001
+        check(f"jose negative {v['name']}: rejected", True)
+check("jose: all cases ran", len(JV["valid"]) > 0 and len(JV["negative"]) > 200)
+
 for f in V["flow"]:
     ok = True
     if f["role"] == "sender":

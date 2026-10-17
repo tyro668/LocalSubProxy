@@ -10,8 +10,10 @@ info:
     `schemas/envelope.json`. Binary messages MUST NOT be sent; a receiver MUST close with 1003.
 
     Data frames (blob.chunk, task.run, task.delta, task.done, task.error) carry a per-task,
-    per-direction `seq` starting at 1 and are acknowledged with task.ack (capabilities
-    `resume` and `flow`, docs/lmbp-spec.md §14–§15). Control frames carry no seq.
+    per-direction `seq` starting at 1 whether or not resume/flow are negotiated (task.run is
+    always seq 1) and are acknowledged with task.ack (capabilities `resume` and `flow`,
+    docs/lmbp-spec.md §14–§15). Control frames carry no seq. After the handshake the gateway
+    answers a frame with v other than 2 by error BAD_REQUEST and drops it (§7.2).
 servers:
   production:
     host: gateway.example.com
@@ -37,7 +39,7 @@ channels:
               description: 'Access token (typ at+jwt) with iss = gateway issuer origin and aud = <issuer>/tenants/<tenant> (docs/lmbp-spec.md §18.3). The gateway rejects other iss/aud with 401; the device rejects tokens that do not match its stored issuer/audience before connecting (§18.4).'
             Sec-WebSocket-Protocol:
               type: string
-              description: MUST offer lmbp; the server selects exactly lmbp.
+              description: 'MUST offer lmbp; the server selects exactly lmbp. The name carries no version: the major version is the envelope v (2). Without lmbp the upgrade gets 400 VERSION_UNSUPPORTED (§7.1); an LMBP 1.x device also offers lmbp and its hello (v 1) gets error VERSION_UNSUPPORTED, then the connection is closed (§7.4, §11).'
         bindingVersion: 0.1.0
     messages:
       hello:
@@ -197,7 +199,11 @@ components:
       name: 'hello'
       title: hello
       contentType: application/json
-      summary: "Device→gateway, first frame. Requires id. May carry flow (windows granted to the gateway), resume {token, tasks[{task_id, recv_seq}]}, model_capabilities, model_names (optional display names) and e2ee_key (key statement JWS)."
+      summary: "Device→gateway, first frame. Requires id. The gateway checks, in order: v == 2 (else error VERSION_UNSUPPORTED), data against hello.json (else error BAD_REQUEST; max_concurrency is a required integer 1–16 and is never clamped), the proof (else UNAUTHENTICATED), then flow/e2ee semantics (BAD_REQUEST); every failure closes the connection (§7.4). May carry flow, resume {token, tasks[{task_id, recv_seq}]}, model_capabilities, model_names (display names, 1–128 code points) and e2ee_key."
+      examples:
+        - name: "hello"
+          summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
+          payload: {"data": {"capabilities": ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"], "client": "example/1.0", "device_id": "dev_0192f5e0-7c1a-7cc0-9b4a-3f1d2e5a6b70", "max_concurrency": 1, "models": ["lm/qwen3-8b"], "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImxtYnAtcHJvb2Yrand0In0.eyJpc3MiOiJkZXZfMDE5MmY1ZTAtN2MxYS03Y2MwLTliNGEtM2YxZDJlNWE2YjcwIiwiYXVkIjoibG1icDpoZWxsbyIsImlhdCI6MTc2NzIyNTYwMCwianRpIjoicF8wMTkyZjVlMC03YzFhLTdjYzAtOWI0YS0wMDAwMDAwMDAwMDUiLCJhdGgiOiJicFNwWVhOT25CMGprSU0xbzZEd085Y3d4YU1VOGhrY0VnNFdvYXY5Q09NIn0.lmwoxp12ptA5EB9c5FdQg9bs-vmt_ZTQIMZwJOcVTKqxTFnJMljhs_d3oIQWMYRuBXZG-L4gNe0im9CK6EXSDw"}, "id": "h1", "type": "hello", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -209,7 +215,11 @@ components:
       name: 'welcome'
       title: welcome
       contentType: application/json
-      summary: "Gateway→device answer to hello (same id). Carries negotiated capabilities, flow, resume_token, resume_window_seconds and, on resume, resume {resumed, tasks}."
+      summary: "Gateway→device answer to hello (same id). Carries negotiated capabilities, max_concurrency = min(declared, gateway cap), flow, resume_token, resume_window_seconds and, on resume, resume {resumed, tasks}. The device disconnects if welcome.v is not 2."
+      examples:
+        - name: "welcome"
+          summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
+          payload: {"data": {"capabilities": ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"], "heartbeat_seconds": 20, "max_frame_bytes": 1048576, "session_id": "sess_01", "token_expires_at": 1767226200}, "id": "h1", "type": "welcome", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -221,7 +231,11 @@ components:
       name: 'task.run'
       title: task.run
       contentType: application/json
-      summary: "Gateway→device data frame (seq). No data; the payload is the compact JWS in `jws` (typ lmbp-task+jws, schema task.run.payload.json) and may reference blobs, tools and an e2ee sealed request."
+      summary: "Gateway→device data frame with seq 1 (always, with or without resume/flow). No data; the payload is the compact JWS in `jws` (typ lmbp-task+jws, schema task.run.payload.json) and may reference blobs, tools and an e2ee sealed request."
+      examples:
+        - name: "task.run"
+          summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
+          payload: {"jws": "eyJhbGciOiJFZERTQSIsImtpZCI6IkdwZGhEcGhhWUdTWG1XYjYzVTE5TWRKUDBBaGZMdDgwRldqeGFmcURVZTQiLCJ0eXAiOiJsbWJwLXRhc2srandzIn0.eyJ0YXNrX2lkIjoidGFza18wMTkyZjVlMC03YzFhLTdjYzAtOWI0YS0wMDAwMDAwMDAwMDciLCJpYXQiOjE3NjcyMjU2MDAsImRldmljZV9pZCI6ImRldl8wMTkyZjVlMC03YzFhLTdjYzAtOWI0YS0zZjFkMmU1YTZiNzAiLCJtb2RlbCI6ImxtL3F3ZW4zLThiIiwibWVzc2FnZXMiOlt7InJvbGUiOiJzeXN0ZW0iLCJjb250ZW50Ijoi5L2g5piv5Yqp5omLIn0seyJyb2xlIjoidXNlciIsImNvbnRlbnQiOiJIZWxsbywg5LiW55WMIPCfkYsgXCJxdW90ZWRcIiBcXCBcdTAwM2Mvc2NyaXB0XHUwMDNlIn1dLCJtYXhfdG9rZW5zIjoyNTYsInRlbXBlcmF0dXJlIjowLjcsImV4cCI6MTc2NzIyNTY2MCwibm9uY2UiOiJuXzlmODZkMDgxODg0YzdkNjU5YTJmZWFhMGM1NWFkMDE1In0.KfwP9u_SaGLY-gGPo__haxefZxZkXMBwEgQm4iIEBUqls9iyUM5HHNhAUW6W5hPdmlgkH3Lsi0XJfuMlkOdXBA", "seq": 1, "task_id": "task_0192f5e0-7c1a-7cc0-9b4a-000000000007", "type": "task.run", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -233,7 +247,11 @@ components:
       name: 'task.cancel'
       title: task.cancel
       contentType: application/json
-      summary: "Gateway→device."
+      summary: "Gateway→device. reason unknown_task answers a data frame for a task the gateway does not know (state table §8.6)."
+      examples:
+        - name: "task.cancel"
+          summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
+          payload: {"data": {"reason": "client_disconnected"}, "task_id": "task_0192f5e0-7c1a-7cc0-9b4a-000000000007", "type": "task.cancel", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -246,6 +264,10 @@ components:
       title: task.delta
       contentType: application/json
       summary: "Device→gateway data frame: text and/or tool_calls, or e2ee (sealed delta)."
+      examples:
+        - name: "task.delta"
+          summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
+          payload: {"data": {"text": "你好"}, "seq": 1, "task_id": "task_0192f5e0-7c1a-7cc0-9b4a-000000000007", "type": "task.delta", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'
@@ -305,7 +327,11 @@ components:
       name: 'models.update'
       title: models.update
       contentType: application/json
-      summary: "Device→gateway."
+      summary: "Device→gateway. data MUST match models.update.json; otherwise the gateway answers error BAD_REQUEST and applies nothing (the session stays open)."
+      examples:
+        - name: "models.update"
+          summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
+          payload: {"data": {"max_concurrency": 1, "models": ["lm/qwen3-8b", "codex/gpt-5"]}, "type": "models.update", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'

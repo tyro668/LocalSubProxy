@@ -29,6 +29,8 @@ def build(argv=None):
     ap.add_argument("--signing-key-env", default="LMBP_SIGNING_SEED", help="env var holding a hex Ed25519 seed (ephemeral if unset)")
     ap.add_argument("--max-concurrency", type=int, default=16)
     ap.add_argument("--db", default=os.environ.get("LMBP_DB", ""), help="persist state in SQLite (default: memory)")
+    ap.add_argument("--retention-seconds", type=float, default=float(os.environ.get("LMBP_RETENTION_SECONDS") or 0),
+                    help="keep finished tasks and idempotency records this long (default 7 days; negative disables)")
     ap.add_argument("--web-dir", default=os.environ.get("LMBP_WEB_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web")),
                     help="directory with the shared chat page, served at / and /chat")
     ap.add_argument("--no-chat-ui", action="store_true", help="do not serve the chat page")
@@ -51,7 +53,7 @@ def build(argv=None):
                 tenants.append(TenantConfig(tid, key, p))
     if not tenants:
         print("warning: no tenants registered (use --tenant id:ENV_VAR)", file=sys.stderr)
-    lsp = LMBPServer(tenants, issuer=a.issuer, signing_seed=bytes.fromhex(seed_hex) if seed_hex else None,
+    lsp = LMBPServer(tenants, issuer=a.issuer, retention=a.retention_seconds, signing_seed=bytes.fromhex(seed_hex) if seed_hex else None,
                      max_concurrency=a.max_concurrency, chat_ui_dir="" if a.no_chat_ui else a.web_dir,
                      store=SQLiteStore(a.db) if a.db else None)
     return a, lsp

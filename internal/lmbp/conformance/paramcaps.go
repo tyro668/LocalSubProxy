@@ -80,6 +80,9 @@ func (r *runner) auditParamCaps(ctx context.Context, dev *extDev, model string) 
 		{"messages", "stop_sequences", map[string]any{"max_tokens": 16, "stop_sequences": []any{"END"}}, false},
 		{"messages", "max_tokens (mandatory, dropped)", map[string]any{"max_tokens": 16}, true},
 	} {
+		if c.endpoint == "messages" && !r.declares(lmbp.ProfileAnthropic) {
+			continue
+		}
 		body := map[string]any{"model": model, "messages": msgs}
 		for k, v := range c.set {
 			body[k] = v

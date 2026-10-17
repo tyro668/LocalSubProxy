@@ -41,6 +41,11 @@ export interface LMBPServerOptions {
   /** Serve the reference chat page from this directory (mock/web) at / and /chat. */
   chatUIDir?: string;
   log?: (...a: unknown[]) => void;
+  /**
+   * How long finished tasks and their Idempotency-Key records are kept (ms, default 7 days;
+   * negative disables purging). Expired pairings go too. Spec §14.4 (errata E6).
+   */
+  retention?: number;
   /** Advanced engine timings (ms): tokenTTL (s), codeTTL (s), resumeWindow, taskTimeout, attachGrace, slowConsumer, queueTimeout. */
   tuning?: Record<string, number>;
 }
@@ -57,7 +62,7 @@ export class LMBPServer {
   constructor(opts: LMBPServerOptions) {
     this.store = opts.store ?? new MemoryStore();
     this.engine = new Gateway({ issuer: opts.issuer ?? '', store: this.store, seed: opts.signingSeed, maxConc: opts.maxConcurrency ?? 16,
-      webDir: opts.chatUIDir ?? '', log: opts.log ?? console.error, ...(opts.tuning ?? {}) });
+      retention: opts.retention ?? 0, webDir: opts.chatUIDir ?? '', log: opts.log ?? console.error, ...(opts.tuning ?? {}) });
     for (const t of opts.tenants) this.engine.registerTenant(t.id, t.apiKey, t.profile ?? {});
   }
 
@@ -122,6 +127,7 @@ export class LMBPServer {
   }
 
   async close(): Promise<void> {
+    this.engine.stopRetention();
     for (const ds of this.engine.devs.values()) ds.drop?.('UNAVAILABLE', 'gateway shutting down');
     if (this.server) await new Promise<void>((ok) => this.server!.close(() => ok()));
     this.server?.closeAllConnections?.();
@@ -156,7 +162,7 @@ export class LMBPServer {
     link: (tenant: string, issuer?: string): string => {
       const iss = issuer ?? this.engine.cfg.issuer;
       if (!iss) throw new Error('pairing.link needs an issuer (configure LMBPServerOptions.issuer or pass one)');
-      return `lmbp://pair?v=1&gateway=${encodeURIComponent(L.origin(iss))}&tenant=${encodeURIComponent(tenant)}`;
+      return `lmbp://pair?v=${L.PAIR_LINK_VERSION}&gateway=${encodeURIComponent(L.origin(iss))}&tenant=${encodeURIComponent(tenant)}`;
     },
     /** Pair link plus its QR code as an SVG string and a PNG-free data: URL (GIF). */
     create: (tenant: string, issuer?: string): PairingInfo => {
@@ -187,7 +193,7 @@ export class LMBPServer {
 
   private decide(tenant: string, endUser: string, userCode: string, deny: boolean, jkt?: string): ApproveResult {
     if (!this.engine.tenants.has(tenant)) throw new PairingError('unknown tenant', 'BAD_REQUEST');
-    if (!endUser || endUser.length > 128) throw new PairingError('endUser required (<= 128 chars)', 'BAD_REQUEST');
+    if (!L.validHeader(endUser, 128)) throw new PairingError('endUser must be 1-128 printable ASCII characters (it travels as X-End-User)', 'BAD_REQUEST');
     const r = this.engine.pairDecide(tenant, endUser, userCode, deny, jkt);
     if (r.error) {
       const code = ({ 429: 'RATE_LIMITED', 404: 'NOT_FOUND', 403: 'FORBIDDEN', 409: 'FORBIDDEN' } as Record<number, PairingError['code']>)[r.error.status] || 'BAD_REQUEST';

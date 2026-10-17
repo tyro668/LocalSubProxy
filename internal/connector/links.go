@@ -48,8 +48,11 @@ func validatePolicy(p *Policy) error {
 	if p == nil {
 		return nil
 	}
-	if len(p.Allow) > 500 || p.MaxConcurrency < 0 || p.MaxConcurrency > 64 {
+	if len(p.Allow) > 500 || p.MaxConcurrency < 0 {
 		return errors.New("invalid connection policy")
+	}
+	if p.MaxConcurrency > lmbp.MaxConcurrency { // LMBP 2.0 §7.4: rejected, never clamped
+		return fmt.Errorf("max_concurrency %d out of range: LMBP allows 1-%d (0 = default)", p.MaxConcurrency, lmbp.MaxConcurrency)
 	}
 	for _, e := range p.Allow {
 		if e == "" || len(e) > 200 || (e != "*" && !strings.Contains(e, "/")) {
