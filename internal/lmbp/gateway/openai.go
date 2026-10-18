@@ -462,7 +462,19 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		g.serve(w, r, task, 0, req.Stream) // report what was recorded
 		return
 	}
-	_ = g.cfg.Store.SetTaskState(context.Background(), taskID, "RUNNING")
+	if err := g.cfg.Store.SetTaskState(context.Background(), taskID, "RUNNING"); err != nil {
+		// The task row could not be marked RUNNING (storage error, or the
+		// row is gone): never run a task whose state cannot be persisted.
+		// failLocal releases the slot it now holds. audit3 P2-4.
+		g.cfg.Logger.Printf("lmbp: task %s: persisting RUNNING: %v", taskID, err)
+		w.Header().Set("X-Task-Id", taskID)
+		if task.failLocal(lmbp.ErrInternal, "gateway could not persist task state", true) {
+			apiError(w, 500, lmbp.ErrInternal, "storage error")
+			return
+		}
+		g.serve(w, r, task, 0, req.Stream)
+		return
+	}
 	run.TaskID, run.Iat, run.Exp, run.Nonce = taskID, now.Unix(), now.Add(time.Minute).Unix(), lmbp.RandomID("n_")
 	jws := lmbp.SignTaskRun(g.cfg.SigningKey, g.kid, run)
 	go g.dispatch(task, jws, blobs)
@@ -652,13 +664,15 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after 
 		})
 		return
 	}
-	// Non-streaming aggregation.
+	// Non-streaming aggregation. A resume cursor (Last-Event-ID) has no
+	// meaning for one aggregated JSON body: it always covers the whole task,
+	// so an idempotent replay returns the same complete response (audit3 P2-3).
 	var text strings.Builder
 	var calls []lmbp.ToolCall
 	var sealedFrames []any
 	var done *lmbp.TaskDone
 	var fail *lmbp.ErrorBody
-	err := t.stream(r.Context(), after, nil, func(e event) error {
+	err := t.stream(r.Context(), 0, nil, func(e event) error {
 		switch e.Type {
 		case lmbp.TypeTaskDelta:
 			if t.e2ee {
@@ -704,6 +718,10 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, t *gtask, after 
 	}
 	if fail != nil {
 		apiError(w, errStatus(fail.Code), fail.Code, fail.Message)
+		return
+	}
+	if done == nil { // never dereference a missing terminal event
+		apiError(w, 500, lmbp.ErrInternal, "task ended without a terminal event")
 		return
 	}
 	if done.FinishReason == "" {

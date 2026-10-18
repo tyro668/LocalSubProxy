@@ -152,6 +152,9 @@ type rig struct {
 	jkt    string
 	dbPath string
 	logs   *syncBuf
+	id     client.Identity    // the paired device identity (raw-hello tests)
+	stop   context.CancelFunc // stops the rig's device client
+	done   chan struct{}      // closed when the device client's Run returns
 }
 
 type syncBuf struct {
@@ -220,13 +223,15 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.devID = id.DeviceID
+	r.devID, r.id = id.DeviceID, id
 	r.dev, err = client.New(client.Config{Executor: r.exec, MaxConcurrency: 4, Logger: logger}, id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ready := make(chan error, 1)
-	go r.dev.Run(ctx, ready)
+	dctx, dcancel := context.WithCancel(ctx)
+	r.stop, r.done = dcancel, make(chan struct{})
+	go func() { defer close(r.done); _ = r.dev.Run(dctx, ready) }()
 	select {
 	case <-ready:
 	case <-time.After(5 * time.Second):

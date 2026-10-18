@@ -67,6 +67,12 @@ public final class MemoryStore implements Store {
     t.state = state;
     t.finished = System.currentTimeMillis();
   }
+  @Override public synchronized List<String> unfinishedTasks() {
+    List<String> out = new java.util.ArrayList<>();
+    for (TaskRecord t : tasks.values()) if (!TERMINAL.contains(t.state)) out.add(t.id);
+    return out;
+  }
+
   @Override public synchronized int purge(long cutoff) {
     int n = 0;
     for (var it = tasks.values().iterator(); it.hasNext(); ) {

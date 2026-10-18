@@ -134,7 +134,45 @@ func New(cfg Config) (*Gateway, error) {
 		cfg.Issuer = o
 	}
 	pub := cfg.SigningKey.Public().(ed25519.PublicKey)
-	return &Gateway{cfg: cfg, pub: pub, kid: lmbp.Thumbprint(pub), devs: map[string]*dstate{}, tasks: map[string]*gtask{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}, pending: map[string]store.DeviceAuth{}}, nil
+	g := &Gateway{cfg: cfg, pub: pub, kid: lmbp.Thumbprint(pub), devs: map[string]*dstate{}, tasks: map[string]*gtask{}, jtis: map[string]time.Time{}, fail: map[string][]time.Time{}, pending: map[string]store.DeviceAuth{}}
+	g.recoverOrphans(context.Background())
+	return g, nil
+}
+
+// recoverOrphans persists OUTCOME_UNKNOWN for tasks a previous process left
+// without a terminal state (crash while QUEUED/RUNNING). A new gateway owns
+// no task yet, so all of them are orphans. Persisting the terminal event and
+// state (FinishTask, atomically) makes replays report the same outcome as
+// before and lets retention purge the prompt and output like any finished
+// task; without it RUNNING rows bypassed retention forever (audit3 P2-5).
+func (g *Gateway) recoverOrphans(ctx context.Context) {
+	ul, ok := g.cfg.Store.(store.UnfinishedLister)
+	if !ok {
+		return
+	}
+	ts, err := ul.UnfinishedTasks(ctx)
+	if err != nil {
+		g.cfg.Logger.Printf("lmbp: listing unfinished tasks: %v", err)
+		return
+	}
+	body, _ := json.Marshal(lmbp.ErrorBody{Code: lmbp.ErrOutcomeUnknown, Message: "gateway restarted; task outcome unknown"})
+	for _, t := range ts {
+		evs, err := g.cfg.Store.ListEvents(ctx, t.ID)
+		if err != nil {
+			g.cfg.Logger.Printf("lmbp: orphaned task %s: %v", t.ID, err)
+			continue
+		}
+		var last int64
+		for _, e := range evs {
+			last = max(last, e.Seq)
+		}
+		if err := g.cfg.Store.FinishTask(ctx, store.Event{TaskID: t.ID, Seq: last + 1, Kind: lmbp.TypeTaskError, Data: body, At: time.Now()}, "FAILED"); err != nil && err != store.ErrExists {
+			g.cfg.Logger.Printf("lmbp: orphaned task %s: persisting %s: %v", t.ID, lmbp.ErrOutcomeUnknown, err)
+		}
+	}
+	if len(ts) > 0 {
+		g.cfg.Logger.Printf("lmbp: %d orphaned task(s) from a previous run recorded as %s", len(ts), lmbp.ErrOutcomeUnknown)
+	}
 }
 
 // PublicKey returns the key devices pin to verify task.run frames.

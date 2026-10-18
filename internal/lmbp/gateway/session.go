@@ -321,6 +321,15 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	gwFlow := g.cfg.Flow
 	ds.mu.Lock()
+	if resumed && hello.Resume.Token != ds.resumeToken {
+		// Overlapping resume handshakes (audit3 P2-2): both matched the
+		// token before either rotated it. The first to get here owns the
+		// session; this one must not bump the generation, swap the
+		// connection or install its sender.
+		ds.mu.Unlock()
+		early(lmbp.ErrUnauthenticated, "resume token already used by another connection")
+		return
+	}
 	prevConn := ds.conn
 	ds.gen++
 	gen := ds.gen
@@ -392,16 +401,33 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	wb, _ := json.Marshal(welcome)
-	if ds.control(lmbp.Envelope{Type: lmbp.TypeWelcome, ID: env.ID, Data: wb}) != nil {
-		return
-	}
 	write := func(b []byte) error {
 		wmu.Lock()
 		defer wmu.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteMessage(websocket.TextMessage, b)
 	}
+	// The welcome and the sender are bound to this connection's generation
+	// (audit3 P2-2): the welcome goes on this conn (never ds.conn, which a
+	// newer handshake may already own) and a superseded handshake installs
+	// no sender over the newer one.
+	ds.mu.Lock()
+	current := ds.gen == gen
+	ds.mu.Unlock()
+	if !current {
+		return
+	}
+	wenv, _ := json.Marshal(lmbp.Envelope{V: lmbp.Version, Type: lmbp.TypeWelcome, ID: env.ID, Data: wb})
+	if write(wenv) != nil {
+		return
+	}
+	ds.mu.Lock()
+	if ds.gen != gen {
+		ds.mu.Unlock()
+		return
+	}
 	wgen := ds.out.AttachOwned(write)
+	ds.mu.Unlock()
 	if resumed {
 		g.resumes.Add(1)
 		for _, rt := range resumeTasks {
@@ -583,6 +609,23 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 			defer after()
 		}
 	}
+	// Envelope and body are validated BEFORE the seq is accepted, the frame
+	// persisted or ACKed: an invalid terminal frame (e.g. task.done {}) must
+	// never become SUCCEEDED (audit3 P2-6). The task fails as a protocol
+	// error; the frame is not acknowledged.
+	if why := checkDeviceData(in); why != "" {
+		ds.mu.Lock()
+		t := ds.tasks[in.TaskID]
+		ds.mu.Unlock()
+		g.cfg.Logger.Printf("lmbp: device %s task %s: %s", ds.deviceID, in.TaskID, why)
+		if t != nil {
+			t.cancel("protocol_error")
+			t.failLocal(lmbp.ErrInternal, "device sent an invalid frame: "+why, false)
+		} else {
+			ds.sendErr(in.ID, lmbp.ErrBadRequest, why)
+		}
+		return true
+	}
 	// Lookup and Accept are one step under ds.mu, serialized with the local
 	// finish transition in finishWith (Review8 P2-a).
 	ds.mu.Lock()
@@ -720,6 +763,47 @@ func checkAnnounce(data json.RawMessage, hello bool) string {
 			return what + " does not match " + what + ".json: " + firstLeaf(ve)
 		}
 		return what + " does not match " + what + ".json"
+	}
+	return ""
+}
+
+// checkDeviceData validates a device data frame's envelope (task_id, seq
+// >= 1, a JSON object body) and, for task.done / task.error, the body
+// against task.done.json / task.error.json. "" means acceptable.
+func checkDeviceData(in lmbp.Envelope) string {
+	if in.TaskID == "" {
+		return in.Type + " without task_id"
+	}
+	if in.Seq < 1 {
+		return fmt.Sprintf("%s seq %d, want >= 1", in.Type, in.Seq)
+	}
+	d := bytes.TrimSpace(in.Data)
+	if len(d) == 0 || d[0] != '{' {
+		return in.Type + " data must be a JSON object"
+	}
+	var load func() (*jsonschema.Schema, error)
+	switch in.Type {
+	case lmbp.TypeTaskDone:
+		load = schemas.TaskDone
+	case lmbp.TypeTaskError:
+		load = schemas.TaskError
+	default:
+		return ""
+	}
+	sch, err := load()
+	if err != nil {
+		return in.Type + " schema unavailable"
+	}
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(d))
+	if err != nil {
+		return in.Type + " data must be a JSON object"
+	}
+	if err := sch.Validate(inst); err != nil {
+		var ve *jsonschema.ValidationError
+		if errors.As(err, &ve) {
+			return in.Type + " does not match " + in.Type + ".json: " + firstLeaf(ve)
+		}
+		return in.Type + " does not match " + in.Type + ".json"
 	}
 	return ""
 }

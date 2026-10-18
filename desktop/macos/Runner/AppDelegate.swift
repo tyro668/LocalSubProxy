@@ -5,18 +5,27 @@ import FlutterMacOS
 class AppDelegate: FlutterAppDelegate {
   private var statusItem: NSStatusItem?
   private var trayChannel: FlutterMethodChannel?
+  /// Dart finished the graceful kernel shutdown: terminating is allowed now.
+  private var quitReady = false
+  /// A Cmd-Q / Dock / system quit is waiting for that shutdown.
+  private var terminatePending = false
+  /// Upper bound for the Dart quit flow (its own kernel stop timeout is 5 s).
+  private static let quitFallbackSeconds: TimeInterval = 8
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     if let controller = mainFlutterWindow?.contentViewController as? FlutterViewController {
       trayChannel = FlutterMethodChannel(
         name: "localsubproxy/tray", binaryMessenger: controller.engine.binaryMessenger)
-      trayChannel?.setMethodCallHandler { call, result in
+      trayChannel?.setMethodCallHandler { [weak self] call, result in
         switch call.method {
         case "hideDock":
           NSApp.setActivationPolicy(.accessory)
           result(nil)
         case "showDock":
           NSApp.setActivationPolicy(.regular)
+          result(nil)
+        case "quitReady":
+          self?.allowTerminate()
           result(nil)
         default:
           result(FlutterMethodNotImplemented)
@@ -57,6 +66,31 @@ class AppDelegate: FlutterAppDelegate {
 
   @objc private func trayConfig() { trayChannel?.invokeMethod("config", arguments: nil) }
   @objc private func trayQuit() { trayChannel?.invokeMethod("quit", arguments: nil) }
+
+  // Cmd-Q, the app menu, the Dock and logout all end here (audit3 P2-11):
+  // they must run the same timeout-protected graceful kernel shutdown as
+  // the tray's 退出, not kill the process with the kernel still running.
+  override func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    if quitReady || trayChannel == nil {
+      return .terminateNow
+    }
+    if !terminatePending {
+      terminatePending = true
+      trayChannel?.invokeMethod("quit", arguments: nil)
+      DispatchQueue.main.asyncAfter(deadline: .now() + Self.quitFallbackSeconds) { [weak self] in
+        self?.allowTerminate()  // the Dart side hung: quit anyway
+      }
+    }
+    return .terminateLater
+  }
+
+  private func allowTerminate() {
+    quitReady = true
+    if terminatePending {
+      terminatePending = false
+      NSApp.reply(toApplicationShouldTerminate: true)
+    }
+  }
 
   // 托盘常驻：关闭最后一个窗口不退出进程，退出只走托盘菜单。
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

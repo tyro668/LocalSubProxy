@@ -351,7 +351,7 @@
 
 ### 7.2 帧
 - 每条 WebSocket **文本**消息正好包含一个 JSON 对象。MUST NOT 发送二进制消息；收到二进制消息时 SHOULD 以关闭码 1003 断开。
-- 单帧 MUST ≤ `welcome.max_frame_bytes`（参考实现为 262144 字节）。超限时接收方 MUST 以 1009 断开。
+- 单帧 MUST ≤ `welcome.max_frame_bytes`；该值 MUST 恰为 262144 字节（§10 的规范上限，不协商；welcome.json 拒绝其他值）。超限时接收方 MUST 以 1009 断开。
 - 握手之后，网关收到 `v ≠ 2` 或无法解析为信封的帧时，MUST 回复 `error`（`BAD_REQUEST`）并丢弃该帧，MUST NOT 断开；设备收到 `v ≠ 2` 的帧 MUST 丢弃。
 
 信封：
@@ -390,7 +390,7 @@
    2. `data` 符合 `hello.json`，否则 `BAD_REQUEST`。其中 `max_concurrency` 是 1–16 的整数（必填），`model_names` 的显示名为 1–128 字符；越界值 MUST 拒绝，MUST NOT 截断；
    3. `data.device_id == token.sub`，证明 JWT 有效（`ath` 绑定**本次连接使用的访问令牌**）且 `jti` 未用过，否则 `UNAUTHENTICATED`；
    4. `flow`、`e2ee_key` 等扩展的语义检查（§15.1、§17.1），否则 `BAD_REQUEST`。
-3. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）、`max_concurrency`。`welcome.max_concurrency = min(hello.max_concurrency, 网关上限)`：网关 MAY 降低，MUST NOT 提高；设备 MUST 以它为准。
+3. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）、`max_concurrency`（必填）。`welcome.max_concurrency = min(hello.max_concurrency, 网关上限)`：网关 MAY 降低，MUST NOT 提高；设备 MUST 以它为准。
 
 ### 7.5 任务与顺序
 - 网关收到 OpenAI 请求后，创建 `task_id`，发送 `task.run`。
@@ -621,6 +621,7 @@ conformance 从元数据读取 `profiles`：core 与已声明配置的检查必�
 | CORE-21 | §4.1 | core | X-End-User 为 1–128 个可打印 ASCII 字符 | L2 |
 | CORE-22 | §8.6 | core | 确认属于 Core，不依赖 flow：按序数据帧累计确认，跳号让任务失败，本地结束的任务迟到帧照常确认直到终止帧；未知或已结束任务的数据帧回 task.cancel(unknown_task)，不确认 | S1 S2 S3 S4 S5 E7 |
 | CORE-23 | §16.1 | core | model_names 只用于展示，未声明模型的条目被忽略 | X-N1 |
+| CORE-24 | §8.6 | core | 设备数据帧先校验信封与正文（task.done/task.error 须符合各自 Schema），再接受序号、持久化和确认；非法终止帧让任务失败（task.cancel protocol_error），不确认 | S6 |
 | REL-01 | §14、§15 | reliable | 协商 resume 与 flow；协商后确认同样覆盖全部数据帧，网关数据帧（含 blob.chunk）连续编号，续传后跳号仍让任务失败 | X1r X-F1 X-F2 X-F3 |
 | REL-02 | §14.2–§14.3 | reliable | 断线续传：重传不重复、不丢失，续传参数有界 | X-R1 X-R2 Z3 |
 | REL-03 | §14.4 | reliable | SSE 事件带 id，Last-Event-ID 精确重放 | X-H2 X-H3 |
@@ -648,7 +649,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
   [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lmbp-conformance` 依次扮演设备和租户后端，共 127 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
+`lmbp-conformance` 依次扮演设备和租户后端，共 128 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 

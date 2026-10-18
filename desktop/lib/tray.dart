@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -15,6 +16,14 @@ class AppTray with WindowListener {
   static const _channel = MethodChannel('localsubproxy/tray');
   bool _initialized = false;
   Future<void> _closeFuture = Future.value();
+  Future<void>? _quitting;
+
+  /// Upper bound for the kernel's graceful stop on quit: a hung kernel must
+  /// not keep the app (or a macOS Cmd-Q / logout) waiting forever.
+  static Duration quitTimeout = const Duration(seconds: 5);
+
+  /// Stops the local kernel off the UI isolate (tests replace it).
+  static Future<void> Function() stopKernel = () => stopAsync();
 
   Future<void> init() async {
     if (_initialized) return;
@@ -40,10 +49,19 @@ class AppTray with WindowListener {
     await windowManager.focus();
   }
 
-  Future<void> quit() async {
+  /// The one quit path (tray 退出, macOS Cmd-Q / Dock / logout via the
+  /// native side, audit3 P2-11): stop the kernel gracefully within
+  /// [quitTimeout], tell the native side termination may proceed, then
+  /// destroy the window. Re-entrant calls share the same run.
+  Future<void> quit() => _quitting ??= _quit();
+
+  Future<void> _quit() async {
     await _closeFuture;
     try {
-      NativeApi.instance.stop();
+      await stopKernel().timeout(quitTimeout);
+    } catch (_) {}
+    try {
+      await _channel.invokeMethod<void>('quitReady');
     } catch (_) {}
     await windowManager.setPreventClose(false);
     await windowManager.destroy();

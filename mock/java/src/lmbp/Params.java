@@ -210,7 +210,7 @@ final class Params {
   static synchronized JsonSchema schemaSet() {
     if (schemas == null) {
       List<Object> docs = new ArrayList<>();
-      for (String n : new String[] {"defs.json", "task.run.payload.json", "hello.json", "models.update.json"}) {
+      for (String n : new String[] {"defs.json", "task.run.payload.json", "hello.json", "models.update.json", "task.done.json", "task.error.json"}) {
         try (InputStream in = Params.class.getResourceAsStream("/schemas/" + n)) {
           if (in == null) throw new IllegalStateException("bundled schema " + n + " missing");
           docs.add(Json.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8)));
@@ -222,6 +222,24 @@ final class Params {
   }
 
   /** Validates hello / models.update data against its schema (spec §7.4): null when valid, else a message. */
+  /**
+   * Validates a device data frame's envelope and, for task.done / task.error, its body against
+   * task.done.json / task.error.json: null when acceptable (checked before the seq is accepted,
+   * persisted or ACKed).
+   */
+  static String deviceDataProblem(Map<String, Object> inp) {
+    Object type = inp.get("type"), tid = inp.get("task_id"), seq = inp.get("seq"), data = inp.get("data");
+    if (!(tid instanceof String s) || s.isEmpty()) return type + " without task_id";
+    if (!Json.isInteger(seq) || ((Number) seq).doubleValue() < 1) return type + " seq must be an integer >= 1";
+    if (!(data instanceof Map)) return type + " data must be a JSON object";
+    if (!"task.done".equals(type) && !"task.error".equals(type)) return null;
+    JsonSchema.Err e = schemaSet().validate(BASE + type + ".json", Json.parse(Json.stringify(data)));
+    if (e == null) return null;
+    List<String> ps = new ArrayList<>();
+    for (Object p : e.path()) ps.add(String.valueOf(p));
+    return type + (ps.isEmpty() ? "" : "." + String.join(".", ps)) + ": " + e.message();
+  }
+
   static String announceProblem(Object data, boolean hello) {
     String name = hello ? "hello" : "models.update";
     JsonSchema.Err e = schemaSet().validate(BASE + name + ".json", Json.parse(Json.stringify(data)));

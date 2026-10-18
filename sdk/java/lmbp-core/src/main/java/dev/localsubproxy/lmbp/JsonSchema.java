@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * Port of sdk/node/src/engine/jsonschema.js.
  */
 final class JsonSchema {
-  static final Set<String> ANNOTATIONS = Set.of("$schema", "$id", "$defs", "title", "description", "default", "$comment");
+  static final Set<String> ANNOTATIONS = Set.of("$schema", "$id", "$defs", "title", "description", "default", "$comment", "examples");
   static final Set<String> KEYWORDS = Set.of("$ref", "type", "required", "properties", "additionalProperties", "items", "minItems", "maxItems",
       "minimum", "maximum", "minLength", "maxLength", "enum", "const", "pattern", "oneOf", "anyOf", "allOf", "if", "then", "else", "uniqueItems");
 

@@ -250,6 +250,9 @@ class NativeApi {
 
 // These closures are created outside widget State. Isolate.run otherwise can
 // retain a State (including its Timer), which cannot cross isolate boundaries.
+/// Stops the local kernel off the UI isolate so a caller can bound the wait.
+Future<void> stopAsync() => _offThread(() => NativeApi.instance.stop());
+
 Future<Map<String, dynamic>> pairPrepareAsync(String urlOrLink) =>
     _offThread(() => NativeApi.instance.pairPrepare(urlOrLink));
 

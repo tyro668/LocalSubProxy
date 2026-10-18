@@ -162,3 +162,27 @@ fn lmbp2_announce_lengths_headers() {
     assert!(!lmbp::valid_header("张三", 128) && !lmbp::valid_header("", 128) && !lmbp::valid_header("a\tb", 128));
     assert_eq!((lmbp::VERSION, lmbp::SUBPROTOCOL), (2, "lmbp"));
 }
+
+// audit3 P1: forget fails the task's queued sends before waking the others,
+// so a terminal task never re-creates its outbox entry or holds credit.
+#[test]
+fn outbox_forget_fails_queued_sends_first() {
+    let mut o = lmbp::Outbox::default();
+    let w = lmbp::MAX_FRAME_BYTES as i64;
+    o.set_flow(Some(lmbp::Flow { task_window: w, conn_window: w }));
+    let big = "x".repeat(130 << 10);
+    let ids: Vec<u64> = (0..3)
+        .map(|_| {
+            let b = big.clone();
+            o.enqueue("t1", Box::new(move |seq| format!("{{\"seq\":{seq},\"d\":\"{b}\"}}")))
+        })
+        .collect();
+    assert!(o.results.contains_key(&ids[0]) && !o.results.contains_key(&ids[1]), "second chunk should wait for credit");
+    o.forget("t1");
+    assert!(!o.tasks.contains_key("t1"), "forgotten task re-created its outbox entry");
+    assert_eq!(o.conn_used, 0);
+    assert!(o.waiters.is_empty());
+    assert!(matches!(o.results.get(&ids[1]), Some(Err(_))) && matches!(o.results.get(&ids[2]), Some(Err(_))));
+    let again = o.enqueue("t1", Box::new(|seq| format!("{{\"seq\":{seq}}}")));
+    assert!(matches!(o.results.get(&again), Some(Err(_))), "send after forget admitted");
+}

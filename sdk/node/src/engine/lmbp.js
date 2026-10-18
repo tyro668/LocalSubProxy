@@ -164,8 +164,9 @@ export function canSend(flow, taskUsed, connUsed, n) {
 
 // Outbox: sending half. send() resolves once the frame is admitted by the
 // peer's windows; unacknowledged frames are retransmitted on resume.
+const MAX_FORGOTTEN = 4096;
 export class Outbox {
-  constructor() { this.flow = null; this.connUsed = 0; this.tasks = new Map(); this.waiters = []; this.write = null; this.closed = false; }
+  constructor() { this.flow = null; this.connUsed = 0; this.tasks = new Map(); this.waiters = []; this.write = null; this.closed = false; this.forgotten = new Set(); }
   setFlow(f) { this.flow = f; this.wake(); }
   attach(write) { this.write = write; for (const t of this.tasks.values()) t.written = -1; }
   task(id) {
@@ -182,6 +183,7 @@ export class Outbox {
     while (this.waiters.length) {
       const w = this.waiters[0];
       if (this.closed) { this.waiters.shift(); w.reject(new Error('outbox closed')); continue; }
+      if (this.forgotten.has(w.task)) { this.waiters.shift(); w.reject(new Error('task forgotten')); continue; }
       const t = this.task(w.task);
       const seq = t.nextSeq + 1;
       const raw = w.mk(seq);
@@ -209,6 +211,9 @@ export class Outbox {
   async send(taskID, build, signal) {
     const mk = (seq) => JSON.stringify({ v: VERSION, ...build(seq), task_id: taskID, seq });
     if (this.closed) throw new Error('outbox closed');
+    // A terminal (forgotten) task never re-enters the send queue: its state
+    // would sit outside every retransmit list and hold connection credit.
+    if (this.forgotten.has(taskID)) throw new Error('task forgotten');
     const seq = await new Promise((resolve, reject) => {
       const w = { task: taskID, mk, resolve, reject };
       this.waiters.push(w);
@@ -233,9 +238,24 @@ export class Outbox {
     if (t) t.written = peerRecv;
     this.flush(id);
   }
+  // forget drops a terminal task for good, atomically: its credit is
+  // released and every send of it still queued for credit is failed BEFORE
+  // other waiters are woken, so the task can never re-create its outbox
+  // entry and re-consume connection credit no resume would ever return
+  // (audit3 P1). Later sends for it fail too. Bounded like the Go Outbox.
   forget(id) {
     const t = this.tasks.get(id);
     if (t) { this.connUsed -= t.used; this.tasks.delete(id); }
+    if (!this.forgotten.has(id)) {
+      this.forgotten.add(id);
+      if (this.forgotten.size > MAX_FORGOTTEN) this.forgotten.delete(this.forgotten.values().next().value);
+    }
+    const kept = [];
+    for (const w of this.waiters) {
+      if (w.task === id) w.reject(new Error('task forgotten'));
+      else kept.push(w);
+    }
+    this.waiters = kept;
     this.wake();
   }
   close() { this.closed = true; this.wake(); }

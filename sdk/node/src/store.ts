@@ -103,6 +103,14 @@ export interface Store {
    */
   purge?(cutoff: number): number;
 
+  /**
+   * Optional: ids of tasks without a terminal state (QUEUED, RUNNING or
+   * unknown). A starting gateway owns no task, so these are orphans of a
+   * previous process; it stores OUTCOME_UNKNOWN for them (finishTask) so
+   * replays agree and retention applies (audit3 P2-5).
+   */
+  unfinishedTasks?(): string[];
+
   close?(): void;
 }
 
@@ -167,6 +175,7 @@ export class MemoryStore implements Store {
     t.state = state;
     t.finished = Date.now();
   }
+  unfinishedTasks() { return [...this.tasks.values()].filter((t) => !TERMINAL_STATES.has(t.state)).map((t) => t.id); }
   purge(cutoff: number) {
     let n = 0;
     for (const [id, t] of this.tasks) {
@@ -294,6 +303,9 @@ export class SqliteStore implements Store {
       try { this.db.exec('ROLLBACK'); } catch { /* already rolled back */ }
       throw e;
     }
+  }
+  unfinishedTasks(): string[] {
+    return this.db.prepare("SELECT id FROM lmbp_tasks WHERE json_extract(doc, '$.state') IS NULL OR json_extract(doc, '$.state') NOT IN ('SUCCEEDED','FAILED','CANCELLED')").all().map((r: any) => r.id);
   }
   /** One transaction: finished tasks before cutoff with their events and idempotency records, and expired pairings. */
   purge(cutoff: number) {

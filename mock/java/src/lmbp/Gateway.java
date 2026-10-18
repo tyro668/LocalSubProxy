@@ -687,6 +687,18 @@ final class Gateway {
 
   boolean onDeviceData(DState ds, Map<String, Object> inp, int size) {
     String tid = inp.get("task_id") instanceof String s ? s : String.valueOf(inp.get("task_id"));
+    // envelope + body validated before the seq is accepted, persisted or ACKed: an invalid
+    // terminal frame (task.done {}) never becomes SUCCEEDED
+    String bad = Params.deviceDataProblem(inp);
+    if (bad != null) {
+      Task tt = ds.tasks.get(tid);
+      log("lmbp: device " + ds.deviceID + " task " + tid + ": " + bad);
+      if (tt != null) {
+        tt.cancel("protocol_error");
+        tt.failLocal("INTERNAL", "device sent an invalid frame: " + bad, false);
+      } else ds.sendErr(inp.get("id") instanceof String i ? i : null, "BAD_REQUEST", bad);
+      return true;
+    }
     Task t = ds.tasks.get(tid);
     Object sq = inp.get("seq");
     long seq = Json.isNumber(sq) ? (long) ((Number) sq).doubleValue() : 0;

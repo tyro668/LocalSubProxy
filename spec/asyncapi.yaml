@@ -219,7 +219,7 @@ components:
       examples:
         - name: "welcome"
           summary: "From spec/testvectors/vectors.json valid_frames (checked by spec/validate.sh)."
-          payload: {"data": {"capabilities": ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"], "heartbeat_seconds": 20, "max_frame_bytes": 1048576, "session_id": "sess_01", "token_expires_at": 1767226200}, "id": "h1", "type": "welcome", "v": 2}
+          payload: {"data": {"capabilities": ["session.token", "models.update", "resume", "flow", "tools", "multimodal", "e2ee"], "heartbeat_seconds": 20, "max_concurrency": 1, "max_frame_bytes": 262144, "session_id": "sess_01", "token_expires_at": 1767226200}, "id": "h1", "type": "welcome", "v": 2}
       payload:
         allOf:
           - $ref: 'schemas/envelope.json'

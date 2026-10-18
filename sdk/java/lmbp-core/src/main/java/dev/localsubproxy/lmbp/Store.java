@@ -100,4 +100,12 @@ public interface Store {
    * The default keeps everything and returns -1 (the gateway logs that retention is unsupported).
    */
   default int purge(long cutoffMillis) { return -1; }
+
+  /**
+   * Ids of tasks without a terminal state (QUEUED, RUNNING or unknown). A starting gateway owns no
+   * task, so these are orphans of a previous process; it stores OUTCOME_UNKNOWN for them
+   * ({@link #finishTask}) so replays agree and retention applies (audit3 P2-5). The default lists
+   * none (the store keeps such rows as they are).
+   */
+  default List<String> unfinishedTasks() { return List.of(); }
 }

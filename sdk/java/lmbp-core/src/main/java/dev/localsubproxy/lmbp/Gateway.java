@@ -109,6 +109,28 @@ final class Gateway {
     }
     key = Lmbp.signingKey(seed);
     kid = Lmbp.thumbprint(key.pub());
+    recoverOrphans();
+  }
+
+  /**
+   * Stores OUTCOME_UNKNOWN for tasks a previous process left without a terminal state (crash
+   * while QUEUED/RUNNING): this gateway owns no task yet, so all of them are orphans. The
+   * persisted terminal event and state make replays agree and let retention purge the prompt and
+   * output; without it they bypassed retention forever (audit3 P2-5).
+   */
+  void recoverOrphans() {
+    List<String> ids;
+    try { ids = store.unfinishedTasks(); } catch (RuntimeException e) { log("lmbp: listing unfinished tasks: " + e.getMessage()); return; }
+    for (String id : ids) {
+      try {
+        Store.TaskRecord t = store.getTask(id);
+        if (t == null) continue;
+        long seq = 0;
+        for (Store.Event e : t.events) seq = Math.max(seq, e.seq());
+        store.finishTask(id, new Store.Event(seq + 1, "task.error", errorBody("OUTCOME_UNKNOWN", "gateway restarted; task outcome unknown", false)), "FAILED");
+      } catch (RuntimeException e) { log("lmbp: orphaned task " + id + ": " + e.getMessage()); }
+    }
+    if (!ids.isEmpty()) log("lmbp: " + ids.size() + " orphaned task(s) from a previous run recorded as OUTCOME_UNKNOWN");
   }
 
   void log(String s) { if (logger != null) logger.accept(s); }
@@ -618,7 +640,16 @@ final class Gateway {
     return t >= Lmbp.MAX_FRAME_BYTES && c >= t && c <= 2147483648.0;
   }
 
+  /** Serializes handshakes (audit3 P2-2): two resume hellos with one token must not both resume,
+   *  and a superseded handshake must not send its welcome on, or install its sender over, a newer
+   *  connection. */
+  private final Object attachLock = new Object();
+
   void attachSession(WebSocketSession ws, Store.Device dev, Map<String, Object> claims, String iss, String envID, Map<String, Object> hello, List<String> caps, int conc) {
+    synchronized (attachLock) { attachSession0(ws, dev, claims, iss, envID, hello, caps, conc); }
+  }
+
+  private void attachSession0(WebSocketSession ws, Store.Device dev, Map<String, Object> claims, String iss, String envID, Map<String, Object> hello, List<String> caps, int conc) {
     DState old = devs.get(dev.id);
     Map<String, Object> resume = Json.asObj(hello.get("resume"));
     boolean resumed = old != null && resume != null && caps.contains("resume") && Json.truthy(resume.get("token")) && resume.get("token").equals(old.resumeToken);
@@ -735,6 +766,19 @@ final class Gateway {
 
   boolean onDeviceData(DState ds, Map<String, Object> inp, int size) {
     String tid = inp.get("task_id") instanceof String s ? s : String.valueOf(inp.get("task_id"));
+    // Envelope + body validated BEFORE the seq is accepted, persisted or ACKed: an invalid
+    // terminal frame (task.done {}) never becomes SUCCEEDED. The task fails as a protocol error
+    // (audit3 P2-6).
+    String bad = Params.deviceDataProblem(inp);
+    if (bad != null) {
+      Task tt = ds.tasks.get(tid);
+      log("lmbp: device " + ds.deviceID + " task " + tid + ": " + bad);
+      if (tt != null) {
+        tt.cancel("protocol_error");
+        tt.failLocal("INTERNAL", "device sent an invalid frame: " + bad, false);
+      } else ds.sendErr(inp.get("id") instanceof String i ? i : null, "BAD_REQUEST", bad);
+      return true;
+    }
     Task t = ds.tasks.get(tid);
     Object sq = inp.get("seq");
     long seq = Json.isNumber(sq) ? (long) ((Number) sq).doubleValue() : 0;

@@ -400,7 +400,13 @@ pub struct Outbox {
     pub write: Option<Writer>,
     pub closed: bool,
     next_id: u64,
+    /// Tasks dropped with forget (bounded FIFO): their sends fail instead of
+    /// re-creating state no retransmit list covers (audit3 P1).
+    pub forgotten: std::collections::HashSet<String>,
+    forgotten_fifo: VecDeque<String>,
 }
+
+const MAX_FORGOTTEN: usize = 4096;
 
 impl Outbox {
     pub fn set_flow(&mut self, f: Option<Flow>) {
@@ -416,6 +422,10 @@ impl Outbox {
     pub fn enqueue(&mut self, task: &str, mk: Box<dyn Fn(i64) -> String + Send>) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
+        if self.forgotten.contains(task) {
+            self.results.insert(id, Err("task forgotten".into()));
+            return id;
+        }
         self.waiters.push_back(OWaiter { id, task: task.to_string(), mk });
         self.wake();
         id
@@ -430,6 +440,11 @@ impl Outbox {
             if self.closed {
                 let w = self.waiters.pop_front().unwrap();
                 self.results.insert(w.id, Err("outbox closed".into()));
+                continue;
+            }
+            if self.forgotten.contains(&w.task) {
+                let w = self.waiters.pop_front().unwrap();
+                self.results.insert(w.id, Err("task forgotten".into()));
                 continue;
             }
             let t = self.tasks.entry(w.task.clone()).or_default();
@@ -483,10 +498,30 @@ impl Outbox {
         }
         self.flush(id);
     }
+    /// Drop a terminal task for good, atomically: release its credit and fail
+    /// its queued sends BEFORE waking the others, so it never re-creates its
+    /// entry and re-consumes connection credit no resume returns (audit3 P1).
     pub fn forget(&mut self, id: &str) {
         if let Some(t) = self.tasks.remove(id) {
             self.conn_used -= t.used;
         }
+        if self.forgotten.insert(id.to_string()) {
+            self.forgotten_fifo.push_back(id.to_string());
+            if self.forgotten_fifo.len() > MAX_FORGOTTEN {
+                if let Some(old) = self.forgotten_fifo.pop_front() {
+                    self.forgotten.remove(&old);
+                }
+            }
+        }
+        let mut kept = VecDeque::new();
+        while let Some(w) = self.waiters.pop_front() {
+            if w.task == id {
+                self.results.insert(w.id, Err("task forgotten".into()));
+            } else {
+                kept.push_back(w);
+            }
+        }
+        self.waiters = kept;
         self.wake();
     }
     pub fn close(&mut self) {

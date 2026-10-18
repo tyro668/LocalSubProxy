@@ -151,6 +151,32 @@ public final class SelfTest {
       ss.close();
     });
 
+    test("outbox: forget fails the task's queued sends before waking others (audit3 P1)", () -> {
+      Gateway g = new Gateway(new Gateway.Config(), new byte[32]);
+      Lmbp.Outbox o = new Lmbp.Outbox(g);
+      g.locked(() -> {
+        o.setFlow(new Lmbp.Flow(Lmbp.MAX_FRAME_BYTES, Lmbp.MAX_FRAME_BYTES));
+        String big = "x".repeat(130 << 10);
+        java.util.List<Lmbp.Outbox.Waiter> ws = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+          Lmbp.Outbox.Waiter w = new Lmbp.Outbox.Waiter();
+          w.task = "t1";
+          w.mk = seq -> "{\"seq\":" + seq + ",\"d\":\"" + big + "\"}";
+          o.waiters.add(w);
+          ws.add(w);
+        }
+        o.wake();
+        check(ws.get(0).done && !ws.get(1).done, "second chunk should wait for credit");
+        o.forget("t1");
+        check(!o.tasks.containsKey("t1"), "forgotten task re-created its outbox entry");
+        eq(o.connUsed, 0L);
+        check(o.waiters.isEmpty() && ws.get(1).done && ws.get(1).err != null && ws.get(2).err != null, "queued sends of the forgotten task not failed");
+        boolean rejected = false;
+        try { o.send("t1", seq -> Json.obj("type", "blob.chunk"), null); } catch (IllegalStateException e) { rejected = true; }
+        check(rejected, "send after forget admitted");
+      });
+    });
+
     System.out.println("selftest: " + passed + " passed, " + failed + " failed");
     System.exit(failed == 0 ? 0 : 1);
   }

@@ -586,7 +586,8 @@
             "e2ee"
           ],
           "heartbeat_seconds": 20,
-          "max_frame_bytes": 1048576,
+          "max_concurrency": 1,
+          "max_frame_bytes": 262144,
           "session_id": "sess_01",
           "token_expires_at": 1767226200
         },
@@ -1107,9 +1108,10 @@
         "data": {
           "session_id": "s",
           "heartbeat_seconds": 20,
-          "max_frame_bytes": 65536,
+          "max_frame_bytes": 262144,
           "token_expires_at": 1,
           "capabilities": [],
+          "max_concurrency": 1,
           "flow": {
             "task_window": 100,
             "conn_window": 100
@@ -1117,6 +1119,90 @@
         }
       },
       "must_reject_because": "windows MUST be >= 65536 (max_frame_bytes floor)"
+    },
+    {
+      "name": "welcome_without_max_concurrency",
+      "frame": {
+        "v": 2,
+        "type": "welcome",
+        "id": "h1",
+        "data": {
+          "session_id": "s",
+          "heartbeat_seconds": 20,
+          "max_frame_bytes": 262144,
+          "token_expires_at": 1,
+          "capabilities": []
+        }
+      },
+      "must_reject_because": "welcome.max_concurrency is required"
+    },
+    {
+      "name": "welcome_max_frame_bytes_1mib",
+      "frame": {
+        "v": 2,
+        "type": "welcome",
+        "id": "h1",
+        "data": {
+          "session_id": "s",
+          "heartbeat_seconds": 20,
+          "max_frame_bytes": 1048576,
+          "token_expires_at": 1,
+          "capabilities": [],
+          "max_concurrency": 1
+        }
+      },
+      "must_reject_because": "welcome.max_frame_bytes is exactly 262144, not 1 MiB"
+    },
+    {
+      "name": "welcome_max_frame_bytes_262143",
+      "frame": {
+        "v": 2,
+        "type": "welcome",
+        "id": "h1",
+        "data": {
+          "session_id": "s",
+          "heartbeat_seconds": 20,
+          "max_frame_bytes": 262143,
+          "token_expires_at": 1,
+          "capabilities": [],
+          "max_concurrency": 1
+        }
+      },
+      "must_reject_because": "welcome.max_frame_bytes is exactly 262144 (one below)"
+    },
+    {
+      "name": "welcome_max_frame_bytes_262145",
+      "frame": {
+        "v": 2,
+        "type": "welcome",
+        "id": "h1",
+        "data": {
+          "session_id": "s",
+          "heartbeat_seconds": 20,
+          "max_frame_bytes": 262145,
+          "token_expires_at": 1,
+          "capabilities": [],
+          "max_concurrency": 1
+        }
+      },
+      "must_reject_because": "welcome.max_frame_bytes is exactly 262144 (one above)"
+    },
+    {
+      "name": "welcome_max_concurrency_zero",
+      "frame": {
+        "v": 2,
+        "type": "welcome",
+        "id": "h1",
+        "data": {
+          "session_id": "s",
+          "heartbeat_seconds": 20,
+          "max_frame_bytes": 262144,
+          "token_expires_at": 1,
+          "capabilities": [],
+          "max_concurrency": 0
+        }
+      },
+      "must_reject_because": "welcome.max_concurrency is 1..16"
     },
     {
       "name": "delta_text_and_e2ee",

@@ -58,7 +58,21 @@ func TestQueuedDisconnectRecordsCancelled(t *testing.T) {
 		wg.Add(1)
 		go func() { defer wg.Done(); idemChat(t, r, "slow", "x", "") }()
 	}
-	time.Sleep(300 * time.Millisecond)
+	// all 4 slots taken before the next request (a fixed sleep raced slow CI runners)
+	slotsFull := func() bool {
+		r.g.mu.Lock()
+		ds := r.g.devs[r.devID]
+		r.g.mu.Unlock()
+		if ds == nil {
+			return false
+		}
+		ds.mu.Lock()
+		defer ds.mu.Unlock()
+		return ds.slots >= ds.maxConc
+	}
+	for end := time.Now().Add(5 * time.Second); !slotsFull() && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	req := r.req("POST", "/v1/chat/completions", map[string]any{"model": "echo", "messages": user("gone")}, map[string]string{"Idempotency-Key": "k-gone"}).WithContext(ctx)
 	go func() {

@@ -444,6 +444,7 @@ func (r *runner) run(ctx context.Context) error {
 			r.awaitAck(frames, run.TaskID, 3))
 	}
 	r.checkCoreGap(ctx, conn, frames, full)
+	r.checkCoreBadTerminal(ctx, conn, frames, full)
 	// cancellation
 	cctx, ccancel := context.WithCancel(ctx)
 	go func() { r.chat(cctx, full, true) }()
@@ -598,6 +599,45 @@ wait:
 	_ = r.writeFrame(conn, "task.error", "", run.TaskID, lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}, 3)
 	body := strings.Join(<-sse, "\n")
 	r.check("S5", title, want(reason == "protocol_error" && !strings.Contains(body, "skipped one") && strings.Contains(body, `"error"`), "cancel reason %q body %q", reason, body))
+}
+
+// checkCoreBadTerminal (S6, §8.6): a terminal frame whose body does not match
+// task.done.json (here {}) is rejected before its seq is accepted: the task
+// fails with task.cancel(protocol_error); it is never reported as a success.
+func (r *runner) checkCoreBadTerminal(ctx context.Context, conn *websocket.Conn, frames <-chan lmbp.Envelope, model string) {
+	const title = "a task.done whose body does not match task.done.json ({}) is not accepted: the task fails with task.cancel(protocol_error), never finish_reason stop (§8.6, §7.3)"
+	sse := make(chan []string, 1)
+	go func() { sse <- r.chat(ctx, model, true) }()
+	run, err := r.awaitRun(frames)
+	if err != nil {
+		r.check("S6", title, err)
+		<-sse
+		return
+	}
+	_ = r.writeFrame(conn, "task.delta", "", run.TaskID, lmbp.TaskDelta{Text: "almost"}, 1)
+	_ = r.writeFrame(conn, "task.done", "", run.TaskID, json.RawMessage(`{}`), 2)
+	reason := ""
+	tm := time.After(r.cfg.Timeout)
+wait:
+	for reason == "" {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				break wait
+			}
+			if f.Type == lmbp.TypeTaskCancel && f.TaskID == run.TaskID {
+				var c lmbp.TaskCancel
+				_ = json.Unmarshal(f.Data, &c)
+				reason = c.Reason
+			}
+		case <-tm:
+			break wait
+		}
+	}
+	// the device ends the task as it would after any cancel
+	_ = r.writeFrame(conn, "task.error", "", run.TaskID, lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}, 2)
+	body := strings.Join(<-sse, "\n")
+	r.check("S6", title, want(reason == "protocol_error" && !strings.Contains(body, `"finish_reason":"stop"`) && strings.Contains(body, `"error"`), "cancel reason %q body %q", reason, body))
 }
 
 func (r *runner) awaitRun(frames <-chan lmbp.Envelope) (lmbp.TaskRun, error) {

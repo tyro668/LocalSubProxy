@@ -253,6 +253,16 @@ public final class JdbcStore implements Store {
     });
   }
 
+  @Override public List<String> unfinishedTasks() {
+    return tx(c -> {
+      List<String> out = new java.util.ArrayList<>();
+      try (PreparedStatement p = ps(c, "SELECT id FROM lmbp_tasks WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELLED')"); ResultSet r = p.executeQuery()) {
+        while (r.next()) out.add(r.getString(1));
+      }
+      return out;
+    });
+  }
+
   /** One transaction: finished tasks before the cutoff with their events and idempotency records, and expired pairings. */
   @Override public int purge(long cutoff) {
     String old = "SELECT id FROM lmbp_tasks WHERE state IN ('SUCCEEDED','FAILED','CANCELLED') AND finished > 0 AND finished < ?";

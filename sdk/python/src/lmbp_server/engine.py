@@ -26,7 +26,7 @@ from . import anthropic as A
 from . import protocol as L
 from ._http import Request, WSMsgType, web
 from .store import MemoryStore, Store, StoreConflict, StoreNotFound
-from .params import ParamError, announce_problem, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
+from .params import ParamError, announce_problem, device_data_problem, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
 
 PROBLEM_BASE = "https://localsubproxy.dev/problems/"
 USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ"
@@ -627,6 +627,34 @@ class Gateway:
         if not self.cfg.get("retention"):
             self.cfg["retention"] = RETENTION_DEFAULT
         self.retention_task = None
+        self.recover_orphans()
+
+    def recover_orphans(self):
+        """Store OUTCOME_UNKNOWN for tasks a previous process left without a
+        terminal state (crash while QUEUED/RUNNING): this gateway owns no task
+        yet, so all of them are orphans. The persisted terminal event and
+        state make replays agree and let retention purge the prompt and
+        output; without it they bypassed retention forever (audit3 P2-5)."""
+        fn = getattr(self.store, "unfinished_tasks", None)
+        if not callable(fn):
+            return
+        try:
+            ids = fn()
+        except Exception as e:  # noqa: BLE001
+            self.log("lmbp: listing unfinished tasks:", e)
+            return
+        for tid in ids:
+            try:
+                rec = self.store.get_task(tid)
+                if rec is None:
+                    continue
+                seq = max((e["seq"] for e in rec.get("events") or []), default=0) + 1
+                self.store.finish_task(tid, {"seq": seq, "type": "task.error",
+                                             "data": error_body("OUTCOME_UNKNOWN", "gateway restarted; task outcome unknown")}, "FAILED")
+            except Exception as e:  # noqa: BLE001
+                self.log(f"lmbp: orphaned task {tid}:", e)
+        if ids:
+            self.log(f"lmbp: {len(ids)} orphaned task(s) from a previous run recorded as OUTCOME_UNKNOWN")
 
     def ensure_retention(self):
         """Starts the purge loop on the running event loop (first request or connection)."""
@@ -1276,6 +1304,19 @@ class Gateway:
 
     def on_device_data(self, ds, inp, size):
         tid = inp.get("task_id")
+        # Envelope + body validated BEFORE the seq is accepted, persisted or
+        # ACKed: an invalid terminal frame (task.done {}) never becomes
+        # SUCCEEDED. The task fails as a protocol error (audit3 P2-6).
+        bad = device_data_problem(inp)
+        if bad:
+            tt = ds.tasks.get(tid) if isinstance(tid, str) else None
+            self.log(f"lmbp: device {ds.device_id} task {tid}: {bad}")
+            if tt is not None:
+                tt.cancel("protocol_error")
+                tt.fail_local("INTERNAL", "device sent an invalid frame: " + bad)
+            else:
+                ds.send_err(inp.get("id"), "BAD_REQUEST", bad)
+            return True
         t = ds.tasks.get(tid)
         seq = inp.get("seq") if L.is_int(inp.get("seq")) else 0
         if t is None:

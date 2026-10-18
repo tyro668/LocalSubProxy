@@ -321,6 +321,10 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 			anthropicError(w, errStatus(fail.Code), fail.Code, fail.Message)
 			return
 		}
+		if done == nil { // never dereference a missing terminal event
+			anthropicError(w, 500, lmbp.ErrInternal, "task ended without a terminal event")
+			return
+		}
 		content := []any{}
 		if text.Len() > 0 {
 			content = append(content, map[string]any{"type": "text", "text": text.String()})

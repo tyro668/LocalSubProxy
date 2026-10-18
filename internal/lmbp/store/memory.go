@@ -245,11 +245,23 @@ func (m *Memory) ListEvents(_ context.Context, taskID string) ([]Event, error) {
 	return ev, nil
 }
 
+// UnfinishedTasks lists tasks without a terminal state (store.UnfinishedLister).
+func (m *Memory) UnfinishedTasks(_ context.Context) ([]Task, error) {
+	defer m.lock()()
+	var out []Task
+	for _, t := range m.tasks {
+		if !IsTerminalState(t.State) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (m *Memory) Purge(_ context.Context, cutoff time.Time) (int, error) {
 	defer m.lock()()
 	n := 0
 	for id, t := range m.tasks {
-		if t.State != "RUNNING" && t.State != "QUEUED" && t.UpdatedAt.Before(cutoff) {
+		if IsTerminalState(t.State) && t.UpdatedAt.Before(cutoff) { // explicit terminal states only (audit3 P2-4)
 			delete(m.tasks, id)
 			delete(m.events, id)
 			n++

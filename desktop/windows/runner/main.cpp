@@ -21,6 +21,18 @@ constexpr WORD kTrayCmdQuit = 1002;
 WNDPROC original_wnd_proc = nullptr;
 std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> tray_channel;
 
+// Explorer broadcasts TaskbarCreated when it (re)starts: every notification
+// icon is gone and must be added again, or the tray-only app becomes
+// unreachable (audit3 P2-10).
+const UINT kTaskbarCreatedMessage = ::RegisterWindowMessageW(L"TaskbarCreated");
+// A second launch asks the running instance to show its window, then exits.
+const UINT kActivateMessage =
+    ::RegisterWindowMessageW(L"LocalSubProxy.Desktop.Activate");
+constexpr wchar_t kSingleInstanceMutex[] =
+    L"Local\\LocalSubProxy.Desktop.SingleInstance";
+
+void ShellAddTrayIcon(HWND window);
+
 void RemoveTrayIcon(HWND window) {
   NOTIFYICONDATAW nid = {};
   nid.cbSize = sizeof(nid);
@@ -33,6 +45,21 @@ void RemoveTrayIcon(HWND window) {
 // 菜单选择经 MethodChannel 转发给 Dart 侧处理。
 LRESULT CALLBACK TrayWndProc(HWND window, UINT message, WPARAM wparam,
                              LPARAM lparam) {
+  if (kTaskbarCreatedMessage != 0 && message == kTaskbarCreatedMessage) {
+    ShellAddTrayIcon(window);  // Explorer restarted: re-add the icon
+    return 0;
+  }
+  if (kActivateMessage != 0 && message == kActivateMessage) {
+    // another launch: show and focus the existing configuration window
+    if (::IsIconic(window)) {
+      ::ShowWindow(window, SW_RESTORE);
+    }
+    ::SetForegroundWindow(window);
+    if (tray_channel) {
+      tray_channel->InvokeMethod("config", nullptr);
+    }
+    return 0;
+  }
   switch (message) {
     case kTrayCallbackMessage:
       if (LOWORD(lparam) == WM_LBUTTONUP || LOWORD(lparam) == WM_RBUTTONUP) {
@@ -67,10 +94,7 @@ LRESULT CALLBACK TrayWndProc(HWND window, UINT message, WPARAM wparam,
   return ::CallWindowProcW(original_wnd_proc, window, message, wparam, lparam);
 }
 
-void AddTrayIcon(HWND window) {
-  original_wnd_proc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
-      window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TrayWndProc)));
-
+void ShellAddTrayIcon(HWND window) {
   NOTIFYICONDATAW nid = {};
   nid.cbSize = sizeof(nid);
   nid.hWnd = window;
@@ -86,6 +110,19 @@ void AddTrayIcon(HWND window) {
   ::lstrcpyW(nid.szTip, L"LocalSubProxy");
   ::Shell_NotifyIconW(NIM_ADD, &nid);
 }
+
+void AddTrayIcon(HWND window) {
+  original_wnd_proc = reinterpret_cast<WNDPROC>(::SetWindowLongPtrW(
+      window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(TrayWndProc)));
+  // TaskbarCreated and the activation request are broadcast messages; a
+  // window of an elevated process would not get them from Explorer or a
+  // normal-integrity launch otherwise.
+  ::ChangeWindowMessageFilterEx(window, kTaskbarCreatedMessage, MSGFLT_ALLOW,
+                                nullptr);
+  ::ChangeWindowMessageFilterEx(window, kActivateMessage, MSGFLT_ALLOW,
+                                nullptr);
+  ShellAddTrayIcon(window);
+}
 }  // namespace
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
@@ -94,6 +131,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
     CreateAndAttachConsole();
+  }
+
+  // Single instance (audit3 P2-10): a second launch would start a second
+  // kernel on the same data dir and a second tray icon. It asks the running
+  // instance to show its window instead, and exits.
+  HANDLE instance_mutex =
+      ::CreateMutexW(nullptr, TRUE, kSingleInstanceMutex);
+  if (instance_mutex != nullptr && ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    ::AllowSetForegroundWindow(ASFW_ANY);
+    ::PostMessageW(HWND_BROADCAST, kActivateMessage, 0, 0);
+    ::CloseHandle(instance_mutex);
+    return EXIT_SUCCESS;
   }
 
   // Initialize COM, so that it is available for use in the library and/or
@@ -129,5 +178,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   tray_channel.reset();
   ::CoUninitialize();
+  if (instance_mutex != nullptr) {
+    ::ReleaseMutex(instance_mutex);
+    ::CloseHandle(instance_mutex);
+  }
   return EXIT_SUCCESS;
 }

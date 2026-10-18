@@ -15,12 +15,15 @@ echo "== AsyncAPI 3.0";                     (cd tools && npm install --silent &&
 echo "== Spec examples vs strict JOSE vectors; spec §13.2 table vs lmbp-conformance -list"
 (cd .. && $ST go ./internal/lmbp/ -run 'TestSpecExamples' -count=1)
 (cd .. && $ST go ./internal/lmbp/conformance/ -run 'TestSpecCatalogMatches' -count=1)
+echo "== welcome.json: max_concurrency required, max_frame_bytes exactly 262144 (boundary negatives in vectors.json); no other value in examples"
+(cd .. && $ST go ./internal/lmbp/ -run 'TestSchemasAgainstVectors|TestVectors' -count=1)
+if grep -nE '"?max_frame_bytes"?[": ]+[0-9]+' asyncapi.yaml openapi.yaml ../docs/*.md | grep -vE 'max_frame_bytes"?[": ]+262144\b'; then echo "FAIL an example uses max_frame_bytes other than 262144"; exit 1; fi
 echo "== JOSE strict vectors (jose.json): Go reference, Node SDK, Python SDK"
 (cd .. && $ST go ./internal/lmbp/ -run 'TestJOSEVectors' -count=1)
 (cd ../sdk/node && npm run -s build && $ST node test/jose.test.mjs)
 (cd ../sdk/python && { [ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -e '.[test]'; }; } && $ST pytest .venv/bin/python -q tests/test_jose_vectors.py)
 echo "== Request-parameter vectors (params.json) + bundled schema copies: Go, Node SDK, Python SDK"
-for n in defs.json task.run.payload.json hello.json models.update.json; do
+for n in defs.json task.run.payload.json hello.json models.update.json task.done.json task.error.json; do
   cmp schemas/$n ../sdk/node/schemas/$n && cmp schemas/$n ../sdk/python/src/lmbp_server/schemas/$n || { echo "SDK copy of $n is stale"; exit 1; }
 done
 (cd .. && $ST go ./internal/lmbp/gateway -run 'TestParamVectors|TestTaskRunSchemaBackstop' -count=1)

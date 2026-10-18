@@ -16,7 +16,12 @@ import java.util.concurrent.TimeUnit;
 
 /** A minimal connector for tests: pairs over HTTP, connects the lmbp WebSocket and answers tasks with a scripted reply. */
 final class FakeDevice implements AutoCloseable {
-  enum Mode { REPLY, HANG, LATE }
+  enum Mode { REPLY, HANG, LATE, SILENT, CHUNKS, BAD }
+  /** BAD mode: after task.delta seq 1, the device sends this frame type with this data as seq 2. */
+  volatile String badType = "task.done";
+  volatile Object badData;
+  /** Last task.run task id. */
+  volatile String lastRun;
   /** LATE mode: task ids whose first task.cancel already triggered the late frames. */
   final java.util.Set<String> lateSent = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -52,6 +57,10 @@ final class FakeDevice implements AutoCloseable {
   }
 
   String dc;
+  /** Extra hello data fields (override the defaults, e.g. capabilities, flow, resume). */
+  volatile Map<String, Object> helloExtra = Map.of();
+  /** resume_token of the last welcome. */
+  volatile String resumeToken;
   /** Runs after the WebSocket upgrade, before the hello (e.g. a revoke). */
   volatile Runnable beforeHello;
 
@@ -73,7 +82,23 @@ final class FakeDevice implements AutoCloseable {
               Map<String, Object> m = Json.asObj(Json.parse(buf.toString()));
               buf.setLength(0);
               received.add(m);
-              if ("welcome".equals(m.get("type"))) welcome.complete(null);
+              if ("welcome".equals(m.get("type"))) {
+                Object rt = Json.get(m.get("data"), "resume_token");
+                if (rt instanceof String t) resumeToken = t;
+                welcome.complete(null);
+              }
+              if (mode == Mode.CHUNKS && ("task.run".equals(m.get("type")) || "blob.chunk".equals(m.get("type")))) {
+                // CHUNKS: ACK every gateway data frame; answer once the last blob chunk is in
+                String tid = (String) m.get("task_id");
+                long seq = ((Number) m.get("seq")).longValue();
+                boolean lastChunk = "blob.chunk".equals(m.get("type")) && Boolean.TRUE.equals(Json.get(m.get("data"), "last"));
+                Thread.ofVirtual().start(() -> {
+                  send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.ack", "task_id", tid, "data", Json.obj("seq", seq)));
+                  if (!lastChunk) return;
+                  send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", tid, "seq", 1L, "data", Json.obj("text", "seen")));
+                  send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.done", "task_id", tid, "seq", 2L, "data", Json.obj("finish_reason", "stop", "usage", Json.obj("prompt_tokens", 1L, "completion_tokens", 1L, "total_tokens", 2L))));
+                });
+              }
               if (mode == Mode.LATE && "task.cancel".equals(m.get("type")) && lateSent.add((String) m.get("task_id"))) {
                 String tid = (String) m.get("task_id");
                 Thread.ofVirtual().start(() -> { // the device only notices a bit later
@@ -83,6 +108,7 @@ final class FakeDevice implements AutoCloseable {
                   send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.error", "task_id", tid, "seq", 5L, "data", Json.obj("code", "CANCELLED", "message", "cancelled", "retryable", false)));
                 });
               }
+              if ("task.run".equals(m.get("type"))) lastRun = (String) m.get("task_id");
               if ("task.run".equals(m.get("type"))) Thread.ofVirtual().start(() -> run((String) m.get("task_id")));
             }
             w.request(1);
@@ -90,8 +116,10 @@ final class FakeDevice implements AutoCloseable {
           }
         }).get(5, TimeUnit.SECONDS);
     if (beforeHello != null) beforeHello.run();
-    send(Json.obj("v", (long) Lmbp.VERSION, "type", "hello", "id", "h1", "data", Json.obj("device_id", deviceId, "client", "fake-device", "proof", proof(deviceId, Lmbp.PROOF_HELLO, token),
-        "capabilities", List.of("tools"), "models", List.of(model), "model_capabilities", Json.obj(model, List.of("tools")), "max_concurrency", 4L)));
+    Map<String, Object> hello = Json.obj("device_id", deviceId, "client", "fake-device", "proof", proof(deviceId, Lmbp.PROOF_HELLO, token),
+        "capabilities", List.of("tools"), "models", List.of(model), "model_capabilities", Json.obj(model, List.of("tools")), "max_concurrency", 4L);
+    hello.putAll(helloExtra);
+    send(Json.obj("v", (long) Lmbp.VERSION, "type", "hello", "id", "h1", "data", hello));
     welcome.get(5, TimeUnit.SECONDS);
   }
 
@@ -100,6 +128,14 @@ final class FakeDevice implements AutoCloseable {
   }
 
   void run(String taskId) {
+    if (mode == Mode.SILENT || mode == Mode.CHUNKS) return;
+    if (mode == Mode.BAD) {
+      send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "almost")));
+      Map<String, Object> f = Json.obj("v", (long) Lmbp.VERSION, "type", badType, "task_id", taskId, "seq", 2L);
+      f.put("data", badData); // may be null: sent as JSON null
+      send(f);
+      return;
+    }
     if (mode == Mode.LATE) {
       send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", 1L, "data", Json.obj("text", "hello ")));
       send(Json.obj("v", (long) Lmbp.VERSION, "type", "task.delta", "task_id", taskId, "seq", 2L, "data", Json.obj("text", "world")));

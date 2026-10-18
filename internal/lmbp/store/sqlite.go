@@ -225,8 +225,48 @@ func (s *SQLite) CreateTask(ctx context.Context, t Task, i *Idempotency) error {
 }
 
 func (s *SQLite) SetTaskState(ctx context.Context, id, state string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET state=?, updated_at=? WHERE id=? AND state IN ('QUEUED','RUNNING')`, state, time.Now().UnixNano(), id)
-	return err
+	r, err := s.db.ExecContext(ctx, `UPDATE tasks SET state=?, updated_at=? WHERE id=? AND state IN ('QUEUED','RUNNING')`, state, time.Now().UnixNano(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := r.RowsAffected(); n == 0 {
+		var cur string
+		if err := s.db.QueryRowContext(ctx, `SELECT state FROM tasks WHERE id=?`, id).Scan(&cur); err != nil {
+			return nf(err) // the row is gone: the caller must not run the task
+		}
+	}
+	return nil
+}
+
+// UnfinishedTasks lists tasks without a terminal state (QUEUED, RUNNING or
+// unknown): after a restart these are orphans (see store.UnfinishedLister).
+func (s *SQLite) UnfinishedTasks(ctx context.Context) ([]Task, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks WHERE state NOT IN `+terminalSQL)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []Task
+	for _, id := range ids {
+		t, err := s.GetTask(ctx, id)
+		if err != nil {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 // FinishTask writes the terminal event and the terminal state in one
@@ -306,6 +346,10 @@ func (s *SQLite) ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	return out, rows.Err()
 }
 
+// terminalSQL lists the explicit terminal states. Retention only ever
+// deletes these: QUEUED, RUNNING and any unknown state stay (audit3 P2-4).
+const terminalSQL = `('SUCCEEDED','FAILED','CANCELLED')`
+
 func (s *SQLite) Purge(ctx context.Context, cutoff time.Time) (int, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -313,18 +357,18 @@ func (s *SQLite) Purge(ctx context.Context, cutoff time.Time) (int, error) {
 	}
 	defer tx.Rollback()
 	c := cutoff.UnixNano()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE state<>'RUNNING' AND updated_at<?)`, c); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE task_id IN (SELECT id FROM tasks WHERE state IN `+terminalSQL+` AND updated_at<?)`, c); err != nil {
 		return 0, err
 	}
 	// Idempotency records go with their task: never a key without its task.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE task_id IN (SELECT id FROM tasks WHERE state<>'RUNNING' AND updated_at<?)`, c); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE task_id IN (SELECT id FROM tasks WHERE state IN `+terminalSQL+` AND updated_at<?)`, c); err != nil {
 		return 0, err
 	}
-	r, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE state<>'RUNNING' AND updated_at<?`, c)
+	r, err := tx.ExecContext(ctx, `DELETE FROM tasks WHERE state IN `+terminalSQL+` AND updated_at<?`, c)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE created_at<?`, time.Now().Add(-24*time.Hour).UnixNano()); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM idempotency WHERE created_at<? AND task_id NOT IN (SELECT id FROM tasks WHERE state NOT IN `+terminalSQL+`)`, time.Now().Add(-24*time.Hour).UnixNano()); err != nil {
 		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM device_auths WHERE expires_at<?`, cutoff.Unix()); err != nil {

@@ -12,7 +12,7 @@ import { WebSocketServer } from 'ws';
 import * as L from './lmbp.js';
 import { MemoryStore } from '../store.js';
 import * as A from '../anthropic.js';
-import { validateChatParams, validateAnthropicParams, validateTaskRun, announceProblem, paramErrorBody, ParamError } from './params.js';
+import { validateChatParams, validateAnthropicParams, validateTaskRun, announceProblem, deviceDataProblem, paramErrorBody, ParamError } from './params.js';
 
 const PROBLEM_BASE = 'https://localsubproxy.dev/problems/';
 const USER_CODE_CHARS = 'BCDFGHJKLMNPQRSTVWXZ';
@@ -59,7 +59,28 @@ export class Gateway {
     this.pending = new Map();
     this.wss = new WebSocketServer({ noServer: true, maxPayload: L.MAX_FRAME_BYTES, perMessageDeflate: false,
       handleProtocols: (ps) => (ps.has(L.SUBPROTOCOL) ? L.SUBPROTOCOL : false) });
+    this.recoverOrphans();
     this.startRetention();
+  }
+
+  // recoverOrphans stores OUTCOME_UNKNOWN for tasks a previous process left
+  // without a terminal state (crash while QUEUED/RUNNING): this gateway owns
+  // no task yet, so all of them are orphans. The persisted terminal event
+  // and state make replays agree and let retention purge the prompt and
+  // output; without it they bypassed retention forever (audit3 P2-5).
+  recoverOrphans() {
+    if (typeof this.store.unfinishedTasks !== 'function') return;
+    let ids;
+    try { ids = this.store.unfinishedTasks(); } catch (e) { this.cfg.log('lmbp: listing unfinished tasks:', e); return; }
+    for (const id of ids) {
+      try {
+        const rec = this.store.getTask(id);
+        if (!rec) continue;
+        const seq = rec.events.reduce((m, e) => Math.max(m, e.seq), 0) + 1;
+        this.store.finishTask(id, { seq, type: 'task.error', data: errorBody('OUTCOME_UNKNOWN', 'gateway restarted; task outcome unknown') }, 'FAILED');
+      } catch (e) { this.cfg.log(`lmbp: orphaned task ${id}:`, e); }
+    }
+    if (ids.length) this.cfg.log(`lmbp: ${ids.length} orphaned task(s) from a previous run recorded as OUTCOME_UNKNOWN`);
   }
 
   /** Purges finished tasks (with their idempotency records) older than cfg.retention, every retentionEvery(). */
@@ -537,6 +558,16 @@ export class Gateway {
   }
 
   onDeviceData(ds, inp, size) {
+    // Envelope + body validated BEFORE the seq is accepted, persisted or
+    // ACKed: an invalid terminal frame (task.done {}) never becomes
+    // SUCCEEDED. The task fails as a protocol error (audit3 P2-6).
+    const bad = deviceDataProblem(inp);
+    if (bad) {
+      const tt = ds.tasks.get(inp.task_id);
+      this.cfg.log(`lmbp: device ${ds.deviceID} task ${inp.task_id}: ${bad}`);
+      if (tt) { tt.cancel('protocol_error'); tt.failLocal('INTERNAL', 'device sent an invalid frame: ' + bad); } else ds.sendErr(inp.id, 'BAD_REQUEST', bad);
+      return true;
+    }
     const t = ds.tasks.get(inp.task_id);
     if (!t) {
       // Ended here (cancel, timeout, slow consumer, ...) while the device

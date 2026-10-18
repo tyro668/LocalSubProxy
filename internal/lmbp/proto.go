@@ -278,7 +278,7 @@ type Welcome struct {
 	MaxFrameBytes    int            `json:"max_frame_bytes"`
 	TokenExpiresAt   int64          `json:"token_expires_at"`
 	Capabilities     []string       `json:"capabilities"`
-	MaxConcurrency   int            `json:"max_concurrency,omitempty"`
+	MaxConcurrency   int            `json:"max_concurrency"` // required (welcome.json)
 	Flow             *Flow          `json:"flow,omitempty"`
 	ResumeToken      string         `json:"resume_token,omitempty"`
 	ResumeSeconds    int            `json:"resume_window_seconds,omitempty"`

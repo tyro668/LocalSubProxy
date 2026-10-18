@@ -56,10 +56,12 @@ type Client struct {
 	in          *lmbp.Inbound        // gateway→device data frames
 	resumeToken string
 	resumeUntil time.Time
-	maxConc     int        // effective: min(want, gateway cap)
-	wantConc    int        // what this device declares (SetMaxConcurrency)
-	gwConc      int        // cap from the last welcome (0: none)
-	live        bool       // welcome received on the current session
+	maxConc     int    // effective: min(want, gateway cap)
+	wantConc    int    // what this device declares (SetMaxConcurrency)
+	gwConc      int    // cap from the last welcome (0: none)
+	live        bool   // welcome received on the current session
+	liveGen     uint64 // bumped at every welcome: binds an announcement to its session
+	liveConn    *websocket.Conn
 	pendingAnn  bool       // ModelsChanged requested before the welcome
 	annMu       sync.Mutex // serializes models.update build+send
 	caps        []string
@@ -350,20 +352,58 @@ func (c *Client) OutboxUsage() (frames, bytes int) {
 func (c *Client) ModelsChanged() {
 	c.annMu.Lock()
 	defer c.annMu.Unlock()
+	for {
+		c.mu.Lock()
+		live, gen, conn := c.live, c.liveGen, c.liveConn
+		if !live {
+			c.pendingAnn = true
+		}
+		c.mu.Unlock()
+		if !live { // before the welcome: the handshake re-checks and resends
+			return
+		}
+		b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
+		if announceHook != nil {
+			announceHook(b)
+		}
+		if n := frameLen(lmbp.TypeModelsUpdate, "", b); n > lmbp.MaxFrameBytes {
+			// never publish a frame the gateway must close with 1009 (audit3 P2-1)
+			c.cfg.Logger.Printf("lmbp: models.update not sent: %d bytes exceeds max_frame_bytes %d; reduce the model list", n, lmbp.MaxFrameBytes)
+			return
+		}
+		// The update is bound to the session (generation) it was built for
+		// and re-checked at write time: after a reconnect it would land on
+		// the new connection, before its welcome or after a newer hello,
+		// and overwrite that hello with stale data (audit3 P2-2).
+		if c.writeOn(gen, conn, lmbp.Envelope{Type: lmbp.TypeModelsUpdate, Data: b}) {
+			return
+		}
+	}
+}
+
+// frameLen is the encoded size of a control frame carrying data.
+func frameLen(typ, id string, data []byte) int {
+	b, _ := json.Marshal(lmbp.Envelope{V: lmbp.Version, Type: typ, ID: id, Data: data})
+	return len(b)
+}
+
+// writeOn writes a control frame only while session gen on conn is still
+// the live one; false means the session changed: the caller rebuilds (or,
+// before the next welcome, leaves it to the handshake via pendingAnn).
+func (c *Client) writeOn(gen uint64, conn *websocket.Conn, e lmbp.Envelope) bool {
+	e.V = lmbp.Version
+	b, _ := json.Marshal(e)
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	c.mu.Lock()
-	live := c.live
-	if !live {
-		c.pendingAnn = true
-	}
+	ok := c.live && c.liveGen == gen && c.liveConn == conn && c.conn == conn
 	c.mu.Unlock()
-	if !live { // before the welcome: the handshake re-checks and resends
-		return
+	if !ok {
+		return false
 	}
-	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
-	if announceHook != nil {
-		announceHook(b)
-	}
-	_ = c.control(lmbp.Envelope{Type: lmbp.TypeModelsUpdate, Data: b})
+	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.WriteMessage(websocket.TextMessage, b)
+	return true
 }
 
 // resetLocked aborts all local task state (the gateway did not resume us).
@@ -421,6 +461,9 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	}
 	c.mu.Unlock()
 	hb, _ := json.Marshal(hello)
+	if n := frameLen(lmbp.TypeHello, "h1", hb); n > lmbp.MaxFrameBytes {
+		return fmt.Errorf("hello is %d bytes, over max_frame_bytes %d: reduce the published model list (audit3 P2-1)", n, lmbp.MaxFrameBytes)
+	}
 	c.wmu.Lock()
 	c.conn = conn
 	c.wmu.Unlock()
@@ -429,7 +472,7 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 		return err
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	defer func() { c.mu.Lock(); c.live = false; c.mu.Unlock() }()
+	defer func() { c.mu.Lock(); c.live = false; c.liveConn = nil; c.mu.Unlock() }()
 	if handshakeHook != nil {
 		handshakeHook()
 	}
@@ -463,6 +506,8 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	resendConc := c.wantConc != hello.MaxConcurrency || c.pendingAnn // hello was stale
 	c.pendingAnn = false
 	c.live = true
+	c.liveGen++
+	c.liveConn = conn
 	var retransmit []lmbp.ResumeTask
 	if hello.Resume != nil && welcome.Resume != nil && welcome.Resume.Resumed {
 		keep := map[string]bool{}

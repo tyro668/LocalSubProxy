@@ -45,6 +45,7 @@ var Catalog = []Requirement{
 	{"CORE-21", "§4.1", lmbp.ProfileCore, "X-End-User 为 1–128 个可打印 ASCII 字符", []string{"L2"}},
 	{"CORE-22", "§8.6", lmbp.ProfileCore, "确认属于 Core，不依赖 flow：按序数据帧累计确认，跳号让任务失败，本地结束的任务迟到帧照常确认直到终止帧；未知或已结束任务的数据帧回 task.cancel(unknown_task)，不确认", []string{"S1", "S2", "S3", "S4", "S5", "E7"}},
 	{"CORE-23", "§16.1", lmbp.ProfileCore, "model_names 只用于展示，未声明模型的条目被忽略", []string{"X-N1"}},
+	{"CORE-24", "§8.6", lmbp.ProfileCore, "设备数据帧先校验信封与正文（task.done/task.error 须符合各自 Schema），再接受序号、持久化和确认；非法终止帧让任务失败（task.cancel protocol_error），不确认", []string{"S6"}},
 	{"REL-01", "§14、§15", lmbp.ProfileReliable, "协商 resume 与 flow；协商后确认同样覆盖全部数据帧，网关数据帧（含 blob.chunk）连续编号，续传后跳号仍让任务失败", []string{"X1r", "X-F1", "X-F2", "X-F3"}},
 	{"REL-02", "§14.2–§14.3", lmbp.ProfileReliable, "断线续传：重传不重复、不丢失，续传参数有界", []string{"X-R1", "X-R2", "Z3"}},
 	{"REL-03", "§14.4", lmbp.ProfileReliable, "SSE 事件带 id，Last-Event-ID 精确重放", []string{"X-H2", "X-H3"}},

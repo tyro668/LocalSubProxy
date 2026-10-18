@@ -19,7 +19,7 @@ let schemas;
 function schemaSet() {
   if (!schemas) {
     const load = (n) => JSON.parse(fs.readFileSync(new URL(`../../schemas/${n}`, import.meta.url), 'utf8'));
-    schemas = new SchemaSet([load('defs.json'), load('task.run.payload.json'), load('hello.json'), load('models.update.json')]);
+    schemas = new SchemaSet([load('defs.json'), load('task.run.payload.json'), load('hello.json'), load('models.update.json'), load('task.done.json'), load('task.error.json')]);
   }
   return schemas;
 }
@@ -188,6 +188,18 @@ export function announceProblem(data, hello) {
   const name = hello ? 'hello' : 'models.update';
   const e = schemaSet().validate(BASE + name + '.json', JSON.parse(JSON.stringify(data ?? null)));
   return e ? `${name}${e.path.length ? '.' + e.path.join('.') : ''}: ${e.message}` : '';
+}
+
+/** Validates a device data frame's envelope and, for task.done / task.error,
+ *  its body against task.done.json / task.error.json: '' when acceptable
+ *  (audit3 P2-6: checked before the seq is accepted, persisted or ACKed). */
+export function deviceDataProblem(inp) {
+  if (typeof inp.task_id !== 'string' || inp.task_id === '') return `${inp.type} without task_id`;
+  if (!Number.isSafeInteger(inp.seq) || inp.seq < 1) return `${inp.type} seq must be an integer >= 1`;
+  if (inp.data === null || typeof inp.data !== 'object' || Array.isArray(inp.data)) return `${inp.type} data must be a JSON object`;
+  if (inp.type !== 'task.done' && inp.type !== 'task.error') return '';
+  const e = schemaSet().validate(BASE + inp.type + '.json', JSON.parse(JSON.stringify(inp.data)));
+  return e ? `${inp.type}${e.path.length ? '.' + e.path.join('.') : ''}: ${e.message}` : '';
 }
 
 export function validateTaskRun(payload) {

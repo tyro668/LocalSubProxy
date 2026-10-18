@@ -4,7 +4,7 @@
 // constraint is never silently ignored. Lengths count Unicode code points
 // (as the specification requires). validate() returns null or the first
 // error { path: [...instance location], message }.
-const ANNOTATIONS = new Set(['$schema', '$id', '$defs', 'title', 'description', 'default', '$comment']);
+const ANNOTATIONS = new Set(['$schema', '$id', '$defs', 'title', 'description', 'default', '$comment', 'examples']);
 const KEYWORDS = new Set(['$ref', 'type', 'required', 'properties', 'additionalProperties', 'items', 'minItems', 'maxItems',
   'minimum', 'maximum', 'minLength', 'maxLength', 'enum', 'const', 'pattern', 'oneOf', 'anyOf', 'allOf', 'if', 'then', 'else', 'uniqueItems']);
 
