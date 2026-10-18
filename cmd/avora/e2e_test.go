@@ -81,17 +81,17 @@ func TestHeadlessEndToEnd(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	bin := buildBin(t, tmp, "./cmd/avora", "avora")
-	mock := buildBin(t, tmp, "./mock/cmd/lspmock", "lspmock")
+	mock := buildBin(t, tmp, "./mock/cmd/lmbpmock", "lmbpmock")
 	modelPort, gwPort := freePort(t), freePort(t)
 	gw := fmt.Sprintf("http://127.0.0.1:%d", gwPort)
 	const tenantKey = "e2e-tenant-key-0123456789abcdef-0123456789"
-	t.Setenv("LSP_TENANT_KEY_ACME", tenantKey)
-	t.Setenv("LSP_SIGNING_SEED", strings.Repeat("ab", 32))
+	t.Setenv("LMBP_TENANT_KEY_ACME", tenantKey)
+	t.Setenv("LMBP_SIGNING_SEED", strings.Repeat("ab", 32))
 	prof := filepath.Join(tmp, "profiles.json")
-	_ = os.WriteFile(prof, []byte(`{"acme":{"api_key_env":"LSP_TENANT_KEY_ACME","display_name":"Acme E2E","homepage_uri":"`+gw+`","pairing_uri":"`+gw+`/chat","requested_models":["qwen3-8b"]}}`), 0o600)
+	_ = os.WriteFile(prof, []byte(`{"acme":{"api_key_env":"LMBP_TENANT_KEY_ACME","display_name":"Acme E2E","homepage_uri":"`+gw+`","pairing_uri":"`+gw+`/chat","requested_models":["qwen3-8b"]}}`), 0o600)
 	startBG(t, filepath.Join(tmp, "model.log"), mock, "fakemodel", "-listen", fmt.Sprintf("127.0.0.1:%d", modelPort), "-models", "qwen3-8b")
 	startBG(t, filepath.Join(tmp, "gw.log"), bin, "server", "-listen", fmt.Sprintf("127.0.0.1:%d", gwPort), "-db", filepath.Join(tmp, "gw.db"),
-		"-tenants", "acme:LSP_TENANT_KEY_ACME", "-tenant-profiles", prof, "-issuer", gw)
+		"-tenants", "acme:LMBP_TENANT_KEY_ACME", "-tenant-profiles", prof, "-issuer", gw)
 	waitFor(t, "gateway", func() bool {
 		r, err := http.Get(gw + "/.well-known/avora")
 		if err == nil {

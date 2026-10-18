@@ -49,7 +49,7 @@ func main() {
 		f := flag.NewFlagSet("server", flag.ExitOnError)
 		listen := f.String("listen", "127.0.0.1:8080", "HTTP listen address; use a TLS reverse proxy for remote access")
 		db := f.String("db", "./data/gateway.db", "SQLite database file")
-		tenants := f.String("tenants", "default:LSP_TENANT_KEY_DEFAULT", "comma list of tenant:ENV_VAR_WITH_API_KEY")
+		tenants := f.String("tenants", "default:LMBP_TENANT_KEY_DEFAULT", "comma list of tenant:ENV_VAR_WITH_API_KEY")
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
 		issuer := f.String("issuer", "", "public https origin of this gateway, e.g. https://gw.example.com (required)")
 		profiles := f.String("tenant-profiles", "", "optional JSON file with per-tenant SaaS display identity (name, logo_uri, homepage_uri, policy_uri, requested_models, requested_scopes)")

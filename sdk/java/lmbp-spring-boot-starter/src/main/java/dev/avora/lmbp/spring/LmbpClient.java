@@ -25,19 +25,19 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * }</pre>
  */
 public class LmbpClient {
-  private final LMBPServer lsp;
+  private final LMBPServer lmbp;
   private final LmbpProperties props;
   private final LmbpUserResolver users;
 
-  public LmbpClient(LMBPServer lsp, LmbpProperties props, LmbpUserResolver users) { this.lsp = lsp; this.props = props; this.users = users; }
+  public LmbpClient(LMBPServer lmbp, LmbpProperties props, LmbpUserResolver users) { this.lmbp = lmbp; this.props = props; this.users = users; }
 
   public String tenant() { return props.getTenant(); }
 
   /** The underlying server (pairing, keys, raw handle). */
-  public LMBPServer server() { return lsp; }
+  public LMBPServer server() { return lmbp; }
 
   /** In-process client for {@code userId} (call, stream, cancel, resume, Anthropic messages). */
-  public InProcessClient forUser(String userId) { return lsp.client(props.getTenant(), require(userId)); }
+  public InProcessClient forUser(String userId) { return lmbp.client(props.getTenant(), require(userId)); }
 
   // ---- pairing ----
   /**
@@ -53,19 +53,19 @@ public class LmbpClient {
       if (r == null) throw new IllegalStateException("lmbp.issuer is empty and there is no current request");
       iss = r.getScheme() + "://" + r.getHeader("Host");
     }
-    return lsp.pairing().link(props.getTenant(), iss);
+    return lmbp.pairing().link(props.getTenant(), iss);
   }
 
-  public Pairing.Pending lookup(String userCode) { return lsp.pairing().lookup(props.getTenant(), userCode); }
+  public Pairing.Pending lookup(String userCode) { return lmbp.pairing().lookup(props.getTenant(), userCode); }
 
   /** Approves the code shown on the desktop for {@code userId}; throws {@link Pairing.PairingException}. */
-  public Pairing.Decision approve(String userId, String userCode) { return lsp.pairing().approve(props.getTenant(), require(userId), userCode); }
+  public Pairing.Decision approve(String userId, String userCode) { return lmbp.pairing().approve(props.getTenant(), require(userId), userCode); }
 
-  public Pairing.Decision deny(String userId, String userCode) { return lsp.pairing().deny(props.getTenant(), require(userId), userCode); }
+  public Pairing.Decision deny(String userId, String userCode) { return lmbp.pairing().deny(props.getTenant(), require(userId), userCode); }
 
-  public List<Pairing.Device> devices(String userId) { return lsp.pairing().listDevices(props.getTenant(), require(userId)); }
+  public List<Pairing.Device> devices(String userId) { return lmbp.pairing().listDevices(props.getTenant(), require(userId)); }
 
-  public boolean revoke(String userId, String deviceId) { return lsp.pairing().revokeDevice(props.getTenant(), require(userId), deviceId); }
+  public boolean revoke(String userId, String deviceId) { return lmbp.pairing().revokeDevice(props.getTenant(), require(userId), deviceId); }
 
   // ---- model calls ----
   public List<Object> models(String userId) { return forUser(userId).models(); }

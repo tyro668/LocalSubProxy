@@ -24,28 +24,28 @@ import http from 'node:http';
 import express from 'express';
 import { LMBPServer, SqliteStore, PairingError } from 'lmbp-server';
 
-const lsp = new LMBPServer({
+const lmbp = new LMBPServer({
   tenants: [{ id: 'acme', apiKey: process.env.TENANT_API_KEY, profile: { display_name: 'Acme CRM' } }],
   issuer: 'https://saas.example.com',    // 留空为开发模式（取请求 Host）
   store: new SqliteStore('lmbp.db'),     // 默认 MemoryStore
 });
 
 const app = express();
-app.use(lsp.middleware());               // 协议路径 + /v1/*，其余 next()
+app.use(lmbp.middleware());               // 协议路径 + /v1/*，其余 next()
 app.use(express.json());
 // 1. 配对
-app.get('/app/pair', (req, res) => res.json(lsp.pairing.create('acme')));   // { link, qrSVG, qrDataURL }
-app.post('/app/pair/approve', (req, res) => res.json(lsp.pairing.approve('acme', req.user.id, req.body.user_code)));
+app.get('/app/pair', (req, res) => res.json(lmbp.pairing.create('acme')));   // { link, qrSVG, qrDataURL }
+app.post('/app/pair/approve', (req, res) => res.json(lmbp.pairing.approve('acme', req.user.id, req.body.user_code)));
 // 2. 调用模型
 app.post('/app/ask', async (req, res) => {
-  const c = lsp.client('acme', req.user.id);
+  const c = lmbp.client('acme', req.user.id);
   const [m] = await c.models();
   const msg = await c.messages.create({ model: m.id, max_tokens: 512, messages: [{ role: 'user', content: req.body.prompt }] });
   res.json(msg);
 });
 
 const server = http.createServer(app);
-lsp.attach(server);                      // /lmbp/v1/connect 的 WebSocket 升级
+lmbp.attach(server);                      // /lmbp/v1/connect 的 WebSocket 升级
 server.listen(3000);
 ```
 
@@ -53,9 +53,9 @@ server.listen(3000);
 
 其他框架：
 
-- 原生 `node:http`：`http.createServer(lsp.handler)` 后 `lsp.attach(server)`，或直接 `await lsp.listen(8080)`。
-- Fastify：`await app.register(lsp.fastifyPlugin)`（自动注册路由和 WebSocket 升级）。
-- Koa / Connect 等：使用 `lsp.middleware()`，或按 `PATHS` 显式转发到 `lsp.handler`。
+- 原生 `node:http`：`http.createServer(lmbp.handler)` 后 `lmbp.attach(server)`，或直接 `await lmbp.listen(8080)`。
+- Fastify：`await app.register(lmbp.fastifyPlugin)`（自动注册路由和 WebSocket 升级）。
+- Koa / Connect 等：使用 `lmbp.middleware()`，或按 `PATHS` 显式转发到 `lmbp.handler`。
 
 ## API
 

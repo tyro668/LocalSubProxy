@@ -1,8 +1,8 @@
-// Drives the real native kernel library (LSP_NATIVE_LIB) against the mock
-// gateways (LSP_ACCEPT_MOCK_DIR, LSP_ACCEPT_PORT). Skipped when not set.
+// Drives the real native kernel library (AVORA_NATIVE_LIB) against the mock
+// gateways (AVORA_ACCEPT_MOCK_DIR, AVORA_ACCEPT_PORT). Skipped when not set.
 //
-//   LSP_NATIVE_LIB=/tmp/liblsp.so LSP_ACCEPT_MOCK_DIR=/tmp/msmock \
-//   LSP_ACCEPT_PORT=18480 flutter test test/native_real_test.dart
+//   AVORA_NATIVE_LIB=/tmp/libavora.so AVORA_ACCEPT_MOCK_DIR=/tmp/msmock \
+//   AVORA_ACCEPT_PORT=18480 flutter test test/native_real_test.dart
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,8 +13,8 @@ import 'package:avora_ui/status_contract.dart';
 
 final env = Platform.environment;
 final enabled =
-    (env['LSP_NATIVE_LIB'] ?? '').isNotEmpty &&
-    (env['LSP_ACCEPT_MOCK_DIR'] ?? '').isNotEmpty;
+    (env['AVORA_NATIVE_LIB'] ?? '').isNotEmpty &&
+    (env['AVORA_ACCEPT_MOCK_DIR'] ?? '').isNotEmpty;
 
 Future<void> approve(String gw, String key, String code) async {
   final c = HttpClient();
@@ -46,16 +46,16 @@ void main() {
   test(
     'real kernel: pair two SaaS, edit permissions, revoke with cleanup failure, recover',
     () async {
-      final mock = env['LSP_ACCEPT_MOCK_DIR']!;
-      final port = int.parse(env['LSP_ACCEPT_PORT'] ?? '18480');
+      final mock = env['AVORA_ACCEPT_MOCK_DIR']!;
+      final port = int.parse(env['AVORA_ACCEPT_PORT'] ?? '18480');
       final kv = {
         for (final l in File('$mock/env').readAsLinesSync())
           if (l.contains('='))
             l.split('=').first: l.split('=').skip(1).join('='),
       };
       final saas = [
-        ('acme', 'http://127.0.0.1:$port', kv['LSP_TENANT_KEY_ACME']!),
-        ('beta', 'http://127.0.0.1:${port + 1}', kv['LSP_TENANT_KEY_BETA']!),
+        ('acme', 'http://127.0.0.1:$port', kv['LMBP_TENANT_KEY_ACME']!),
+        ('beta', 'http://127.0.0.1:${port + 1}', kv['LMBP_TENANT_KEY_BETA']!),
       ];
       final data = Directory.systemTemp.createTempSync('lsp-flutter-').path;
       final api = NativeApi.instance;
@@ -196,7 +196,7 @@ void main() {
       ]);
       api.stop();
     },
-    skip: enabled ? false : 'set LSP_NATIVE_LIB and LSP_ACCEPT_MOCK_DIR',
+    skip: enabled ? false : 'set AVORA_NATIVE_LIB and AVORA_ACCEPT_MOCK_DIR',
     timeout: const Timeout(Duration(minutes: 2)),
   );
 }

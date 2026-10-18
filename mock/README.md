@@ -1,6 +1,6 @@
 # mock/：LMBP 的服务端模拟实现
 
-> 网关、存储和设备端已移到 `internal/lmbp/*`，作为正式代码使用。本目录只保留业务服务模拟（`saas/`）、假模型、演示和 `lspmock` 命令行。
+> 网关、存储和设备端已移到 `internal/lmbp/*`，作为正式代码使用。本目录只保留业务服务模拟（`saas/`）、假模型、演示和 `lmbpmock` 命令行。
 
 本目录提供业务服务（SaaS）的模拟实现，配合 `internal/lmbp` 中的参考网关与设备端使用。协议说明见 [docs/lmbp-spec.md](../docs/lmbp-spec.md)。
 
@@ -9,7 +9,7 @@
 | `saas/` | Mock 业务服务：登录、`/link` 配对页、设备列表、聊天页（转发网关的 SSE 流） |
 | `fakemodel/` | 一个假的模型：OpenAI 兼容 `/v1` 与 Ollama 原生 `/api/chat`、`/api/tags`，都支持流式输出 |
 | `demo/` | 在单个进程内跑完整端到端演示，同时也是测试 |
-| `cmd/lspmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
+| `cmd/lmbpmock/` | 命令行入口：`demo / gateway / saas / connector / fakemodel` |
 | `node/` | Node.js 版完整网关（`sdk/node` 的命令行外壳），通过 `lmbp-conformance`，见 [node/README.md](node/README.md) |
 | `python/` | Python 版完整网关（`sdk/python` 的命令行外壳，ASGI + uvicorn），同上，见 [python/README.md](python/README.md) |
 | `java/` | Java 版模拟网关：只依赖 JDK 21，状态仅在内存（无 `--db`），通过 `lmbp-conformance`，见 [java/README.md](java/README.md) |
@@ -20,7 +20,7 @@
 ## 一条命令看完整流程
 
 ```bash
-go run ./mock/cmd/lspmock demo
+go run ./mock/cmd/lmbpmock demo
 ```
 
 演示依次覆盖：配对（链接携带设备公钥指纹 jkt）、握手与能力协商、流式回答、**断线续传**（流式途中两次断开设备 WebSocket，结果逐字一致）、**流控背压**（客户端暂停读取时设备执行器被阻塞）、**tools 往返**、**图片输入**（120 KiB data: URI 走 blob 分块）、**端到端加密**（`/api/chat/e2ee`，网关存储与日志中无明文）、中途取消、上游报错与模型不存在、同租户隔离、静态加密、令牌续期、吊销设备。
@@ -37,21 +37,21 @@ scripts/mock-stop.sh                             # 停止
 - 聊天页地址 `http://127.0.0.1:<端口>/chat`，以及登录用的租户（`acme`）、用户（`alice`）和租户 Key；
 - `lmbp://pair?...` 配对链接，以及可直接复制运行的 `avora connector` 配对命令（运行后在终端确认，再把打印出的配对码填到聊天页上点“批准”）。
 
-开发用的密钥（`LSP_TENANT_KEY_ACME`、`LSP_SIGNING_SEED`、`AVORA_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`，java 网关需要 JDK 21+（`java`/`javac`/`jar`），rust 网关需要 `cargo`。java/rust 网关的状态只在内存里，重启后需要重新配对（签名密钥仍沿用 `.mock/env`）。
+开发用的密钥（`LMBP_TENANT_KEY_ACME`、`LMBP_SIGNING_SEED`、`AVORA_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`，java 网关需要 JDK 21+（`java`/`javac`/`jar`），rust 网关需要 `cargo`。java/rust 网关的状态只在内存里，重启后需要重新配对（签名密钥仍沿用 `.mock/env`）。
 
 ## 分进程运行（可接真实的 LM Studio 或 Ollama）
 
 ```bash
-go build -o bin/lspmock ./mock/cmd/lspmock
-export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key，网关与 SaaS 使用同一个
-export LSP_TENANT_KEY=$LSP_TENANT_KEY_ACME
-export LSP_DATA_KEY=$(openssl rand -hex 32)          # 可选：开启提示词和输出的静态加密
-export LSP_SIGNING_SEED=$(openssl rand -hex 32)      # 网关签名私钥的种子；不设置的话，网关重启后设备需要重新配对
+go build -o bin/lmbpmock ./mock/cmd/lmbpmock
+export LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key，网关与 SaaS 使用同一个
+export LMBP_TENANT_KEY=$LMBP_TENANT_KEY_ACME
+export LMBP_DATA_KEY=$(openssl rand -hex 32)          # 可选：开启提示词和输出的静态加密
+export LMBP_SIGNING_SEED=$(openssl rand -hex 32)      # 网关签名私钥的种子；不设置的话，网关重启后设备需要重新配对
 
-bin/lspmock fakemodel &                               # 用真实 LM Studio 时可跳过这一步
-bin/lspmock gateway -db gateway.db -tenants acme:LSP_TENANT_KEY_ACME &
-bin/lspmock saas -tenant acme -users alice:alice-pw,bob:bob-pw &
-bin/lspmock connector -saas http://127.0.0.1:3000 -model-url http://127.0.0.1:11500 -models qwen3-8b -caps tools,vision
+bin/lmbpmock fakemodel &                               # 用真实 LM Studio 时可跳过这一步
+bin/lmbpmock gateway -db gateway.db -tenants acme:LMBP_TENANT_KEY_ACME &
+bin/lmbpmock saas -tenant acme -users alice:alice-pw,bob:bob-pw &
+bin/lmbpmock connector -saas http://127.0.0.1:3000 -model-url http://127.0.0.1:11500 -models qwen3-8b -caps tools,vision
 ```
 
 连接器启动后会打印配对码。用浏览器打开 http://127.0.0.1:3000 ，以 `alice / alice-pw` 登录，在“连接新设备”页面输入配对码。之后首页会显示设备在线，可以直接流式对话，点“停止”即可取消当前任务。端到端加密对话走 `POST /api/chat/e2ee`（SaaS 用配对时钉住的 jkt 校验设备 X25519 密钥声明后封装 JWE）。

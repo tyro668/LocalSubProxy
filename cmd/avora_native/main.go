@@ -14,8 +14,8 @@ import (
 	"github.com/tyro668/avora/internal/native"
 )
 
-//export LSP_Start
-func LSP_Start(raw *C.char) *C.char {
+//export AVORA_Start
+func AVORA_Start(raw *C.char) *C.char {
 	in := ""
 	if raw != nil {
 		in = C.GoString(raw)
@@ -23,16 +23,16 @@ func LSP_Start(raw *C.char) *C.char {
 	return C.CString(native.Start(in))
 }
 
-//export LSP_Call
-func LSP_Call(raw *C.char) *C.char {
+//export AVORA_Call
+func AVORA_Call(raw *C.char) *C.char {
 	if raw == nil {
 		return C.CString(`{"error":"request required","ok":false}`)
 	}
 	return C.CString(native.Call(C.GoString(raw)))
 }
 
-//export LSP_Free
-func LSP_Free(ptr unsafe.Pointer) {
+//export AVORA_Free
+func AVORA_Free(ptr unsafe.Pointer) {
 	if ptr != nil {
 		C.free(ptr)
 	}

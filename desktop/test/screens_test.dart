@@ -407,7 +407,7 @@ void main() {
 
   testWidgets('12 kernel start failed', (t) async {
     kernel.startError =
-        'LSP_Start: open ~/.avora/state.db: database is locked';
+        'AVORA_Start: open ~/.avora/state.db: database is locked';
     await pumpApp(t);
     expect(find.byKey(const ValueKey('kernel-error')), findsOneWidget);
     expect(find.text('本机数据库被占用'), findsOneWidget);

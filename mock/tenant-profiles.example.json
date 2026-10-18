@@ -1,6 +1,6 @@
 {
   "acme": {
-    "api_key_env": "LSP_TENANT_KEY_ACME",
+    "api_key_env": "LMBP_TENANT_KEY_ACME",
     "display_name": "Acme Chat",
     "homepage_uri": "https://acme.example",
     "policy_uri": "https://acme.example/privacy",

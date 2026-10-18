@@ -7,7 +7,7 @@ import 'package:avora_ui/native_api.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 // HomePage dialog flows driven through the real widgets, with the kernel
-// replaced by NativeApi.debugTransport (same JSON actions as LSP_Call).
+// replaced by NativeApi.debugTransport (same JSON actions as AVORA_Call).
 
 class FakeKernel {
   Map<String, dynamic> status = {'paired': false, 'device_name': '测试电脑'};

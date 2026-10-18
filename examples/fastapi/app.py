@@ -26,13 +26,13 @@ API_KEY = os.environ["TENANT_API_KEY"]  # >= 32 chars; server-side secret
 PROFILE = (json.load(open(os.environ["TENANT_PROFILE_FILE"]))[TENANT] if os.environ.get("TENANT_PROFILE_FILE")
            else {"display_name": "Acme Chat (FastAPI)", "requested_scopes": ["lmbp.chat", "lmbp.tools", "lmbp.vision"]})
 
-lsp = LMBPServer([TenantConfig(TENANT, API_KEY, PROFILE)], issuer=os.environ.get("LMBP_ISSUER", ""),
+lmbp = LMBPServer([TenantConfig(TENANT, API_KEY, PROFILE)], issuer=os.environ.get("LMBP_ISSUER", ""),
                  store=SQLiteStore(os.environ["LMBP_DB"]) if os.environ.get("LMBP_DB") else None,
                  # finished tasks + idempotency records: 7 days unless set (negative disables)
                  retention=float(os.environ.get("LMBP_RETENTION_SECONDS") or 0))
 
 app = FastAPI(title="Acme Chat")
-app.add_middleware(LMBPMiddleware, server=lsp)  # protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages
+app.add_middleware(LMBPMiddleware, server=lmbp)  # protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages
 
 
 def user(x_demo_user: str | None) -> str:  # your own login decides who the end user is
@@ -42,7 +42,7 @@ def user(x_demo_user: str | None) -> str:  # your own login decides who the end 
 # ---- 1. pairing ----
 @app.get("/app/pair")
 def pair(request: Request):
-    info = lsp.pairing.create(TENANT, os.environ.get("LMBP_ISSUER") or str(request.base_url).rstrip("/"))
+    info = lmbp.pairing.create(TENANT, os.environ.get("LMBP_ISSUER") or str(request.base_url).rstrip("/"))
     return {"link": info.link, "qr_svg": info.qr_svg}
 
 
@@ -53,19 +53,19 @@ class Approve(BaseModel):
 @app.post("/app/pair/approve")
 def approve(body: Approve, x_demo_user: str | None = Header(None)):
     try:
-        return lsp.pairing.approve(TENANT, user(x_demo_user), body.user_code)
+        return lmbp.pairing.approve(TENANT, user(x_demo_user), body.user_code)
     except PairingError as e:
         raise HTTPException(404 if e.code == "NOT_FOUND" else 400, str(e))
 
 
 @app.get("/app/devices")
 def devices(x_demo_user: str | None = Header(None)):
-    return lsp.pairing.list_devices(TENANT, user(x_demo_user))
+    return lmbp.pairing.list_devices(TENANT, user(x_demo_user))
 
 
 @app.post("/app/devices/{device}/revoke")
 def revoke(device: str, x_demo_user: str | None = Header(None)):
-    return {"revoked": lsp.pairing.revoke_device(TENANT, user(x_demo_user), device)}
+    return {"revoked": lmbp.pairing.revoke_device(TENANT, user(x_demo_user), device)}
 
 
 # ---- 2. LLM calls with the official clients, unchanged ----
@@ -94,6 +94,6 @@ async def ask_claude(body: Ask, x_demo_user: str | None = Header(None)):
 
 @app.post("/app/ask/inprocess")  # ...or without an HTTP hop
 async def ask_inprocess(body: Ask, x_demo_user: str | None = Header(None)):
-    m = await lsp.client(TENANT, user(x_demo_user)).messages.create(model=body.model, max_tokens=512,
+    m = await lmbp.client(TENANT, user(x_demo_user)).messages.create(model=body.model, max_tokens=512,
                                                                      messages=[{"role": "user", "content": body.prompt}])
     return {"answer": "".join(b["text"] for b in m["content"] if b["type"] == "text")}

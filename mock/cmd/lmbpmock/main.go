@@ -1,4 +1,4 @@
-// lspmock runs the LMBP mock stack: gateway, SaaS, connector, fake model, or an all-in-one demo.
+// lmbpmock runs the LMBP mock stack: gateway, SaaS, connector, fake model, or an all-in-one demo.
 package main
 
 import (
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tyro668/avora/internal/compat"
 	"github.com/tyro668/avora/internal/lmbp/client"
 	"github.com/tyro668/avora/internal/lmbp/gateway"
 	"github.com/tyro668/avora/mock/demo"
@@ -22,7 +23,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: lspmock demo|gateway|saas|connector|fakemodel [flags]")
+		fmt.Fprintln(os.Stderr, "usage: lmbpmock demo|gateway|saas|connector|fakemodel [flags]")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -30,7 +31,7 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "demo":
-		dir, _ := os.MkdirTemp("", "lspmock-demo-")
+		dir, _ := os.MkdirTemp("", "lmbpmock-demo-")
 		defer os.RemoveAll(dir)
 		_, err = demo.Run(ctx, os.Stdout, dir)
 	case "fakemodel":
@@ -44,7 +45,7 @@ func main() {
 		f := flag.NewFlagSet("gateway", flag.ExitOnError)
 		listen := f.String("listen", "127.0.0.1:8090", "")
 		db := f.String("db", "gateway.db", "SQLite file")
-		tenants := f.String("tenants", "acme:LSP_TENANT_KEY_ACME", "comma list of tenant:ENV_VAR_WITH_API_KEY")
+		tenants := f.String("tenants", "acme:LMBP_TENANT_KEY_ACME", "comma list of tenant:ENV_VAR_WITH_API_KEY")
 		profiles := f.String("tenant-profiles", "", "optional JSON file with per-tenant SaaS display identity")
 		retention := f.Duration("retention", 7*24*time.Hour, "delete finished tasks older than this (negative disables)")
 		f.Parse(os.Args[2:])
@@ -63,9 +64,9 @@ func main() {
 			a, b, _ := strings.Cut(p, ":")
 			u[a] = b
 		}
-		key := os.Getenv("LSP_TENANT_KEY")
+		key := compat.GetenvLMBP("LMBP_TENANT_KEY")
 		if len(key) < 32 {
-			log.Fatal("set LSP_TENANT_KEY (>=32 chars, same value as the gateway's tenant key)")
+			log.Fatal("set LMBP_TENANT_KEY (>=32 chars, same value as the gateway's tenant key)")
 		}
 		log.Printf("mock SaaS on %s", *public)
 		err = serve(ctx, *listen, saas.New(saas.Config{PublicURL: *public, GatewayURL: *gwURL, PublicGatewayURL: *pubGW, TenantID: *tenant, TenantAPIKey: key, Users: u}).Handler())

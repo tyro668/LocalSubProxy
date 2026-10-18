@@ -23,22 +23,22 @@ import java.util.Map;
  */
 public final class StandaloneServer implements AutoCloseable {
   static final int MAX_HEADER_BYTES = 64 << 10;
-  private final LMBPServer lsp;
+  private final LMBPServer lmbp;
   private final ServerSocket ss;
   private final Thread acceptor;
 
-  private StandaloneServer(LMBPServer lsp, ServerSocket ss) {
-    this.lsp = lsp;
+  private StandaloneServer(LMBPServer lmbp, ServerSocket ss) {
+    this.lmbp = lmbp;
     this.ss = ss;
     acceptor = Thread.ofPlatform().daemon().name("lmbp-accept").start(this::acceptLoop);
   }
 
   /** Binds {@code host:port} (port 0 = ephemeral) and starts serving. */
-  public static StandaloneServer start(LMBPServer lsp, String host, int port) throws IOException {
+  public static StandaloneServer start(LMBPServer lmbp, String host, int port) throws IOException {
     ServerSocket ss = new ServerSocket();
     ss.setReuseAddress(true);
     ss.bind(new InetSocketAddress(host == null || host.isEmpty() ? InetAddress.getByName("0.0.0.0") : InetAddress.getByName(host), port), 512);
-    return new StandaloneServer(lsp, ss);
+    return new StandaloneServer(lmbp, ss);
   }
 
   public int port() { return ss.getLocalPort(); }
@@ -109,11 +109,11 @@ public final class StandaloneServer implements AutoCloseable {
         try { while (in.read() >= 0) { /* one request per connection */ } } catch (IOException e) { /* closed */ }
         req.abort();
       });
-      if (!lsp.handles(path) && !path.equals("/")) {
+      if (!lmbp.handles(path) && !path.equals("/")) {
         byte[] b = "{\"error\":\"not found\"}".getBytes(StandardCharsets.UTF_8);
         sink.start(404, Map.of("Content-Type", "application/json", "Cache-Control", "no-store", "Content-Length", String.valueOf(b.length)));
         sink.write(b);
-      } else lsp.handle(req, sink);
+      } else lmbp.handle(req, sink);
       watcher.interrupt();
     } catch (IOException e) {
       // connection closed
@@ -152,7 +152,7 @@ public final class StandaloneServer implements AutoCloseable {
   }
 
   private void upgrade(HttpRequest req, Socket sock, InputStream in, OutputStream out) throws IOException {
-    WebSocketHandshake hs = lsp.handshake(req);
+    WebSocketHandshake hs = lmbp.handshake(req);
     if (!hs.accepted()) {
       byte[] b = hs.body();
       StringBuilder head = new StringBuilder("HTTP/1.1 ").append(hs.status()).append(' ').append(reason(hs.status())).append("\r\n");

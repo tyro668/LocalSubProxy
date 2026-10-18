@@ -397,7 +397,7 @@ func statusLocked() map[string]any {
 	return s
 }
 
-// Start is LSP_Start of the native library: it opens the data directory
+// Start is AVORA_Start of the native library: it opens the data directory
 // ({"data_dir": ...}, default os.UserConfigDir()/avora) and starts
 // the kernel. With the default directory, a pre-rename data directory
 // (os.UserConfigDir()/localsubproxy) is migrated first (legacy_dir.go). The reply is the JSON envelope {"ok", "data"|"error"}.
@@ -640,7 +640,7 @@ func pairView(ps *pairSession) map[string]any {
 	return out
 }
 
-// Call is LSP_Call: one JSON action ({"action": ...}) against the running
+// Call is AVORA_Call: one JSON action ({"action": ...}) against the running
 // kernel. Shared by the FFI library (desktop) and `avora serve`.
 func Call(raw string) string { return call(raw) }
 

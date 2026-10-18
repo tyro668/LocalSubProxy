@@ -24,26 +24,26 @@ pip install lmbp-server[server]          # 仓库内：pip install -e sdk/python
 from fastapi import FastAPI
 from lmbp_server import LMBPServer, LMBPMiddleware, SQLiteStore, TenantConfig
 
-lsp = LMBPServer(
+lmbp = LMBPServer(
     tenants=[TenantConfig("acme", os.environ["TENANT_API_KEY"], {"display_name": "Acme CRM"})],
     issuer="https://saas.example.com",       # 留空为开发模式
     store=SQLiteStore("lmbp.db"),            # 默认 MemoryStore
 )
 app = FastAPI()
-app.add_middleware(LMBPMiddleware, server=lsp)   # 协议路径 + /v1/*，其余交给 FastAPI
+app.add_middleware(LMBPMiddleware, server=lmbp)   # 协议路径 + /v1/*，其余交给 FastAPI
 
 @app.get("/app/pair")                            # 1. 配对
 def pair():
-    info = lsp.pairing.create("acme")            # info.link / info.qr_svg
+    info = lmbp.pairing.create("acme")            # info.link / info.qr_svg
     return {"link": info.link, "qr_svg": info.qr_svg}
 
 @app.post("/app/pair/approve")
 def approve(body: dict, user=Depends(current_user)):
-    return lsp.pairing.approve("acme", user.id, body["user_code"])
+    return lmbp.pairing.approve("acme", user.id, body["user_code"])
 
 @app.post("/app/ask")                            # 2. 调用模型
 async def ask(body: dict, user=Depends(current_user)):
-    c = lsp.client("acme", user.id)
+    c = lmbp.client("acme", user.id)
     model = (await c.models())[0]["id"]
     return await c.messages.create(model=model, max_tokens=512, messages=[{"role": "user", "content": body["prompt"]}])
 ```
@@ -54,7 +54,7 @@ uvicorn app:app --ws websockets
 
 完整示例：[`examples/fastapi/app.py`](../../examples/fastapi/app.py)。
 
-其他框架：任何 ASGI 应用都可以用 `lsp.asgi(app)` 包一层（未知路径交给 `app`），或用 `LMBPMiddleware`（Starlette / FastAPI）；独立运行用 `lsp.run(host, port)`。
+其他框架：任何 ASGI 应用都可以用 `lmbp.asgi(app)` 包一层（未知路径交给 `app`），或用 `LMBPMiddleware`（Starlette / FastAPI）；独立运行用 `lmbp.run(host, port)`。
 
 ## API
 

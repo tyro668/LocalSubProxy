@@ -17,14 +17,14 @@ import java.util.function.Consumer;
  * {@link #handle(HttpRequest, HttpSink)} and {@link #handshake(HttpRequest)}.
  *
  * <pre>{@code
- * LMBPServer lsp = LMBPServer.builder()
+ * LMBPServer lmbp = LMBPServer.builder()
  *     .issuer("https://saas.example.com")
  *     .tenant("acme", System.getenv("TENANT_API_KEY"), Map.of("display_name", "Acme CRM"))
  *     .store(JdbcStore.open("jdbc:sqlite:lmbp.db"))
  *     .build();
- * String link = lsp.pairing().link("acme");
- * lsp.pairing().approve("acme", userId, userCode);
- * Map<String, Object> r = lsp.client("acme", userId).call(Map.of("model", m, "messages", msgs));
+ * String link = lmbp.pairing().link("acme");
+ * lmbp.pairing().approve("acme", userId, userCode);
+ * Map<String, Object> r = lmbp.client("acme", userId).call(Map.of("model", m, "messages", msgs));
  * }</pre>
  *
  * Thread-safe. One instance per process and store (see {@link Store}).

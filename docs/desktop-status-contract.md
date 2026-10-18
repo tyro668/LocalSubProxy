@@ -1,7 +1,7 @@
 # Desktop kernel ↔ UI contract (multi-SaaS)
 
 The Flutter app talks to the Go kernel (`cmd/avora_native`) through
-`LSP_Start(json)` / `LSP_Call(json)` / `LSP_Free(ptr)`. Every reply is
+`AVORA_Start(json)` / `AVORA_Call(json)` / `AVORA_Free(ptr)`. Every reply is
 `{"ok":true,"data":…}` or `{"ok":false,"error":"…"}`. The Dart side parses
 status with `desktop/lib/status_contract.dart` (test:
 `desktop/test/status_contract_test.dart`).

@@ -9,9 +9,9 @@
 ```bash
 cd mock/python
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key（≥ 32 字符）
+export LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key（≥ 32 字符）
 export LMBP_SIGNING_SEED=$(openssl rand -hex 32)     # 可选：固定网关签名密钥
-.venv/bin/python gateway.py --listen 127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
+.venv/bin/python gateway.py --listen 127.0.0.1:8080 --tenant acme:LMBP_TENANT_KEY_ACME
 # 或带 SaaS 展示身份：
 .venv/bin/python gateway.py --listen 127.0.0.1:8080 --tenant-profiles ../tenant-profiles.example.json
 ```
@@ -22,8 +22,8 @@ Docker：
 
 ```bash
 docker build -f mock/python/Dockerfile -t lmbp-mock-python .   # 在仓库根目录构建，镜像内含聊天页
-docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LMBP_SIGNING_SEED lmbp-mock-python \
-  --issuer http://127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
+docker run --rm -p 8080:8080 -e LMBP_TENANT_KEY_ACME -e LMBP_SIGNING_SEED lmbp-mock-python \
+  --issuer http://127.0.0.1:8080 --tenant acme:LMBP_TENANT_KEY_ACME
 ```
 
 单元测试：`.venv/bin/python -m unittest test_web`（聊天页与 CSP）；协议单元测试在 `sdk/python`（`cd sdk/python && .venv/bin/pytest`）。

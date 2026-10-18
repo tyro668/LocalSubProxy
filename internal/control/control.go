@@ -1,6 +1,6 @@
 // Package control is the local-only control channel of `avora
 // serve`: newline-delimited JSON requests, each one a native API action
-// (the same payload as LSP_Call), answered with the native reply envelope.
+// (the same payload as AVORA_Call), answered with the native reply envelope.
 //
 // The channel is a unix socket (mode 0600) in the data directory on Linux
 // and macOS, and a named pipe that only the current user may open on

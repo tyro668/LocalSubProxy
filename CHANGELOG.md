@@ -1,6 +1,20 @@
 # 更新记录
 
-## 未发布（计划 2.1.0）
+## 2.1.0
+
+### 命名清理（接续改名）
+
+| 原名 | 新名 | 兼容 |
+|---|---|---|
+| 参考网关环境变量 `LSP_SIGNING_SEED`、`LSP_DATA_KEY`、`LSP_TENANT_KEY_*` | `LMBP_SIGNING_SEED`、`LMBP_DATA_KEY`、`LMBP_TENANT_KEY_*`（`avora server -tenants` 默认 `default:LMBP_TENANT_KEY_DEFAULT`） | 新名未设置时读取旧名并打印弃用提示，保留一个版本；`scripts/mock-start.sh` 自动把旧 `.mock/env` 中的键复制为新名 |
+| 内核 C 导出 `LSP_Start` / `LSP_Call` / `LSP_Free` | `AVORA_Start` / `AVORA_Call` / `AVORA_Free` | 无（桌面端与内核同包发布） |
+| 调试变量 `LSP_NATIVE_LIB` | `AVORA_NATIVE_LIB` | 旧名仍可用一个版本 |
+| 测试变量 `LSP_ACCEPT_MOCK_DIR`、`LSP_ACCEPT_PORT` | `AVORA_ACCEPT_MOCK_DIR`、`AVORA_ACCEPT_PORT` | 无 |
+| mock 命令 `lspmock`（`mock/cmd/lspmock`） | `lmbpmock`（`mock/cmd/lmbpmock`） | 无 |
+| SDK 文档/示例变量 `lsp` | `lmbp` | — |
+
+- Windows 窗口标题显示「一线牵」（此前为空，任务栏和 Alt-Tab 不显示名称）。
+- GitHub Release 标题改为「一线牵 Avora <版本>」。
 
 ### 改名：LocalSubProxy → 一线牵（Avora）
 

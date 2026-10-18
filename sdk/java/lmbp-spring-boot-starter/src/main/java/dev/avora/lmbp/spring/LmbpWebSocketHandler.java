@@ -25,16 +25,16 @@ import org.springframework.web.socket.server.HandshakeInterceptor;
 /** Bridges Spring WebSocket to the engine: the interceptor runs the LMBP handshake checks, the handler relays frames. */
 public class LmbpWebSocketHandler extends AbstractWebSocketHandler implements HandshakeInterceptor {
   static final String HS = "lmbp.handshake", SESSION = "lmbp.session";
-  private final LMBPServer lsp;
+  private final LMBPServer lmbp;
 
-  public LmbpWebSocketHandler(LMBPServer lsp) { this.lsp = lsp; }
+  public LmbpWebSocketHandler(LMBPServer lmbp) { this.lmbp = lmbp; }
 
   @Override
   public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response, WebSocketHandler wsHandler, Map<String, Object> attributes) throws IOException {
     Map<String, String> h = new LinkedHashMap<>();
     for (Map.Entry<String, List<String>> e : request.getHeaders().entrySet()) h.put(e.getKey(), String.join(", ", e.getValue()));
     HttpRequest r = new HttpRequest("GET", request.getURI().getPath(), request.getURI().getRawQuery(), h, new byte[0]);
-    WebSocketHandshake hs = lsp.handshake(r);
+    WebSocketHandshake hs = lmbp.handshake(r);
     if (!hs.accepted()) {
       response.setStatusCode(HttpStatusCode.valueOf(hs.status()));
       hs.headers().forEach((k, v) -> response.getHeaders().set(k, v));

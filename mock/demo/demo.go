@@ -1,6 +1,6 @@
 // Package demo wires fake model + gateway + two tenants' SaaS + connector
 // in-process and walks through pair → connect → stream → cancel → errors →
-// isolation → encryption-at-rest → revoke. Used by `lspmock demo` and tests.
+// isolation → encryption-at-rest → revoke. Used by `lmbpmock demo` and tests.
 package demo
 
 import (

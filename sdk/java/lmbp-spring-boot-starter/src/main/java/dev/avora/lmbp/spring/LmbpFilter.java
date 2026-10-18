@@ -30,16 +30,16 @@ public class LmbpFilter extends OncePerRequestFilter {
   static final String PROBE_ATTR = "dev.avora.lmbp.disconnectProbe";
   /** How often the probe runs while a request waits (spec §6.5 asks for a prompt task.cancel). */
   static final long PROBE_INTERVAL_MS = 250;
-  private final LMBPServer lsp;
+  private final LMBPServer lmbp;
 
-  public LmbpFilter(LMBPServer lsp) { this.lsp = lsp; }
+  public LmbpFilter(LMBPServer lmbp) { this.lmbp = lmbp; }
 
   @Override protected boolean shouldNotFilterAsyncDispatch() { return true; }
 
   @Override
   protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain) throws ServletException, IOException {
     String path = req.getRequestURI().substring(req.getContextPath().length());
-    if (!lsp.handles(path)) { chain.doFilter(req, res); return; }
+    if (!lmbp.handles(path)) { chain.doFilter(req, res); return; }
     if (path.equals(LMBPServer.CONNECT_PATH) && "websocket".equalsIgnoreCase(req.getHeader("Upgrade"))) { chain.doFilter(req, res); return; }
     HttpRequest r = new HttpRequest(req.getMethod(), path, req.getQueryString(), headers(req), body(req));
     // Async mode frees the container thread; a client disconnect surfaces as a failed write
@@ -73,7 +73,7 @@ public class LmbpFilter extends OncePerRequestFilter {
     }
     Thread.ofVirtual().name("lmbp-http").start(() -> {
       try {
-        lsp.handle(r, new HttpSink() {
+        lmbp.handle(r, new HttpSink() {
           @Override public void start(int status, Map<String, String> h) throws IOException {
             res.setStatus(status);
             for (Map.Entry<String, String> e : h.entrySet()) {

@@ -94,8 +94,8 @@ void main() {
 
   test('kernel start errors: cleaned text and a human hint', () {
     expect(
-      cleanError(StateError('LSP_Start: open state.db: database is locked')),
-      'LSP_Start: open state.db: database is locked',
+      cleanError(StateError('AVORA_Start: open state.db: database is locked')),
+      'AVORA_Start: open state.db: database is locked',
     );
     expect(cleanError(Exception('boom')), 'boom');
     expect(kernelErrorHint('open x: database is locked')!.title, '本机数据库被占用');

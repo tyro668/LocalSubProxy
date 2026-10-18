@@ -75,14 +75,14 @@ public class LmbpAutoConfiguration {
   public LmbpUserResolver lmbpUserResolver() { return req -> req.getUserPrincipal() == null ? null : req.getUserPrincipal().getName(); }
 
   @Bean @ConditionalOnMissingBean
-  public LmbpClient lmbpClient(LMBPServer lsp, LmbpProperties p, ObjectProvider<LmbpUserResolver> users) {
+  public LmbpClient lmbpClient(LMBPServer lmbp, LmbpProperties p, ObjectProvider<LmbpUserResolver> users) {
     // resolved lazily so a controller can both declare the resolver and inject the client
-    return new LmbpClient(lsp, p, req -> users.getObject().resolve(req));
+    return new LmbpClient(lmbp, p, req -> users.getObject().resolve(req));
   }
 
   @Bean
-  public FilterRegistrationBean<LmbpFilter> lmbpFilter(LMBPServer lsp) {
-    FilterRegistrationBean<LmbpFilter> r = new FilterRegistrationBean<>(new LmbpFilter(lsp));
+  public FilterRegistrationBean<LmbpFilter> lmbpFilter(LMBPServer lmbp) {
+    FilterRegistrationBean<LmbpFilter> r = new FilterRegistrationBean<>(new LmbpFilter(lmbp));
     r.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
     r.addUrlPatterns("/*");
     r.setName("lmbpFilter");
@@ -101,7 +101,7 @@ public class LmbpAutoConfiguration {
   }
 
   @Bean
-  public LmbpWebSocketHandler lmbpWebSocketHandler(LMBPServer lsp) { return new LmbpWebSocketHandler(lsp); }
+  public LmbpWebSocketHandler lmbpWebSocketHandler(LMBPServer lmbp) { return new LmbpWebSocketHandler(lmbp); }
 
   /** Connector WebSocket registration. */
   @Configuration(proxyBeanMethods = false)

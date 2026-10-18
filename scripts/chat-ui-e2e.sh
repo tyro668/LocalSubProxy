@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 bin=$(mktemp -d); trap 'rm -rf "$bin"' EXIT
 go build -o "$bin/avora" ./cmd/avora
-go build -o "$bin/lspmock" ./mock/cmd/lspmock
+go build -o "$bin/lmbpmock" ./mock/cmd/lmbpmock
 (cd mock/node && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
 [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && mock/python/.venv/bin/pip install -q -r mock/python/requirements.txt; }
 for a in "$@"; do

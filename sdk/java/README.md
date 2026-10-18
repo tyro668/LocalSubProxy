@@ -65,16 +65,16 @@ Starter 注册的路由：`/.well-known/lmbp`、`/.well-known/jwks.json`、`/lmb
 ## 不用 Spring：`lmbp-core`
 
 ```java
-LMBPServer lsp = LMBPServer.builder()
+LMBPServer lmbp = LMBPServer.builder()
     .issuer("https://saas.example.com")
     .tenant("acme", System.getenv("TENANT_API_KEY"), Map.of("display_name", "Acme CRM"))
     .store(JdbcStore.open("jdbc:sqlite:lmbp.db"))      // 默认 MemoryStore
     .build();
 
-String link = lsp.pairing().link("acme");                              // 1. 配对
-lsp.pairing().approve("acme", userId, userCode);
+String link = lmbp.pairing().link("acme");                              // 1. 配对
+lmbp.pairing().approve("acme", userId, userCode);
 
-InProcessClient c = lsp.client("acme", userId);                        // 2. 调用
+InProcessClient c = lmbp.client("acme", userId);                        // 2. 调用
 Map<String, Object> r = c.call(Map.of("model", model, "messages", msgs));
 try (LmbpStream st = c.stream(Map.of("model", model, "messages", msgs))) {
   for (Map<String, Object> chunk : st) { ... }   // 结束于 [DONE]；错误事件抛 LmbpApiException；截断抛 IncompleteStreamException
