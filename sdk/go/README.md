@@ -1,6 +1,6 @@
 # lmbpserver：LMBP 服务端 Go SDK
 
-让你的 SaaS 后端使用**用户自己电脑上的模型**（经一线牵桌面端）。业务代码只做两件事：
+让你的 SaaS 后端使用**用户自己电脑上的模型**（经 Avora 桌面端）。业务代码只做两件事：
 
 1. **配对**：给用户展示配对链接 / 二维码，再批准用户在桌面端看到的配对码；
 2. **调用模型**：标准的 OpenAI（`/v1/chat/completions`、`/v1/models`）或 Anthropic（`/v1/messages`）请求，可以直接用官方 `openai-go` / `anthropic-sdk-go`，也可以用 SDK 自带的进程内客户端。

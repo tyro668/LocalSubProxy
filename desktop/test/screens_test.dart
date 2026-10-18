@@ -457,7 +457,7 @@ void main() {
     kernel.startError =
         'data directory in use: ~/.config/avora is used by another Avora process (the desktop app or "avora serve"); stop it first';
     await pumpApp(t);
-    expect(find.text('数据目录正被另一个一线牵使用'), findsOneWidget);
+    expect(find.text('数据目录正被另一个 Avora 使用'), findsOneWidget);
     await shot(t, '16_data_dir_in_use');
     await unmount(t);
   }, variant: desktop);

@@ -103,7 +103,7 @@ void main() {
       kernelErrorHint(
         'data directory in use: /d is used by another Avora process',
       )!.title,
-      contains('另一个一线牵'),
+      contains('另一个 Avora'),
     );
     // 改名兼容：旧版应用仍在运行时给出专门提示（内核 ErrLegacyDirInUse 的原文）
     expect(

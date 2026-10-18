@@ -1,5 +1,11 @@
 # 更新记录
 
+## 2.1.1
+
+- 产品名只用 Avora，不再使用中文名：窗口标题、托盘提示、macOS 显示名、Windows 安装包名称与快捷方式、界面文字、文档、架构图和截图都改为 Avora。
+- Windows 安装包升级时删除 2.1.0 留下的中文名开始菜单 / 桌面快捷方式。
+- GitHub Release 标题为「Avora <版本>」。
+
 ## 2.1.0
 
 ### 命名清理（接续改名）
@@ -13,12 +19,11 @@
 | mock 命令 `lspmock`（`mock/cmd/lspmock`） | `lmbpmock`（`mock/cmd/lmbpmock`） | 无 |
 | SDK 文档/示例变量 `lsp` | `lmbp` | — |
 
-- Windows 窗口标题显示「一线牵」（此前为空，任务栏和 Alt-Tab 不显示名称）。
-- GitHub Release 标题改为「一线牵 Avora <版本>」。
+- Windows 窗口标题显示「Avora」（此前为空，任务栏和 Alt-Tab 不显示名称）。
 
-### 改名：LocalSubProxy → 一线牵（Avora）
+### 改名：LocalSubProxy → Avora
 
-应用中文名「一线牵」，英文名 Avora。协议名不变：LMBP、`lmbp` 子协议、`/lmbp/v1`、`/.well-known/lmbp`、`lmbp-conformance`、SDK 包名 `lmbp-server`。
+应用名 Avora（不再使用中文名）。协议名不变：LMBP、`lmbp` 子协议、`/lmbp/v1`、`/.well-known/lmbp`、`lmbp-conformance`、SDK 包名 `lmbp-server`。
 
 | 原名 | 新名 |
 |---|---|

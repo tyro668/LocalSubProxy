@@ -107,7 +107,7 @@ void ShellAddTrayIcon(HWND window) {
   if (nid.hIcon == nullptr) {
     nid.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
   }
-  ::lstrcpyW(nid.szTip, L"\u4E00\u7EBF\u7275");  // 一线牵（源文件不依赖 /utf-8）
+  ::lstrcpyW(nid.szTip, L"Avora");
   ::Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -159,7 +159,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 800);
-  if (!window.Create(L"\u4E00\u7EBF\u7275", origin, size)) {  // 一线牵
+  if (!window.Create(L"Avora", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

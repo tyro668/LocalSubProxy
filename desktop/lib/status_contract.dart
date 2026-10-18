@@ -249,12 +249,12 @@ String cleanError(Object e) {
   if (e.contains('old localsubproxy app')) {
     return (
       title: '旧版 LocalSubProxy 仍在运行',
-      message: '请先在菜单栏或托盘中退出旧版 LocalSubProxy，然后重试。一线牵会自动迁移已有的连接和配置，不需要重新配对。',
+      message: '请先在菜单栏或托盘中退出旧版 LocalSubProxy，然后重试。Avora 会自动迁移已有的连接和配置，不需要重新配对。',
     );
   }
   if (e.contains('data directory in use')) {
     return (
-      title: '数据目录正被另一个一线牵使用',
+      title: '数据目录正被另一个 Avora 使用',
       message: '桌面应用和无界面模式（avora serve）不能同时使用同一个数据目录。请先退出另一个实例后重试。',
     );
   }
@@ -262,7 +262,7 @@ String cleanError(Object e) {
       e.contains('resource temporarily unavailable')) {
     return (
       title: '本机数据库被占用',
-      message: '可能已经有一个一线牵在运行。请在菜单栏或托盘中退出另一个实例后重试。',
+      message: '可能已经有一个 Avora 在运行。请在菜单栏或托盘中退出另一个实例后重试。',
     );
   }
   if (e.contains('permission denied') || e.contains('access is denied')) {

@@ -41,7 +41,7 @@ class AppDelegate: FlutterAppDelegate {
     statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     if let button = statusItem?.button {
       button.image = Self.trayImage()
-      button.toolTip = "一线牵"
+      button.toolTip = "Avora"
     }
     let menu = NSMenu()
     let configItem = NSMenuItem(title: "配置", action: #selector(trayConfig), keyEquivalent: "")
@@ -57,7 +57,7 @@ class AppDelegate: FlutterAppDelegate {
   // 与应用图标使用同一连接标识；模板图由系统适配菜单栏深浅色。
   private static func trayImage() -> NSImage {
     let image = NSImage(named: NSImage.Name("TrayIcon"))
-      ?? NSImage(systemSymbolName: "link", accessibilityDescription: "一线牵")
+      ?? NSImage(systemSymbolName: "link", accessibilityDescription: "Avora")
       ?? NSImage()
     image.size = NSSize(width: 18, height: 18)
     image.isTemplate = true

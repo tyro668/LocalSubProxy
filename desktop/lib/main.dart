@@ -45,7 +45,7 @@ class ProxyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ShadcnApp(
-    title: '一线牵',
+    title: 'Avora',
     debugShowCheckedModeBanner: false,
     theme: appLightTheme(),
     darkTheme: appDarkTheme(),
@@ -1186,7 +1186,7 @@ class _KernelErrorPageState extends State<KernelErrorPage> {
                             style: AppText.xl.copyWith(color: t.fg),
                           ),
                           Text(
-                            '一线牵的本机内核没有启动成功',
+                            'Avora 的本机内核没有启动成功',
                             style: AppText.sm.copyWith(color: t.fg2),
                           ),
                         ],

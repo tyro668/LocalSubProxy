@@ -15,12 +15,12 @@
 
 [Setup]
 AppId={{6F1D2B57-3C4A-4E8B-9A51-0D7C2E9F4B13}
-AppName=一线牵 Avora
+AppName=Avora
 AppVersion={#AppVersion}
 VersionInfoVersion={#AppVersionNumeric}
 AppPublisher=dev.avora
 DefaultDirName={autopf}\Avora
-DefaultGroupName=一线牵
+DefaultGroupName=Avora
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
@@ -54,8 +54,22 @@ Type: files; Name: "{autoprograms}\LocalSubProxy.lnk"
 Type: files; Name: "{autodesktop}\LocalSubProxy.lnk"
 
 [Icons]
-Name: "{autoprograms}\一线牵"; Filename: "{app}\Avora.exe"
-Name: "{autodesktop}\一线牵"; Filename: "{app}\Avora.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Avora"; Filename: "{app}\Avora.exe"
+Name: "{autodesktop}\Avora"; Filename: "{app}\Avora.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Avora.exe"; Description: "{cm:LaunchProgram,一线牵}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Avora.exe"; Description: "{cm:LaunchProgram,Avora}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// 2.1.1 改名兼容（保留一个版本）：2.1.0 的开始菜单/桌面快捷方式使用中文名（U+4E00 U+7EBF U+7275），升级时删除
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  OldName: String;
+begin
+  if CurStep = ssInstall then
+  begin
+    OldName := #$4E00#$7EBF#$7275 + '.lnk';
+    DeleteFile(ExpandConstant('{autoprograms}\') + OldName);
+    DeleteFile(ExpandConstant('{autodesktop}\') + OldName);
+  end;
+end;

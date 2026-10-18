@@ -1,10 +1,10 @@
-# 一线牵（Avora）
+# Avora
 
-一线牵（英文名 Avora）是 macOS / Windows 桌面应用：让你授权的远端服务（SaaS）调用你本机的模型——已登录的 Codex 订阅，本地运行的 Ollama 模型，或你配置的 OpenAI / Anthropic 兼容 API。密钥和模型都留在本机，SaaS 只能用你允许的模型。
+Avora 是 macOS / Windows 桌面应用：让你授权的远端服务（SaaS）调用你本机的模型——已登录的 Codex 订阅，本地运行的 Ollama 模型，或你配置的 OpenAI / Anthropic 兼容 API。密钥和模型都留在本机，SaaS 只能用你允许的模型。
 
 ## 工作原理
 
-![一线牵架构图](docs/images/architecture.svg)
+![Avora 架构图](docs/images/architecture.svg)
 
 桌面端主动连出到网关，本机无需开放端口。设备与网关之间使用开放协议 **LMBP 2.0**（正式版），见 [规范](docs/lmbp-spec.md)。2.0 不兼容 1.x：网关（含 SDK 实现）与桌面端必须一起升级，见 [发布说明](docs/release.md#lmbp-20-升级)。
 

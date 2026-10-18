@@ -1,5 +1,5 @@
 name: avora_ui
-description: "一线牵 Avora — 把本机模型安全地连接到 SaaS"
+description: "Avora — 把本机模型安全地连接到 SaaS"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

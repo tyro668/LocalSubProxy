@@ -1,4 +1,4 @@
-# desktop：一线牵（Avora）桌面端（Flutter）
+# desktop：Avora 桌面端（Flutter）
 
 macOS / Windows 配置界面。通过 FFI 加载 Go 内核（`cmd/avora_native`），接口见 [docs/desktop-status-contract.md](../docs/desktop-status-contract.md)。
 
