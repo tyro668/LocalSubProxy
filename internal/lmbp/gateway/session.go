@@ -53,6 +53,38 @@ type dstate struct {
 	ready    bool
 	slotWait []chan struct{}
 	dropped  bool
+
+	// ackMu serializes task.ack writes; ackSent is the highest seq ACKed
+	// per task. ACKs are decided on several goroutines (read loop, local
+	// finish, subscribers); without this a lower ACK decided earlier could
+	// reach the wire after a higher one (seen as a stray ACK after the
+	// terminal frame on the macOS runner, v2.1.1).
+	ackMu   sync.Mutex
+	ackSent map[string]int64
+}
+
+// sendAck writes task.ack {seq} unless an equal or higher ACK for the task
+// already went out (ACKs are cumulative, so a lower one is redundant).
+// Callers must not hold ds.mu.
+func (ds *dstate) sendAck(taskID string, seq int64) {
+	ds.ackMu.Lock()
+	defer ds.ackMu.Unlock()
+	if seq <= ds.ackSent[taskID] {
+		return
+	}
+	if ds.ackSent == nil {
+		ds.ackSent = map[string]int64{}
+	}
+	ds.ackSent[taskID] = seq
+	b, _ := json.Marshal(lmbp.TaskAck{Seq: seq})
+	_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: taskID, Data: b})
+}
+
+// forgetAck drops a task's ACK record once no frame of it can arrive.
+func (ds *dstate) forgetAck(taskID string) {
+	ds.ackMu.Lock()
+	delete(ds.ackSent, taskID)
+	ds.ackMu.Unlock()
 }
 
 func (ds *dstate) connected() bool {
@@ -619,8 +651,7 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 		ds.mu.Unlock()
 		g.cfg.Logger.Printf("lmbp: device %s task %s: %s", ds.deviceID, in.TaskID, why)
 		if t != nil {
-			t.cancel("protocol_error")
-			t.failLocal(lmbp.ErrInternal, "device sent an invalid frame: "+why, false)
+			t.abort("protocol_error", lmbp.ErrInternal, "device sent an invalid frame: "+why)
 		} else {
 			ds.sendErr(in.ID, lmbp.ErrBadRequest, why)
 		}
@@ -653,8 +684,7 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 		ds.mu.Unlock()
 		if late { // ended here, still running there: release its credit
 			if in.Seq > acked {
-				b, _ := json.Marshal(lmbp.TaskAck{Seq: in.Seq})
-				_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: in.TaskID, Data: b})
+				ds.sendAck(in.TaskID, in.Seq)
 			}
 			return true
 		}
@@ -667,8 +697,7 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 		t.maybeAck() // the device may have missed our ack
 		return true
 	case lmbp.Gap:
-		t.cancel("protocol_error")
-		t.failLocal(lmbp.ErrInternal, "sequence gap from device", false)
+		t.abort("protocol_error", lmbp.ErrInternal, "sequence gap from device")
 		return true
 	case lmbp.Overflow:
 		ds.sendErr("", lmbp.ErrFlowControl, "flow-control window exceeded")
