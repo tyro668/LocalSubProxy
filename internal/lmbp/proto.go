@@ -65,6 +65,23 @@ const (
 	MaxModelIDChars = 256
 )
 
+// Unique returns xs without repeated entries, first occurrence kept, and the
+// entries that were dropped. Announced lists (models, model_capabilities)
+// carry uniqueItems in hello.json/models.update.json.
+func Unique(xs []string) (out, dups []string) {
+	out = make([]string, 0, len(xs)) // never nil: models is required
+	seen := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		if seen[x] {
+			dups = append(dups, x)
+			continue
+		}
+		seen[x] = true
+		out = append(out, x)
+	}
+	return out, dups
+}
+
 // ValidModelID checks one advertised model ID against defs.json modelId.
 func ValidModelID(s string) error {
 	if s == "" || !utf8.ValidString(s) {

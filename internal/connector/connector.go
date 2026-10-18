@@ -88,6 +88,7 @@ type AdapterHealth struct {
 type Connector struct {
 	cfgVer          uint64            // bumped by every adapter-list change
 	invalid         map[string]string // adapter id → why its saved config failed validation (never served)
+	notes           map[string]string // adapter id → what the load repaired (served; shown until the scheme is edited)
 	loadWarnings    []string          // saved entries that could not be loaded at all
 	closed          bool              // Shutdown started: adapter changes refused
 	muts            sync.WaitGroup    // adapter changes in progress (Shutdown waits)
@@ -216,6 +217,9 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 		if c != lmbp.ModelCapTools && c != lmbp.ModelCapVision && c != lmbp.ModelCapAudio {
 			return fmt.Errorf("unknown model capability %q", c)
 		}
+	}
+	if _, dups := lmbp.Unique(a.Capabilities); len(dups) > 0 {
+		return fmt.Errorf("duplicate capability %q (each capability may be listed once)", dups[0])
 	}
 	switch a.Type {
 	case "codex_app_server":
@@ -384,7 +388,8 @@ func capsOf(a AdapterConfig) []string {
 	case a.Type == "ollama_http":
 		caps = []string{lmbp.ModelCapTools}
 	}
-	return append(caps, paramCaps(a.Type)...)
+	caps, _ = lmbp.Unique(append(caps, paramCaps(a.Type)...)) // published as model_capabilities: unique items
+	return caps
 }
 
 func adapterSlots(a AdapterConfig) int {
@@ -967,6 +972,14 @@ func (x *Connector) loadAdapterFile() error {
 	// runnable right now is not a validation failure here (review9 P2-4).
 	for _, a := range saved {
 		a.Name = clipBytes(strings.TrimSpace(a.Name), MaxSchemeNameBytes) // an over-long legacy name never bricks startup
+		// saved before duplicates were refused: drop repeats, keep serving
+		if u, dups := lmbp.Unique(a.Capabilities); len(dups) > 0 {
+			a.Capabilities = u
+			if x.notes == nil {
+				x.notes = map[string]string{}
+			}
+			x.notes[a.ID] = fmt.Sprintf("duplicate capability %q removed from the saved configuration", dups[0])
+		}
 		if err := validateLoadedAdapter(&a); err != nil {
 			if _, dup := x.adapters[a.ID]; a.ID == "" || len(a.ID) > 64 || strings.Contains(a.ID, "/") || dup {
 				x.loadWarnings = append(x.loadWarnings, fmt.Sprintf("a saved scheme with an unusable ID %q was skipped (%v); it is dropped at the next scheme change", a.ID, err))

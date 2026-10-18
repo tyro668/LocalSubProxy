@@ -233,11 +233,29 @@ func (c *Client) control(e lmbp.Envelope) error {
 	return c.writeRaw(b)
 }
 
+// models and modelCaps are the last line of defence for the unique-items
+// rule of hello/models.update (models, model_capabilities values): a repeat
+// would make the gateway reject the whole announcement, so it is dropped here
+// (first occurrence kept) whatever the executor reports.
+func (c *Client) models() []string {
+	m, _ := lmbp.Unique(c.cfg.Executor.Models())
+	return m
+}
+
 func (c *Client) modelCaps() map[string][]string {
-	if r, ok := c.cfg.Executor.(CapabilityReporter); ok {
-		return r.ModelCapabilities()
+	r, ok := c.cfg.Executor.(CapabilityReporter)
+	if !ok {
+		return nil
 	}
-	return nil
+	in := r.ModelCapabilities()
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for m, caps := range in {
+		out[m], _ = lmbp.Unique(caps)
+	}
+	return out
 }
 
 // modelNames returns the executor's display names shaped to the schema
@@ -341,7 +359,7 @@ func (c *Client) ModelsChanged() {
 	if !live { // before the welcome: the handshake re-checks and resends
 		return
 	}
-	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
+	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: c.models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(), E2EEKey: c.keyStatement()})
 	if announceHook != nil {
 		announceHook(b)
 	}
@@ -389,7 +407,7 @@ func (c *Client) session(ctx context.Context, ready chan<- error) error {
 	if c.xpriv == nil {
 		caps = removeS(caps, lmbp.CapE2EE)
 	}
-	hello := lmbp.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.cfg.Executor.Models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(),
+	hello := lmbp.Hello{DeviceID: c.id.DeviceID, Client: c.cfg.Client, Models: c.models(), ModelCapabilities: c.modelCaps(), ModelNames: c.modelNames(), MaxConcurrency: c.declaredConc(),
 		Capabilities: caps, E2EEKey: c.keyStatement(), Proof: lmbp.SignProof(c.key, c.id.DeviceID, lmbp.ProofHello, tok, time.Now())}
 	if contains(caps, lmbp.CapFlow) {
 		hello.Flow = c.cfg.Flow

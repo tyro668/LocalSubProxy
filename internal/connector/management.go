@@ -39,6 +39,9 @@ type AdapterView struct {
 	// HealthError says why the scheme is unavailable when known locally,
 	// e.g. its saved configuration is invalid (it is then never served).
 	HealthError string `json:"health_error,omitempty"`
+	// HealthNote says what loading repaired in the saved configuration
+	// (e.g. a repeated capability was dropped); the scheme is still served.
+	HealthNote string `json:"health_note,omitempty"`
 	// edit-side values (what is stored); Capabilities/Concurrency above are
 	// the computed effective values for display only.
 	ConfiguredCapabilities []string `json:"configured_capabilities"`
@@ -91,6 +94,7 @@ func (x *Connector) ListAdapters() []AdapterView {
 		view.Health = x.health[a.ID].Health
 		view.AuthState = x.health[a.ID].AuthState
 		view.HealthError = x.health[a.ID].Error
+		view.HealthNote = x.notes[a.ID]
 		if bad := x.invalid[a.ID]; bad != "" { // also before the first probe
 			view.Health, view.HealthError = "unavailable", bad
 		}
@@ -399,12 +403,16 @@ func (x *Connector) updateAdapter(id string, build func(AdapterConfig) (AdapterC
 		}
 	}
 	x.adapters[a.ID] = a
-	wasInvalid := x.invalid[a.ID]
+	wasInvalid, wasNote := x.invalid[a.ID], x.notes[a.ID]
 	delete(x.invalid, a.ID) // the edit validated
+	delete(x.notes, a.ID)
 	err = x.saveAdaptersLocked()
 	if err != nil {
 		if wasInvalid != "" {
 			x.invalid[a.ID] = wasInvalid
+		}
+		if wasNote != "" {
+			x.notes[a.ID] = wasNote
 		}
 		x.adapters[a.ID] = old
 		for id, isDefault := range previousDefaults {
@@ -461,6 +469,7 @@ func (x *Connector) DeleteAdapter(id string) error {
 		}
 	} else {
 		delete(x.invalid, id)
+		delete(x.notes, id)
 	}
 	x.mu.Unlock()
 	if err == nil {
