@@ -6,7 +6,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $out = Join-Path $repo 'build\kernel\debug'
 & (Join-Path $PSScriptRoot 'build-kernel.ps1') -OutDir $out
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$env:LSP_NATIVE_LIB = Join-Path $out 'localsubproxy.dll'
+$env:LSP_NATIVE_LIB = Join-Path $out 'avora.dll'
 Push-Location (Join-Path $repo 'desktop')
 try { flutter --no-version-check run -d windows @args }
 finally { Pop-Location }

@@ -5,7 +5,7 @@ The kernel (liblsp.so) runs in a separate child process that is SIGKILLed
 and restarted to check recovery after a real process exit. A slow streaming
 OpenAI-compatible model runs in this process so cancellations are visible.
 
-  go build -buildmode=c-shared -o /tmp/liblsp.so ./cmd/localsubproxy_native
+  go build -buildmode=c-shared -o /tmp/liblsp.so ./cmd/avora_native
   LMBP_MOCK_DIR=/tmp/msmock LMBP_MOCK_GATEWAYS=2 scripts/mock-start.sh go 18480
   scripts/multisaas-acceptance.py /tmp/liblsp.so /tmp/msmock 18480
 """

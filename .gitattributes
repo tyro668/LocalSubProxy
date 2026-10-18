@@ -4,3 +4,7 @@ spec/testvectors/** -text
 docs/** text eol=lf
 spec/*.yaml text eol=lf
 spec/schemas/** text eol=lf
+# 图片是二进制，不能按文本做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary

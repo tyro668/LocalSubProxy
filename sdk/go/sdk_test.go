@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	lmbpserver "github.com/tyro668/avora/sdk/go"
 )
 
 const key = "tk_ssssssssssssssssssssssssssssssssssssssss"

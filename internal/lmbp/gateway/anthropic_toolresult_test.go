@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review9 P2-10: an Anthropic tool_result whose content array holds an image

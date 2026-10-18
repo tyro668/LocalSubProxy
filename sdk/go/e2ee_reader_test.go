@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+	"github.com/tyro668/avora/internal/lmbp"
+	lmbpserver "github.com/tyro668/avora/sdk/go"
 )
 
 // B3: per-frame Open is stateless, so on its own it cannot see a gateway

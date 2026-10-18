@@ -1,6 +1,6 @@
 # LMBP 服务端 Java SDK（`lmbp-core` + `lmbp-spring-boot-starter`）
 
-让 Java SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
+让 Java SaaS 后端使用**用户自己电脑上的模型**（经一线牵桌面端）。业务代码只做两件事：
 
 1. **配对**：展示配对链接，批准用户在桌面端看到的配对码；
 2. **调用模型**：标准 OpenAI（`/v1/chat/completions`、`/v1/models`）或 Anthropic（`/v1/messages`）请求，直接用官方 `openai` / `anthropic` 客户端，或用 SDK 的进程内客户端。
@@ -28,7 +28,7 @@ TENANT_API_KEY=$(openssl rand -hex 24) java -jar ../../examples/spring-boot-demo
 
 ```xml
 <dependency>
-  <groupId>dev.localsubproxy</groupId>
+  <groupId>dev.avora</groupId>
   <artifactId>lmbp-spring-boot-starter</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>

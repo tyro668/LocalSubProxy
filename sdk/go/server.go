@@ -1,5 +1,5 @@
 // Package lmbpserver lets a SaaS backend use models that run on its users'
-// own machines through the LocalSubProxy desktop app.
+// own machines through the Avora desktop app.
 //
 // Business code does two things only:
 //
@@ -25,9 +25,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 // Store is the persistence interface (see NewMemoryStore, OpenSQLiteStore).

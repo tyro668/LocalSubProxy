@@ -233,10 +233,11 @@
 
 完整定义见 [`spec/openapi.yaml`](../spec/openapi.yaml)。所有接口 MUST 通过 TLS 1.2 及以上版本提供；仅在开发环境的回环地址上可以例外。
 
-**缓存**：网关返回的每个 JSON 响应（`application/json`、`application/problem+json`，包括成功结果、错误、列表、`/healthz`，以及 401/404 这类在路由或认证阶段就返回的错误）MUST 带 `Cache-Control: no-store`。唯一例外是 §6.1 的公开发现文档（`/.well-known/jwks.json`、`/.well-known/lmbp`、`/.well-known/localsubproxy`）：它们不含秘密，MAY 用 `Cache-Control: public, max-age=<秒>` 允许缓存（参考实现为 300 秒）。SSE 响应沿用 `Cache-Control: no-cache`。
+**缓存**：网关返回的每个 JSON 响应（`application/json`、`application/problem+json`，包括成功结果、错误、列表、`/healthz`，以及 401/404 这类在路由或认证阶段就返回的错误）MUST 带 `Cache-Control: no-store`。唯一例外是 §6.1 的公开发现文档（`/.well-known/jwks.json`、`/.well-known/lmbp`、`/.well-known/avora`）：它们不含秘密，MAY 用 `Cache-Control: public, max-age=<秒>` 允许缓存（参考实现为 300 秒）。SSE 响应沿用 `Cache-Control: no-cache`。
 
 ### 6.1 发现
-- 租户后端 SHOULD 在 `GET /.well-known/localsubproxy` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`（`protocol` 是协议族名，不含版本），供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+- 租户后端 SHOULD 在 `GET /.well-known/avora` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`（`protocol` 是协议族名，不含版本），供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+  - 兼容：参考实现改名前使用 `/.well-known/localsubproxy`。设备 SHOULD 在 `/.well-known/avora` 返回 404 时再尝试该旧路径；租户后端 MAY 在过渡期同时提供两个路径。
 - 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
 - 网关 MUST 提供 `GET /.well-known/lmbp[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
 
@@ -270,7 +271,7 @@
 | `GET /lmbp/v1/tenant/tasks/{task}/events` | 按 `Last-Event-ID` 重新接入任务的 SSE 流（§14.4） |
 | `POST /lmbp/v1/tenant/devices/{device}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
 
-- 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://localsubproxy.dev/problems/<code 的小写连字符形式>`。
+- 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://avora.dev/problems/<code 的小写连字符形式>`。
 - 访问不属于该租户或该终端用户的设备，MUST 返回 404（不透露设备是否存在）。
 - 同一租户每分钟确认失败超过 10 次时，网关 MUST 返回 429（`RATE_LIMITED`），用于防止暴力猜测配对码。
 
@@ -590,7 +591,7 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 设备的一致性：能验证 `spec/testvectors` 中所有正例、拒绝所有反例，并实现 §7.4–§7.7 与 §8.6 设备侧各行。
 
-conformance 从元数据读取 `profiles`：core 与已声明配置的检查必须通过，未声明配置的检查报告为 SKIP，不计失败；任何检查都不会因前面的步骤失败而被静默跳过（没跑到的检查记为失败）。只实现 core 的网关只协商 `session.token`、`models.update`；参考网关的 `localsubproxy server -core-only` 就是这种配置（`profiles: ["core", "openai"]`，调用方接口仍需 openai），用于证明 Core 可以单独通过。
+conformance 从元数据读取 `profiles`：core 与已声明配置的检查必须通过，未声明配置的检查报告为 SKIP，不计失败；任何检查都不会因前面的步骤失败而被静默跳过（没跑到的检查记为失败）。只实现 core 的网关只协商 `session.token`、`models.update`；参考网关的 `avora server -core-only` 就是这种配置（`profiles: ["core", "openai"]`，调用方接口仍需 openai），用于证明 Core 可以单独通过。
 
 ### 13.2 需求 ID 与检查
 每条需求有稳定的 ID，ID 一经发布不再改变含义，退役的 ID 不复用（REL-07 已并入 CORE-22）；conformance 检查编号同样稳定（以 E 开头的检查最早来自 1.0 勘误，编号保留）。下表与 `go run ./cmd/lmbp-conformance -list` 的输出一致（`spec/validate.sh` 校验）。
@@ -886,7 +887,7 @@ lmbp://pair?v=2&gateway=<https issuer origin>&tenant=<tenant id>[&remote=<SaaS o
 - MUST NOT 记录 prompt、输出、工具参数或附件内容。
 - 统计：按 `saas`、`model`、`day`、`hour`、`status`、`connection` 任意组合聚合请求数、失败数、prompt/completion/total tokens、平均与最大延迟、未计量请求数；时间桶默认 UTC，可选本地时区。
 - 保留期默认 90 天，MUST 定期清理；用户可以手动清理。
-- 参考实现：`internal/audit`（SQLite `audit.db`）；本地 API `audit_list`、`usage_stats`、`audit_purge`；CLI `localsubproxy usage`、`localsubproxy audit`。
+- 参考实现：`internal/audit`（SQLite `audit.db`）；本地 API `audit_list`、`usage_stats`、`audit_purge`；CLI `avora usage`、`avora audit`。
 
 ## 21. 尚未定义的内容
 

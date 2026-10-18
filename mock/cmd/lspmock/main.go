@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/mock/demo"
-	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
-	"github.com/tyro668/LocalSubProxy/mock/saas"
-	"github.com/tyro668/LocalSubProxy/mock/web"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/mock/demo"
+	"github.com/tyro668/avora/mock/fakemodel"
+	"github.com/tyro668/avora/mock/saas"
+	"github.com/tyro668/avora/mock/web"
 )
 
 func main() {

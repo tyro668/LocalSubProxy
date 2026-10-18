@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Two kernels (desktop app + `localsubproxy serve`) must not run against one
+// Two kernels (desktop app + `avora serve`) must not run against one
 // data directory: the second start is refused with a clear error, and the
 // lock is released by stop so the directory can be reopened.
 func TestDataDirLockRefusesSecondKernel(t *testing.T) {

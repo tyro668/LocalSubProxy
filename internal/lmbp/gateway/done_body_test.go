@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // audit3 P2-6: a device terminal frame is validated (envelope + body against

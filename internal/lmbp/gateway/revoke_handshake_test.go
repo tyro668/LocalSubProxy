@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review7 #2 (Go): a revoke that lands while a reconnecting device is being

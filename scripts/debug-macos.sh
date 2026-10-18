@@ -5,7 +5,7 @@
 set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 "$repo_dir/scripts/build-kernel.sh" "$repo_dir/build/kernel/debug"
-export LSP_NATIVE_LIB="$repo_dir/build/kernel/debug/liblocalsubproxy.dylib"
+export LSP_NATIVE_LIB="$repo_dir/build/kernel/debug/libavora.dylib"
 # shims 目录修复 Xcode 27 lipo 与 Flutter 工具的兼容问题
 export PATH="$repo_dir/scripts/shims:$PATH"
 cd "$repo_dir/desktop"

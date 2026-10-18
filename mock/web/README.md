@@ -39,19 +39,19 @@
 
 ```bash
 export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)        # 租户 API Key，登录页面时粘贴它
-export LOCALSUBPROXY_DATA_KEY=$(openssl rand -hex 32)     # 连接器加密本机适配器配置用
+export AVORA_DATA_KEY=$(openssl rand -hex 32)     # 连接器加密本机适配器配置用
 
 # 1) 假模型（同时提供 Ollama 原生 /api/chat 和 OpenAI /v1）；有真实 Ollama 时可跳过
 go run ./mock/cmd/lspmock fakemodel -listen 127.0.0.1:11500 -models qwen3-8b &
 
 # 2) 任选一个网关（都在 http://127.0.0.1:8080/chat 提供页面）
-go run ./cmd/localsubproxy server -listen 127.0.0.1:8080 -db /tmp/gw.db -tenants acme:LSP_TENANT_KEY_ACME \
+go run ./cmd/avora server -listen 127.0.0.1:8080 -db /tmp/gw.db -tenants acme:LSP_TENANT_KEY_ACME \
   -tenant-profiles mock/tenant-profiles.example.json -issuer http://127.0.0.1:8080 -chat-ui &
 #   node mock/node/gateway.mjs --listen 127.0.0.1:8080 --issuer http://127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json &
 #   mock/python/.venv/bin/python mock/python/gateway.py --listen 127.0.0.1:8080 --issuer http://127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json &
 
 # 3) 浏览器打开 http://127.0.0.1:8080/chat ，以 acme / alice / $LSP_TENANT_KEY_ACME 登录，复制页面上的 Connector 命令，例如：
-go run ./cmd/localsubproxy connector -pair-link 'lmbp://pair?v=2&gateway=http%3A%2F%2F127.0.0.1%3A8080&tenant=acme' \
+go run ./cmd/avora connector -pair-link 'lmbp://pair?v=2&gateway=http%3A%2F%2F127.0.0.1%3A8080&tenant=acme' \
   -adapter-id local -ollama-url http://127.0.0.1:11500 -models qwen3-8b -capabilities vision \
   -identity /tmp/dev/id.json -adapter-file /tmp/dev/adapters.enc -audit-db /tmp/dev/audit.db
 #    在终端确认授权后，把连接器打印的配对码填到页面上，点“批准”。设备上线后就可以对话（模型名为 local/qwen3-8b）。

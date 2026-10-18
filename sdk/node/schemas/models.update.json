@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/models.update.json",
+  "$id": "https://avora.dev/spec/lmbp/models.update.json",
   "title": "models.update",
   "description": "device→gateway",
   "type": "object",

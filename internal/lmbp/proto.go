@@ -1,4 +1,4 @@
-// Package lmbp is the Go reference implementation of the LocalSubProxy
+// Package lmbp is the Go reference implementation of the Avora
 // LMBP (Local Model Bridge Protocol) wire format: envelope and message types, error codes,
 // and the JOSE profile (EdDSA JWS/JWT, RFC 7638 thumbprints, key-bound proof
 // JWTs). The normative spec is docs/lmbp-spec.md; schemas live in spec/.

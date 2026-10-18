@@ -19,7 +19,7 @@ MAX_STOP_SEQUENCES = 4
 MAX_STOP_LENGTH = 256
 MAX_TOOLS = 128
 TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
-BASE = "https://localsubproxy.dev/spec/lmbp/"
+BASE = "https://avora.dev/spec/lmbp/"
 _schemas: Optional[SchemaSet] = None
 
 

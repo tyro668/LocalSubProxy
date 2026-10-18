@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/avora/internal/connector"
 )
 
 func newAdapterCore(t *testing.T, file string) *connector.Connector {

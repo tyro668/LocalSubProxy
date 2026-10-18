@@ -22,7 +22,7 @@ tags:
   - name: tenant-admin
   - name: openai
 paths:
-  /.well-known/localsubproxy:
+  /.well-known/avora:
     get:
       tags: [discovery]
       summary: Discovery document (served by the SaaS / remote service, not the gateway)
@@ -609,7 +609,7 @@ components:
       type: object
       required: [type, title, status]
       properties:
-        type: { type: string, format: uri, examples: ['https://localsubproxy.dev/problems/device-offline'] }
+        type: { type: string, format: uri, examples: ['https://avora.dev/problems/device-offline'] }
         title: { type: string }
         status: { type: integer }
         detail: { type: string }

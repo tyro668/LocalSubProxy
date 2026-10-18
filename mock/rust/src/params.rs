@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 pub const MAX_STOP_SEQUENCES: usize = 4;
 pub const MAX_STOP_LENGTH: usize = 256;
 pub const MAX_TOOLS: usize = 128;
-const BASE: &str = "https://localsubproxy.dev/spec/lmbp/";
+const BASE: &str = "https://avora.dev/spec/lmbp/";
 const ROLES: [&str; 5] = ["system", "user", "assistant", "tool", "developer"];
 
 #[derive(Debug, Clone)]

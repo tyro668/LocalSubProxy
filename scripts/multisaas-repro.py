@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Multi-SaaS repro against the native kernel library (no Flutter needed).
 
-  go build -buildmode=c-shared -o /tmp/liblsp.so ./cmd/localsubproxy_native   # macOS: liblsp.dylib
+  go build -buildmode=c-shared -o /tmp/liblsp.so ./cmd/avora_native   # macOS: liblsp.dylib
   LMBP_MOCK_GATEWAYS=2 scripts/mock-start.sh go 8080
   scripts/multisaas-repro.py /tmp/liblsp.so [.mock] [8080]
   scripts/mock-stop.sh

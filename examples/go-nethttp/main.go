@@ -27,7 +27,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	oopt "github.com/openai/openai-go/v3/option"
 
-	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+	lmbpserver "github.com/tyro668/avora/sdk/go"
 )
 
 func main() {

@@ -1,8 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/main.dart';
-import 'package:localsubproxy_ui/native_api.dart';
-import 'package:localsubproxy_ui/status_contract.dart';
+import 'package:avora_ui/main.dart';
+import 'package:avora_ui/native_api.dart';
+import 'package:avora_ui/status_contract.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'screens_test.dart' as screens;
@@ -101,9 +101,16 @@ void main() {
     expect(kernelErrorHint('open x: database is locked')!.title, '本机数据库被占用');
     expect(
       kernelErrorHint(
-        'data directory in use: /d is used by another LocalSubProxy process',
+        'data directory in use: /d is used by another Avora process',
       )!.title,
-      contains('另一个 LocalSubProxy'),
+      contains('另一个一线牵'),
+    );
+    // 改名兼容：旧版应用仍在运行时给出专门提示（内核 ErrLegacyDirInUse 的原文）
+    expect(
+      kernelErrorHint(
+        'data directory in use: the old LocalSubProxy app (or "localsubproxy serve") is still running; quit it and start Avora again so its connections can be moved over',
+      )!.title,
+      '旧版 LocalSubProxy 仍在运行',
     );
     expect(kernelErrorHint('mkdir: permission denied')!.title, contains('权限'));
     expect(kernelErrorHint('write: no space left on device')!.title, '磁盘空间不足');
@@ -120,7 +127,7 @@ void main() {
     NativeApi.debugTransport = kernel.call;
     addTearDown(() => NativeApi.debugTransport = null);
     final m = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    for (final ch in ['window_manager', 'localsubproxy/tray']) {
+    for (final ch in ['window_manager', 'avora/tray']) {
       m.setMockMethodCallHandler(MethodChannel(ch), (_) async => null);
     }
     t.view.physicalSize = const Size(1200, 780);

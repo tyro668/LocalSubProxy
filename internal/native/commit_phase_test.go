@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/durable"
+	"github.com/tyro668/avora/internal/connector"
+	"github.com/tyro668/avora/internal/durable"
 )
 
 // Review2 #4 fault injection at each commit phase of identity.json.

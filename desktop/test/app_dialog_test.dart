@@ -3,7 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/main.dart';
+import 'package:avora_ui/main.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'connection_dialog_scroll_test.dart' as conn;

@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/main.dart';
-import 'package:localsubproxy_ui/native_api.dart';
-import 'package:localsubproxy_ui/profile_workspace.dart';
-import 'package:localsubproxy_ui/status_contract.dart';
+import 'package:avora_ui/main.dart';
+import 'package:avora_ui/native_api.dart';
+import 'package:avora_ui/profile_workspace.dart';
+import 'package:avora_ui/status_contract.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 // Sample from docs/desktop-status-contract.md (kernel `status`, multi-SaaS).

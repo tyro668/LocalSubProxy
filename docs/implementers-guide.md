@@ -356,7 +356,7 @@ Go 设备端参考实现见 `internal/lmbp/client`。
 4. 令牌响应带 `issuer`。
 
 **设备（桌面端）**
-1. 入口是深链接 `lmbp://pair?v=2&gateway=…&tenant=…`（`v=1` 的旧链接要明确拒绝），或 SaaS 地址 → `/.well-known/localsubproxy`。
+1. 入口是深链接 `lmbp://pair?v=2&gateway=…&tenant=…`（`v=1` 的旧链接要明确拒绝），或 SaaS 地址 → `/.well-known/avora`。
 2. 拉取元数据和 JWKS（必须同源），校验签名、issuer、tenant、audience、有效期；失败就不显示同意页。
 3. 同意页显示 `saas.*`、网关 origin、请求的模型和作用域、密钥指纹。用户拒绝时不发任何请求，返回 `CONSENT_DENIED`。
 4. 用户同意后才调用 `device_authorize`。令牌响应的 `gateway_key` 必须等于签名元数据的密钥。

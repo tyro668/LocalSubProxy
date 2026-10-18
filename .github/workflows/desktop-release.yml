@@ -92,7 +92,7 @@ jobs:
       - name: Quick tests
         if: needs.version.outputs.run_tests == 'true'
         run: |
-          go test -short ./internal/... ./cmd/localsubproxy
+          go test -short ./internal/... ./cmd/avora ./cmd/localsubproxy
           (cd desktop && flutter test)
       - name: Import signing certificate
         id: cert
@@ -133,13 +133,13 @@ jobs:
             export NOTARIZE=1
           fi
           ./scripts/build-macos.sh
-          lipo -archs desktop/build/macos/Build/Products/Release/LocalSubProxy.app/Contents/Frameworks/liblocalsubproxy.dylib
+          lipo -archs desktop/build/macos/Build/Products/Release/Avora.app/Contents/Frameworks/libavora.dylib
       - name: Clean up keychain
         if: always() && steps.cert.outputs.keychain != ''
         run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalSubProxy-${{ needs.version.outputs.name }}-macos
+          name: Avora-${{ needs.version.outputs.name }}-macos
           path: |
             dist/*.dmg
             dist/*.zip
@@ -206,14 +206,14 @@ jobs:
         run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP 'cert.pfx')
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalSubProxy-${{ needs.version.outputs.name }}-windows
+          name: Avora-${{ needs.version.outputs.name }}-windows
           path: |
             dist/*.exe
             dist/*.zip
           if-no-files-found: error
 
   cli:
-    # headless CLI (localsubproxy serve/pair/scheme/...): pure Go, cross-built
+    # headless CLI (avora serve/pair/scheme/...): pure Go, cross-built
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -225,14 +225,14 @@ jobs:
           cache: true
       - name: Tests (including the headless end-to-end run)
         if: needs.version.outputs.run_tests == 'true'
-        run: go test ./cmd/localsubproxy ./internal/control ./internal/native
+        run: go test ./cmd/avora ./cmd/localsubproxy ./internal/compat ./internal/control ./internal/native
       - name: Vet all targets
-        run: for os in linux darwin windows; do GOOS=$os go vet ./cmd/localsubproxy ./internal/control ./internal/native; done
+        run: for os in linux darwin windows; do GOOS=$os go vet ./cmd/avora ./cmd/localsubproxy ./internal/compat ./internal/control ./internal/native; done
       - name: Build
         run: ./scripts/build-cli.sh '${{ needs.version.outputs.name }}'
       - uses: actions/upload-artifact@v4
         with:
-          name: LocalSubProxy-${{ needs.version.outputs.name }}-cli
+          name: Avora-${{ needs.version.outputs.name }}-cli
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -254,7 +254,7 @@ jobs:
           (cd dist && sha256sum ./* > SHA256SUMS.txt)
       - uses: softprops/action-gh-release@v2
         with:
-          name: LocalSubProxy ${{ needs.version.outputs.name }}
+          name: Avora ${{ needs.version.outputs.name }}
           prerelease: ${{ contains(needs.version.outputs.name, '-') }}
           generate_release_notes: true
           files: dist/*

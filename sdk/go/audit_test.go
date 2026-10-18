@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+	lmbpserver "github.com/tyro668/avora/sdk/go"
 )
 
 // Finding 8: Pairing.Approve/Deny count failures and lock out like the HTTP API.

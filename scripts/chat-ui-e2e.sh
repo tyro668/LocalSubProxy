@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 bin=$(mktemp -d); trap 'rm -rf "$bin"' EXIT
-go build -o "$bin/localsubproxy" ./cmd/localsubproxy
+go build -o "$bin/avora" ./cmd/avora
 go build -o "$bin/lspmock" ./mock/cmd/lspmock
 (cd mock/node && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
 [ -x mock/python/.venv/bin/python ] || { python3 -m venv mock/python/.venv && mock/python/.venv/bin/pip install -q -r mock/python/requirements.txt; }

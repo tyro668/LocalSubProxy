@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review7 #10: another path ends a queued task right before the queue exit
@@ -80,7 +80,22 @@ func TestQueuedDisconnectRecordsCancelled(t *testing.T) {
 			resp.Body.Close()
 		}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// cancel only once the request waits in the slot queue: a fixed sleep let
+	// slow Windows runners cancel before the task row was even created
+	queued := func() bool {
+		r.g.mu.Lock()
+		ds := r.g.devs[r.devID]
+		r.g.mu.Unlock()
+		ds.mu.Lock()
+		defer ds.mu.Unlock()
+		return len(ds.slotWait) > 0
+	}
+	for end := time.Now().Add(10 * time.Second); !queued() && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !queued() {
+		t.Fatal("request never reached the slot queue")
+	}
 	cancel()
 	select {
 	case <-exited:

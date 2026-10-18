@@ -8,7 +8,7 @@ import (
 )
 
 // lockFile guards a data directory: only one kernel (the desktop app or
-// `localsubproxy serve`) may run against it, because both rewrite
+// `avora serve`) may run against it, because both rewrite
 // identity.json, the key files and adapters.enc. The OS releases the lock
 // when the process exits, so a crash never leaves a stale lock behind.
 const lockFile = "kernel.lock"
@@ -29,7 +29,7 @@ func lockDir(dir string) (*dirLock, error) {
 	if err := tryLock(f); err != nil {
 		_ = f.Close()
 		if errors.Is(err, errWouldBlock) {
-			return nil, fmt.Errorf("%w: %s is used by another LocalSubProxy process (the desktop app or \"localsubproxy serve\"); stop it first", ErrDataDirInUse, dir)
+			return nil, fmt.Errorf("%w: %s is used by another Avora process (the desktop app or \"avora serve\"); stop it first", ErrDataDirInUse, dir)
 		}
 		return nil, err
 	}

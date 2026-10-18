@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/avora/internal/connector"
 )
 
 // Review7 #17: start(A) whose core build fails must not leak A's audit log:

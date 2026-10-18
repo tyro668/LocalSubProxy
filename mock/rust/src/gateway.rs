@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 pub type Guard = MutexGuard<'static, St>;
 
-pub const PROBLEM_BASE: &str = "https://localsubproxy.dev/problems/";
+pub const PROBLEM_BASE: &str = "https://avora.dev/problems/";
 const USER_CODE_CHARS: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
 const ROLES: [&str; 5] = ["system", "user", "assistant", "tool", "developer"];
 const WEB_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";

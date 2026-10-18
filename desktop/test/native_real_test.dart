@@ -7,9 +7,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/native_api.dart';
-import 'package:localsubproxy_ui/profile_workspace.dart';
-import 'package:localsubproxy_ui/status_contract.dart';
+import 'package:avora_ui/native_api.dart';
+import 'package:avora_ui/profile_workspace.dart';
+import 'package:avora_ui/status_contract.dart';
 
 final env = Platform.environment;
 final enabled =

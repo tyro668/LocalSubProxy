@@ -25,7 +25,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 type Config struct {
@@ -184,19 +184,19 @@ func loadSchemas(dir string) (*jsonschema.Schema, *jsonschema.Schema, *jsonschem
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if err := c.AddResource("https://localsubproxy.dev/spec/lmbp/"+e.Name(), doc); err != nil {
+		if err := c.AddResource("https://avora.dev/spec/lmbp/"+e.Name(), doc); err != nil {
 			return nil, nil, nil, err
 		}
 	}
-	env, err := c.Compile("https://localsubproxy.dev/spec/lmbp/envelope.json")
+	env, err := c.Compile("https://avora.dev/spec/lmbp/envelope.json")
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	p, err := c.Compile("https://localsubproxy.dev/spec/lmbp/task.run.payload.json")
+	p, err := c.Compile("https://avora.dev/spec/lmbp/task.run.payload.json")
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	m, err := c.Compile("https://localsubproxy.dev/spec/lmbp/gateway-metadata.json")
+	m, err := c.Compile("https://avora.dev/spec/lmbp/gateway-metadata.json")
 	return env, p, m, err
 }
 

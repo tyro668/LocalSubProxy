@@ -1,4 +1,4 @@
-// Package control is the local-only control channel of `localsubproxy
+// Package control is the local-only control channel of `avora
 // serve`: newline-delimited JSON requests, each one a native API action
 // (the same payload as LSP_Call), answered with the native reply envelope.
 //
@@ -28,7 +28,7 @@ type Handler func(req string) string
 
 // refused lists actions the channel never forwards, with the reason.
 var refused = map[string]string{
-	"stop": `stopping the kernel over the control channel is not supported; stop "localsubproxy serve" itself (Ctrl-C, SIGTERM or the service manager)`,
+	"stop": `stopping the kernel over the control channel is not supported; stop "avora serve" itself (Ctrl-C, SIGTERM or the service manager)`,
 }
 
 func reply(err error) string {
@@ -105,7 +105,7 @@ type Client struct {
 }
 
 // ErrNotRunning means nothing listens on the data directory's channel.
-var ErrNotRunning = errors.New(`"localsubproxy serve" is not running for this data directory`)
+var ErrNotRunning = errors.New(`"avora serve" is not running for this data directory`)
 
 // Connect opens the control channel of the serve that owns dataDir.
 func Connect(dataDir string) (*Client, error) {

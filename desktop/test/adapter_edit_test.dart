@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/profile_workspace.dart';
+import 'package:avora_ui/profile_workspace.dart';
 
 void main() {
   // shape mirrors connector.AdapterView (list_adapters output)

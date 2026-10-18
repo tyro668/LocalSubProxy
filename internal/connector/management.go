@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/durable"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // AdapterView is the local UI representation. It never contains an API key.
@@ -150,7 +150,7 @@ func (x *Connector) saveAdaptersLocked() error {
 	if rerr := restore(); rerr == nil {
 		return err
 	}
-	x.adaptersBlocked = fmt.Errorf("adapters.enc state is uncertain after a failed save (%v); restart LocalSubProxy before changing adapters", err)
+	x.adaptersBlocked = fmt.Errorf("adapters.enc state is uncertain after a failed save (%v); restart Avora before changing adapters", err)
 	return x.adaptersBlocked
 }
 
@@ -180,7 +180,7 @@ func (x *Connector) activeAdapterLocked(id string) bool {
 	return false
 }
 
-var errCoreStopped = errors.New("LocalSubProxy core stopped; retry")
+var errCoreStopped = errors.New("Avora core stopped; retry")
 
 // beginMutLocked admits an adapter change; Shutdown waits for it, and a
 // change on a stopped core never touches adapters.enc (a newer core may own

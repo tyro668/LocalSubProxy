@@ -35,9 +35,9 @@ scripts/mock-stop.sh                             # 停止
 脚本会编译并在后台启动假模型（`127.0.0.1:11500`，同时提供 Ollama 原生 `/api/chat`、`/api/tags` 和 OpenAI `/v1`）和所选网关（开启聊天页），然后打印：
 
 - 聊天页地址 `http://127.0.0.1:<端口>/chat`，以及登录用的租户（`acme`）、用户（`alice`）和租户 Key；
-- `lmbp://pair?...` 配对链接，以及可直接复制运行的 `localsubproxy connector` 配对命令（运行后在终端确认，再把打印出的配对码填到聊天页上点“批准”）。
+- `lmbp://pair?...` 配对链接，以及可直接复制运行的 `avora connector` 配对命令（运行后在终端确认，再把打印出的配对码填到聊天页上点“批准”）。
 
-开发用的密钥（`LSP_TENANT_KEY_ACME`、`LSP_SIGNING_SEED`、`LOCALSUBPROXY_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`，java 网关需要 JDK 21+（`java`/`javac`/`jar`），rust 网关需要 `cargo`。java/rust 网关的状态只在内存里，重启后需要重新配对（签名密钥仍沿用 `.mock/env`）。
+开发用的密钥（`LSP_TENANT_KEY_ACME`、`LSP_SIGNING_SEED`、`AVORA_DATA_KEY`）只在第一次运行时生成，保存在 `.mock/env`（权限 600，已加入 `.gitignore`）。之后重启会沿用这些密钥，已配对的连接器可以继续使用。租户档案、日志（`.mock/logs/`）和 pid 文件也都放在 `.mock/`。删除 `.mock/` 即可从头开始；也可以用 `LMBP_MOCK_DIR` 指定别的目录。假模型的端口和模型分别用 `LMBP_MOCK_MODEL_PORT`、`LMBP_MOCK_MODELS` 修改。脚本兼容 macOS 自带的 bash 3.2 和 BSD 工具，也可在 Linux 上运行。需要的工具：`go`、`curl`、`openssl`；node 网关还需要 `node`/`npm`，python 网关还需要 `python3`，java 网关需要 JDK 21+（`java`/`javac`/`jar`），rust 网关需要 `cargo`。java/rust 网关的状态只在内存里，重启后需要重新配对（签名密钥仍沿用 `.mock/env`）。
 
 ## 分进程运行（可接真实的 LM Studio 或 Ollama）
 

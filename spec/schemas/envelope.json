@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/envelope.json",
+  "$id": "https://avora.dev/spec/lmbp/envelope.json",
   "title": "lmbp WebSocket frame",
   "description": "Every WebSocket text message is exactly one UTF-8 JSON object (RFC 8259) of this shape. Unknown members MUST be ignored.",
   "type": "object",

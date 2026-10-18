@@ -39,7 +39,7 @@ import java.util.regex.Pattern;
  * reader. Blocking waits release it (Condition), socket writes run unlocked.
  */
 final class Gateway {
-  static final String PROBLEM_BASE = "https://localsubproxy.dev/problems/";
+  static final String PROBLEM_BASE = "https://avora.dev/problems/";
   static final String USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ";
   static final Map<String, Integer> STATUS_OF = Map.ofEntries(
       Map.entry("BAD_REQUEST", 400), Map.entry("CAPABILITY_UNSUPPORTED", 400), Map.entry("PAYLOAD_TOO_LARGE", 413),

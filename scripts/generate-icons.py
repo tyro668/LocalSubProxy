@@ -15,7 +15,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 DESKTOP = ROOT / "desktop"
-SOURCE = DESKTOP / "assets/brand/localsubproxy.svg"
+SOURCE = DESKTOP / "assets/brand/avora.svg"
 MAC_APP = DESKTOP / "macos/Runner/Assets.xcassets/AppIcon.appiconset"
 MAC_TRAY = DESKTOP / "macos/Runner/Assets.xcassets/TrayIcon.imageset"
 WINDOWS_APP = DESKTOP / "windows/runner/resources/app_icon.ico"
@@ -63,7 +63,7 @@ def main() -> None:
     (MAC_TRAY / "tray_mark.png").write_bytes(render(mark, 18))
     (MAC_TRAY / "tray_mark@2x.png").write_bytes(render(mark, 36))
     (DESKTOP / "assets/brand/tray_mark.svg").write_bytes(mark)
-    (DESKTOP / "assets/brand/localsubproxy_mark.png").write_bytes(render(source, 128))
+    (DESKTOP / "assets/brand/avora_mark.png").write_bytes(render(source, 128))
 
     save_ico(source, WINDOWS_APP, [16, 24, 32, 48, 64, 128, 256])
 

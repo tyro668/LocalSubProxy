@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/avora/internal/connector"
 )
 
 // P1-2: a single Ollama adapter goes offline (model list empties, the

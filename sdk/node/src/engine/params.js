@@ -13,7 +13,7 @@ export const MAX_STOP_SEQUENCES = 4;
 export const MAX_STOP_LENGTH = 256;
 export const MAX_TOOLS = 128;
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-const BASE = 'https://localsubproxy.dev/spec/lmbp/';
+const BASE = 'https://avora.dev/spec/lmbp/';
 
 let schemas;
 function schemaSet() {

@@ -22,8 +22,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 const (
@@ -314,7 +314,7 @@ func problem(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // ProblemBase prefixes RFC 9457 problem type URIs.
-const ProblemBase = "https://localsubproxy.dev/problems/"
+const ProblemBase = "https://avora.dev/problems/"
 
 // params reads an OAuth request either as application/x-www-form-urlencoded
 // (RFC 6749 §4.1.3 / RFC 8628 §3.1, normative) or as a JSON object (accepted).

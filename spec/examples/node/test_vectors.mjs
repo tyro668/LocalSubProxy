@@ -55,7 +55,7 @@ try {
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   const sdir = join(ROOT, 'schemas');
   for (const f of readdirSync(sdir).filter((n) => n.endsWith('.json'))) ajv.addSchema(JSON.parse(readFileSync(join(sdir, f), 'utf8')));
-  const validate = ajv.getSchema('https://localsubproxy.dev/spec/lmbp/envelope.json');
+  const validate = ajv.getSchema('https://avora.dev/spec/lmbp/envelope.json');
   for (const f of V.valid_frames) check(`schema valid frame ${f.name}`, validate(f.frame), JSON.stringify(validate.errors));
   for (const f of V.invalid_frames) check(`schema rejects ${f.name}`, !validate(f.frame));
 } catch (err) {

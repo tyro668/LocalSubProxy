@@ -45,7 +45,7 @@ class ProxyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ShadcnApp(
-    title: 'LocalSubProxy',
+    title: '一线牵',
     debugShowCheckedModeBanner: false,
     theme: appLightTheme(),
     darkTheme: appDarkTheme(),
@@ -987,15 +987,15 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-/// The kernel's default data directory (os.UserConfigDir()/localsubproxy).
+/// The kernel's default data directory (os.UserConfigDir()/avora).
 String dataDirPath() {
   final env = Platform.environment;
-  if (Platform.isWindows) return '${env['APPDATA'] ?? ''}\\localsubproxy';
+  if (Platform.isWindows) return '${env['APPDATA'] ?? ''}\\avora';
   final home = env['HOME'] ?? '';
   if (Platform.isMacOS) {
-    return '$home/Library/Application Support/localsubproxy';
+    return '$home/Library/Application Support/avora';
   }
-  return '${env['XDG_CONFIG_HOME'] ?? '$home/.config'}/localsubproxy';
+  return '${env['XDG_CONFIG_HOME'] ?? '$home/.config'}/avora';
 }
 
 /// Shared outer layout: kernel-wide warnings stay visible on every page
@@ -1186,7 +1186,7 @@ class _KernelErrorPageState extends State<KernelErrorPage> {
                             style: AppText.xl.copyWith(color: t.fg),
                           ),
                           Text(
-                            'LocalSubProxy 的本机内核没有启动成功',
+                            '一线牵的本机内核没有启动成功',
                             style: AppText.sm.copyWith(color: t.fg2),
                           ),
                         ],

@@ -18,8 +18,8 @@ class NativeApi {
     final override = Platform.environment['LSP_NATIVE_LIB'];
     if (override != null && override.isNotEmpty) return override;
     final executableDir = File(Platform.resolvedExecutable).parent.path;
-    if (Platform.isWindows) return '$executableDir\\localsubproxy.dll';
-    return '$executableDir/../Frameworks/liblocalsubproxy.dylib';
+    if (Platform.isWindows) return '$executableDir\\avora.dll';
+    return '$executableDir/../Frameworks/libavora.dylib';
   }
 
   late final DynamicLibrary _library = DynamicLibrary.open(libraryPath());

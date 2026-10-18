@@ -19,7 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 type Config struct {
@@ -104,7 +104,7 @@ func New(cfg Config, id Identity) (*Client, error) {
 	}
 	cfg.MaxConcurrency = clampConc(cfg.MaxConcurrency)
 	if cfg.Client == "" {
-		cfg.Client = "github.com/tyro668/LocalSubProxy/lmbp"
+		cfg.Client = "github.com/tyro668/avora/lmbp"
 	}
 	if cfg.Flow == nil {
 		cfg.Flow = &lmbp.Flow{TaskWindow: lmbp.DefaultTaskWindow, ConnWindow: lmbp.DefaultConnWindow}

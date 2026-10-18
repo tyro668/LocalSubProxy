@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // audit3 P2-3: replaying a finished non-streaming idempotent request with a

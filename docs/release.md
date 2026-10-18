@@ -33,13 +33,13 @@ git tag v1.2.0 && git push origin v1.2.0
 
 | 平台 | 文件 |
 |---|---|
-| macOS（universal：arm64 + x86_64） | `LocalSubProxy-<ver>-macos-universal.dmg`、`LocalSubProxy-<ver>-macos-universal.zip` |
-| Windows x64 | `LocalSubProxy-<ver>-windows-x64-setup.exe`（Inno Setup，默认按用户安装，无需管理员）、`LocalSubProxy-<ver>-windows-x64.zip`（便携版） |
+| macOS（universal：arm64 + x86_64） | `Avora-<ver>-macos-universal.dmg`、`Avora-<ver>-macos-universal.zip` |
+| Windows x64 | `Avora-<ver>-windows-x64-setup.exe`（Inno Setup，默认按用户安装，无需管理员）、`Avora-<ver>-windows-x64.zip`（便携版） |
 | Release | 以上文件 + `SHA256SUMS.txt` |
 
-Artifact 名：`LocalSubProxy-<ver>-macos`、`LocalSubProxy-<ver>-windows`。
+Artifact 名：`Avora-<ver>-macos`、`Avora-<ver>-windows`。
 
-App 内容：Go 内核 `liblocalsubproxy.dylib` 放在 `LocalSubProxy.app/Contents/Frameworks/`，`localsubproxy.dll` 放在 `LocalSubProxy.exe` 同目录（对应 `desktop/lib/native_api.dart` 的加载路径）；CLI 分别为 `Contents/MacOS/localsubproxy-cli`、`localsubproxy-cli.exe`。
+App 内容：Go 内核 `libavora.dylib` 放在 `Avora.app/Contents/Frameworks/`，`avora.dll` 放在 `Avora.exe` 同目录（对应 `desktop/lib/native_api.dart` 的加载路径）；CLI 分别为 `Contents/MacOS/avora-cli`、`avora-cli.exe`。
 
 ## Secrets（全部可选）
 
@@ -56,7 +56,7 @@ App 内容：Go 内核 `liblocalsubproxy.dylib` 放在 `LocalSubProxy.app/Conten
 
 ## 未签名构建的注意事项
 
-- **macOS**：ad-hoc 签名的 App 会被 Gatekeeper 拦截（"无法验证开发者"/"已损坏"）。在 Finder 中右键 App →「打开」→ 再点「打开」；或到「系统设置 → 隐私与安全性」点「仍要打开」。从浏览器下载后若提示已损坏，可执行 `xattr -dr com.apple.quarantine /Applications/LocalSubProxy.app`。
+- **macOS**：ad-hoc 签名的 App 会被 Gatekeeper 拦截（"无法验证开发者"/"已损坏"）。在 Finder 中右键 App →「打开」→ 再点「打开」；或到「系统设置 → 隐私与安全性」点「仍要打开」。从浏览器下载后若提示已损坏，可执行 `xattr -dr com.apple.quarantine /Applications/Avora.app`。
 - **Windows**：未签名安装包会触发 SmartScreen「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
 
 ## 本地构建

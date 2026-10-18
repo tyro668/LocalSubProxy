@@ -1,6 +1,6 @@
 # Desktop kernel ↔ UI contract (multi-SaaS)
 
-The Flutter app talks to the Go kernel (`cmd/localsubproxy_native`) through
+The Flutter app talks to the Go kernel (`cmd/avora_native`) through
 `LSP_Start(json)` / `LSP_Call(json)` / `LSP_Free(ptr)`. Every reply is
 `{"ok":true,"data":…}` or `{"ok":false,"error":"…"}`. The Dart side parses
 status with `desktop/lib/status_contract.dart` (test:
@@ -60,7 +60,7 @@ only unique per gateway, so always address a connection by `id`.
     below; `last_error` says why. It can always be revoked and re-paired.)
   - `unknown` (UI only: the last status refresh failed, see `stale`)
 - `state` is decided by the LMBP session alone. `discovery` is display-only:
-  `ok` / `unavailable` (the optional `/.well-known/localsubproxy` probe of
+  `ok` / `unavailable` (the optional `/.well-known/avora` probe of
   `remote_url` succeeded / failed) or `none` (no `remote_url`). A missing
   discovery document never makes a connection look offline.
 - `allow` uses `adapter/model`, `adapter/*` or `*`. An empty list denies

@@ -15,8 +15,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/spec/testvectors"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/spec/testvectors"
 )
 
 type paramVectors struct {

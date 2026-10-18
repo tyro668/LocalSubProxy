@@ -245,17 +245,24 @@ String cleanError(Object e) {
 /// Plain-language hint for well-known kernel start failures, or null.
 ({String title, String message})? kernelErrorHint(String error) {
   final e = error.toLowerCase();
+  // 改名兼容（保留一个版本）：旧版应用仍占用旧数据目录，迁移被推迟
+  if (e.contains('old localsubproxy app')) {
+    return (
+      title: '旧版 LocalSubProxy 仍在运行',
+      message: '请先在菜单栏或托盘中退出旧版 LocalSubProxy，然后重试。一线牵会自动迁移已有的连接和配置，不需要重新配对。',
+    );
+  }
   if (e.contains('data directory in use')) {
     return (
-      title: '数据目录正被另一个 LocalSubProxy 使用',
-      message: '桌面应用和无界面模式（localsubproxy serve）不能同时使用同一个数据目录。请先退出另一个实例后重试。',
+      title: '数据目录正被另一个一线牵使用',
+      message: '桌面应用和无界面模式（avora serve）不能同时使用同一个数据目录。请先退出另一个实例后重试。',
     );
   }
   if (e.contains('database is locked') ||
       e.contains('resource temporarily unavailable')) {
     return (
       title: '本机数据库被占用',
-      message: '可能已经有一个 LocalSubProxy 在运行。请在菜单栏或托盘中退出另一个实例后重试。',
+      message: '可能已经有一个一线牵在运行。请在菜单栏或托盘中退出另一个实例后重试。',
     );
   }
   if (e.contains('permission denied') || e.contains('access is denied')) {

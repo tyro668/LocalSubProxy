@@ -15,7 +15,7 @@ import (
 var FS embed.FS
 
 // Base is the $id prefix of every schema in this directory.
-const Base = "https://localsubproxy.dev/spec/lmbp/"
+const Base = "https://avora.dev/spec/lmbp/"
 
 var (
 	once     sync.Once

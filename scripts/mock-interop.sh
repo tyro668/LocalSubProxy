@@ -42,9 +42,9 @@ start() { # impl port
       db=(); [ "$impl" = python-sqlite ] && db=(--db "$tmp/python.db")
       (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json "${db[@]}" $(retflag "--retention-seconds ")) >"$tmp/$impl.log" 2>&1 & ;;
     go|go-core)
-      go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
+      go build -o "$tmp/avora" ./cmd/avora
       core=(); [ "$impl" = go-core ] && core=(-core-only)
-      "$tmp/localsubproxy" server "${core[@]}" -listen "127.0.0.1:$port" -db "$tmp/$impl.db" -tenants acme:LSP_TENANT_KEY_ACME \
+      "$tmp/avora" server "${core[@]}" -listen "127.0.0.1:$port" -db "$tmp/$impl.db" -tenants acme:LSP_TENANT_KEY_ACME \
         -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui $(retflag "-retention " s) >"$tmp/$impl.log" 2>&1 & ;;
     java)
       mock/java/build.sh >/dev/null

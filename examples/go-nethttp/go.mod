@@ -7,7 +7,7 @@ toolchain go1.24.4
 require (
 	github.com/anthropics/anthropic-sdk-go v1.13.0
 	github.com/openai/openai-go/v3 v3.8.1
-	github.com/tyro668/LocalSubProxy v0.0.0
+	github.com/tyro668/avora v0.0.0
 )
 
 require (
@@ -35,4 +35,4 @@ require (
 	rsc.io/qr v0.2.0 // indirect
 )
 
-replace github.com/tyro668/LocalSubProxy => ../..
+replace github.com/tyro668/avora => ../..

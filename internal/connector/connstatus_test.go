@@ -14,16 +14,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
-	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/connector"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/internal/lmbp/store"
+	"github.com/tyro668/avora/mock/fakemodel"
 )
 
 // The SaaS origin (different from the gateway) does not serve the OPTIONAL
-// /.well-known/localsubproxy endpoint (lmbp-spec: RECOMMENDED). Online must
+// /.well-known/avora endpoint (lmbp-spec: RECOMMENDED). Online must
 // follow the LMBP session alone; discovery is display-only.
 func TestOnlineWithoutWellKnownOnOtherOrigin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

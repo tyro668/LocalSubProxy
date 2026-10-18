@@ -13,7 +13,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/tray.dart';
+import 'package:avora_ui/tray.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -25,7 +25,7 @@ void main() {
       calls.add('wm.${c.method}');
       return null;
     });
-    m.setMockMethodCallHandler(const MethodChannel('localsubproxy/tray'), (c) async {
+    m.setMockMethodCallHandler(const MethodChannel('avora/tray'), (c) async {
       calls.add('tray.${c.method}');
       return null;
     });
@@ -40,7 +40,7 @@ void main() {
     // what AppDelegate.applicationShouldTerminate does on Cmd-Q
     const codec = StandardMethodCodec();
     final done = Completer<void>();
-    await m.handlePlatformMessage('localsubproxy/tray', codec.encodeMethodCall(const MethodCall('quit')), (_) => done.complete());
+    await m.handlePlatformMessage('avora/tray', codec.encodeMethodCall(const MethodCall('quit')), (_) => done.complete());
     await done.future.timeout(const Duration(seconds: 3), onTimeout: () => fail('quit hung on a kernel that never stops'));
     await AppTray.instance.quit(); // a second quit (tray click meanwhile) shares the run
     expect(stops, 1);

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/connector"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review6 P1-B: a loaded, serving link that is marked broken (a state

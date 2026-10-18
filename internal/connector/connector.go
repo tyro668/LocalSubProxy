@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tyro668/avora/internal/compat"
 	"io"
 	"log"
 	"net"
@@ -21,10 +22,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/durable"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
 )
 
 type Config struct {
@@ -570,7 +571,7 @@ func (x *Connector) serve(ctx context.Context, l *link, run lmbp.TaskRun, emit f
 	x.mu.Lock()
 	if x.closed {
 		x.mu.Unlock()
-		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "LocalSubProxy is shutting down", Retryable: true}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "Avora is shutting down", Retryable: true}
 	}
 	x.reqs.Add(1)
 	x.mu.Unlock()
@@ -822,18 +823,24 @@ func (x *Connector) notifyModels() {
 }
 
 func (x *Connector) checkRemote(ctx context.Context, remote string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+"/.well-known/localsubproxy", nil)
-	if err != nil {
-		return err
+	status := 0
+	for _, path := range compat.DiscoveryPaths {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+path, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := x.client.Do(req)
+		if err != nil {
+			return err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if status = resp.StatusCode; status != http.StatusNotFound {
+			break // 404: pre-rename SaaS, try the legacy path
+		}
 	}
-	resp, err := x.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("remote service discovery: HTTP %d", resp.StatusCode)
+	if status != http.StatusOK {
+		return fmt.Errorf("remote service discovery: HTTP %d", status)
 	}
 	return nil
 }

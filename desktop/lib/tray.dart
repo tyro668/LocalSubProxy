@@ -13,7 +13,7 @@ class AppTray with WindowListener {
   AppTray._();
   static final AppTray instance = AppTray._();
 
-  static const _channel = MethodChannel('localsubproxy/tray');
+  static const _channel = MethodChannel('avora/tray');
   bool _initialized = false;
   Future<void> _closeFuture = Future.value();
   Future<void>? _quitting;

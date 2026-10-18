@@ -18,7 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func (r *runner) runAudit(ctx context.Context, dev *extDev, full func(string) string, mTools string) {

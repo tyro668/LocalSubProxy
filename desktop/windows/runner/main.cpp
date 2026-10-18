@@ -27,9 +27,9 @@ std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> tray_channel;
 const UINT kTaskbarCreatedMessage = ::RegisterWindowMessageW(L"TaskbarCreated");
 // A second launch asks the running instance to show its window, then exits.
 const UINT kActivateMessage =
-    ::RegisterWindowMessageW(L"LocalSubProxy.Desktop.Activate");
+    ::RegisterWindowMessageW(L"Avora.Desktop.Activate");
 constexpr wchar_t kSingleInstanceMutex[] =
-    L"Local\\LocalSubProxy.Desktop.SingleInstance";
+    L"Local\\Avora.Desktop.SingleInstance";
 
 void ShellAddTrayIcon(HWND window);
 
@@ -107,7 +107,7 @@ void ShellAddTrayIcon(HWND window) {
   if (nid.hIcon == nullptr) {
     nid.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
   }
-  ::lstrcpyW(nid.szTip, L"LocalSubProxy");
+  ::lstrcpyW(nid.szTip, L"\u4E00\u7EBF\u7275");  // 一线牵（源文件不依赖 /utf-8）
   ::Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -166,7 +166,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   tray_channel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          window.view_controller()->engine()->messenger(), "localsubproxy/tray",
+          window.view_controller()->engine()->messenger(), "avora/tray",
           &flutter::StandardMethodCodec::GetInstance());
   AddTrayIcon(window.GetHandle());
 

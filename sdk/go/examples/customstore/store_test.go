@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+	lmbpserver "github.com/tyro668/avora/sdk/go"
 )
 
 // countingStore wraps another Store and counts writes; every method is

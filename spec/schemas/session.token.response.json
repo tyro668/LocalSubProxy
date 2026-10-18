@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/session.token.response.json",
+  "$id": "https://avora.dev/spec/lmbp/session.token.response.json",
   "title": "session.token.response",
   "description": "gateway→device",
   "type": "object",

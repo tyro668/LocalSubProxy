@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/avora/internal/connector"
 )
 
 func TestDefaultSchemeName(t *testing.T) {

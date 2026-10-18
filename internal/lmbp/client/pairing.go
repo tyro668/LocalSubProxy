@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // ConsentError is returned when pairing ends without the user's consent:
@@ -54,7 +54,7 @@ type PairRequest struct {
 	decided   bool
 }
 
-// Prepare discovers the gateway from a SaaS origin (/.well-known/localsubproxy)
+// Prepare discovers the gateway from a SaaS origin (/.well-known/avora)
 // and verifies the gateway's signed metadata.
 func Prepare(ctx context.Context, hc *http.Client, remoteURL string) (*PairRequest, error) {
 	if hc == nil {

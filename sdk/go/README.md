@@ -1,23 +1,23 @@
 # lmbpserver：LMBP 服务端 Go SDK
 
-让你的 SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
+让你的 SaaS 后端使用**用户自己电脑上的模型**（经一线牵桌面端）。业务代码只做两件事：
 
 1. **配对**：给用户展示配对链接 / 二维码，再批准用户在桌面端看到的配对码；
 2. **调用模型**：标准的 OpenAI（`/v1/chat/completions`、`/v1/models`）或 Anthropic（`/v1/messages`）请求，可以直接用官方 `openai-go` / `anthropic-sdk-go`，也可以用 SDK 自带的进程内客户端。
 
-WebSocket 会话、JOSE 签名、令牌刷新、seq/ack/续传、信用流控、大图分块、E2EE 透传都封装在 SDK 内部（内嵌参考网关 `internal/lmbp/gateway`，与 `localsubproxy server` 同一份代码）。
+WebSocket 会话、JOSE 签名、令牌刷新、seq/ack/续传、信用流控、大图分块、E2EE 透传都封装在 SDK 内部（内嵌参考网关 `internal/lmbp/gateway`，与 `avora server` 同一份代码）。
 
-> **成熟度**：本 SDK 内嵌 **Go 参考网关**（与 `localsubproxy server` 同一份代码），是各语言 SDK 的行为基准。Node、Python、Java SDK 是独立重新实现，与它存在真实的行为差异。
+> **成熟度**：本 SDK 内嵌 **Go 参考网关**（与 `avora server` 同一份代码），是各语言 SDK 的行为基准。Node、Python、Java SDK 是独立重新实现，与它存在真实的行为差异。
 > 通过共享 Schema、测试向量和 `lmbp-conformance` 不等于符合规范，只说明在被检查的点上一致；见[各实现与成熟度](../../docs/implementations.md)。
 
 ## 安装
 
 ```bash
-go get github.com/tyro668/LocalSubProxy/sdk/go
+go get github.com/tyro668/avora/sdk/go
 ```
 
 ```go
-import lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+import lmbpserver "github.com/tyro668/avora/sdk/go"
 ```
 
 需要 Go ≥ 1.22（`go.mod` 下限）；为包含标准库安全修复，建议用 Go ≥ 1.24.6。SQLite 存储使用纯 Go 驱动，无需 cgo。

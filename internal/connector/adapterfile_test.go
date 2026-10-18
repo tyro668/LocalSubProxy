@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/durable"
+	"github.com/tyro668/avora/internal/durable"
 )
 
 const (

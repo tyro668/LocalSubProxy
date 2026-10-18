@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	lmbpserver "github.com/tyro668/LocalSubProxy/sdk/go"
+	lmbpserver "github.com/tyro668/avora/sdk/go"
 )
 
 // B1: the public request types are driven by the spec. Every property

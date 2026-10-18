@@ -18,12 +18,12 @@ kernel_dir="$repo_dir/build/kernel/release"
 cd "$repo_dir"
 tmp_cli=$(mktemp -d)
 trap 'rm -rf "$tmp_cli"' EXIT
-GOOS=darwin GOARCH=arm64 go build -trimpath -o "$tmp_cli/arm64" ./cmd/localsubproxy
-GOOS=darwin GOARCH=amd64 go build -trimpath -o "$tmp_cli/amd64" ./cmd/localsubproxy
-lipo -create -output "$kernel_dir/localsubproxy" "$tmp_cli/arm64" "$tmp_cli/amd64"
+GOOS=darwin GOARCH=arm64 go build -trimpath -o "$tmp_cli/arm64" ./cmd/avora
+GOOS=darwin GOARCH=amd64 go build -trimpath -o "$tmp_cli/amd64" ./cmd/avora
+lipo -create -output "$kernel_dir/avora" "$tmp_cli/arm64" "$tmp_cli/amd64"
 
 # 2. UI：Flutter 发布构建（shims 目录修复 Xcode 27 lipo 与 Flutter 工具的兼容问题）
-app="$repo_dir/desktop/build/macos/Build/Products/Release/LocalSubProxy.app"
+app="$repo_dir/desktop/build/macos/Build/Products/Release/Avora.app"
 rm -rf "$app"
 cd "$repo_dir/desktop"
 set -- --no-version-check build macos --release
@@ -34,15 +34,15 @@ if [ "${USE_LIPO_SHIM:-1}" = 1 ]; then
 else
   flutter "$@"
 fi
-if [ ! -f "$app/Contents/MacOS/LocalSubProxy" ]; then
-  printf 'Flutter build did not produce LocalSubProxy.app\n' >&2
+if [ ! -f "$app/Contents/MacOS/Avora" ]; then
+  printf 'Flutter build did not produce Avora.app\n' >&2
   exit 1
 fi
 
 # 3. 整合：共享库放到 Contents/Frameworks（native_api.dart 的加载路径），CLI 放到 Contents/MacOS
 mkdir -p "$app/Contents/Frameworks"
-cp "$kernel_dir/liblocalsubproxy.dylib" "$app/Contents/Frameworks/"
-cp "$kernel_dir/localsubproxy" "$app/Contents/MacOS/localsubproxy-cli"
+cp "$kernel_dir/libavora.dylib" "$app/Contents/Frameworks/"
+cp "$kernel_dir/avora" "$app/Contents/MacOS/avora-cli"
 
 # 4. 签名：有 Developer ID 时由内向外逐个签名并开启 Hardened Runtime；否则 ad-hoc
 entitlements="$repo_dir/desktop/macos/Runner/Release.entitlements"
@@ -52,7 +52,7 @@ if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
   find "$app/Contents/Frameworks" -depth \( -name '*.dylib' -o -name '*.framework' \) -print | while IFS= read -r item; do
     codesign "$@" "$item"
   done
-  codesign "$@" "$app/Contents/MacOS/localsubproxy-cli"
+  codesign "$@" "$app/Contents/MacOS/avora-cli"
   codesign "$@" --entitlements "$entitlements" "$app"
   codesign --verify --deep --strict --verbose=2 "$app"
 else
@@ -65,8 +65,8 @@ printf 'Built %s\n' "$app"
 version=${BUILD_NAME:-$(sed -n 's/^version: *\([^+]*\).*/\1/p' "$repo_dir/desktop/pubspec.yaml")}
 dist="$repo_dir/dist"
 mkdir -p "$dist"
-zip="$dist/LocalSubProxy-$version-macos-universal.zip"
-dmg="$dist/LocalSubProxy-$version-macos-universal.dmg"
+zip="$dist/Avora-$version-macos-universal.zip"
+dmg="$dist/Avora-$version-macos-universal.dmg"
 rm -f "$zip" "$dmg"
 
 notarize() {
@@ -85,7 +85,7 @@ stage="$tmp_cli/dmg"
 mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
-hdiutil create -volname LocalSubProxy -srcfolder "$stage" -ov -format UDZO "$dmg"
+hdiutil create -volname Avora -srcfolder "$stage" -ov -format UDZO "$dmg"
 if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
   set -- --force --timestamp --sign "$MACOS_SIGN_IDENTITY"
   [ -n "${MACOS_KEYCHAIN:-}" ] && set -- "$@" --keychain "$MACOS_KEYCHAIN"

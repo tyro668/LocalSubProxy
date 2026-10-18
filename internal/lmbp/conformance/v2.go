@@ -20,7 +20,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func (r *runner) wsURL() string {

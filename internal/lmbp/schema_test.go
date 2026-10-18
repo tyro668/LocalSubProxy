@@ -29,11 +29,11 @@ func loadSchema(t *testing.T, name string) *jsonschema.Schema {
 		if err != nil {
 			t.Fatalf("%s: %v", e.Name(), err)
 		}
-		if err := c.AddResource("https://localsubproxy.dev/spec/lmbp/"+e.Name(), doc); err != nil {
+		if err := c.AddResource("https://avora.dev/spec/lmbp/"+e.Name(), doc); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s, err := c.Compile("https://localsubproxy.dev/spec/lmbp/" + name)
+	s, err := c.Compile("https://avora.dev/spec/lmbp/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}

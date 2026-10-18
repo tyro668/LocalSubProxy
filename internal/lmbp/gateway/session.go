@@ -15,9 +15,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
-	"github.com/tyro668/LocalSubProxy/spec/schemas"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/store"
+	"github.com/tyro668/avora/spec/schemas"
 )
 
 // dstate is one device's protocol state. It outlives a single WebSocket

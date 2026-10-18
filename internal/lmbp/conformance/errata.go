@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Checks for the protocol 1.0 errata E1–E7 (spec appendix A: §6.6 routing,

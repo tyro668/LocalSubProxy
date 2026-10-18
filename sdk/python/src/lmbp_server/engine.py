@@ -28,7 +28,7 @@ from ._http import Request, WSMsgType, web
 from .store import MemoryStore, Store, StoreConflict, StoreNotFound
 from .params import ParamError, announce_problem, device_data_problem, param_error_body, validate_anthropic_params, validate_chat_params, validate_task_run
 
-PROBLEM_BASE = "https://localsubproxy.dev/problems/"
+PROBLEM_BASE = "https://avora.dev/problems/"
 USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ"
 STATUS_OF = {
     "BAD_REQUEST": 400, "CAPABILITY_UNSUPPORTED": 400, "PAYLOAD_TOO_LARGE": 413, "IDEMPOTENCY_KEY_REUSED": 422,

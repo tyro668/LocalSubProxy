@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 final class Params {
   static final int MAX_STOP_SEQUENCES = 4, MAX_STOP_LENGTH = 256, MAX_TOOLS = 128;
   static final Pattern TOOL_NAME = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
-  static final String BASE = "https://localsubproxy.dev/spec/lmbp/";
+  static final String BASE = "https://avora.dev/spec/lmbp/";
   static final Set<String> ROLES = Set.of("system", "user", "assistant", "tool", "developer");
 
   static final class ParamError extends RuntimeException {

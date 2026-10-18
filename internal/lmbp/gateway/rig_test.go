@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 // fakeExec is a deterministic executor:
@@ -191,7 +191,7 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	mux := http.NewServeMux()
 	mux.Handle("/", r.g.Handler())
 	var base string
-	mux.HandleFunc("/.well-known/localsubproxy", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/.well-known/avora", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(client.Discovery{GatewayURL: base, Tenant: "acme", LinkURL: base + "/link", Protocol: "lmbp"})
 	})
 	r.srv = httptest.NewServer(mux)

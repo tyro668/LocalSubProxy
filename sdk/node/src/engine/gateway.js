@@ -14,7 +14,7 @@ import { MemoryStore } from '../store.js';
 import * as A from '../anthropic.js';
 import { validateChatParams, validateAnthropicParams, validateTaskRun, announceProblem, deviceDataProblem, paramErrorBody, ParamError } from './params.js';
 
-const PROBLEM_BASE = 'https://localsubproxy.dev/problems/';
+const PROBLEM_BASE = 'https://avora.dev/problems/';
 const USER_CODE_CHARS = 'BCDFGHJKLMNPQRSTVWXZ';
 const STATUS_OF = {
   BAD_REQUEST: 400, CAPABILITY_UNSUPPORTED: 400, PAYLOAD_TOO_LARGE: 413, IDEMPOTENCY_KEY_REUSED: 422, MODEL_NOT_FOUND: 404,
