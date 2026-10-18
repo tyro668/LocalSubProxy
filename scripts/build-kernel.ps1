@@ -8,7 +8,7 @@ if ($OutDir -eq "") { $OutDir = Join-Path $repo 'build\kernel' }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 Push-Location $repo
 try {
-  go build -buildmode=c-shared -o (Join-Path $OutDir 'avora.dll') ./cmd/avora_native
+  go build -trimpath -buildmode=c-shared -o (Join-Path $OutDir 'avora.dll') ./cmd/avora_native
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally { Pop-Location }

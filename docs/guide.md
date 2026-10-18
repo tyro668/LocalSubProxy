@@ -150,7 +150,7 @@
 
 ![数据目录被占用](images/guide/14-data-dir-in-use.png)
 
-**旧版 LocalSubProxy 仍在运行。** 一线牵原名 LocalSubProxy。新版首次启动时会把旧版的连接和配置迁移过来（旧目录保留为 `localsubproxy.backup-<时间>` 备份），不需要重新配对；但旧版还开着时无法迁移。从菜单栏或托盘退出旧版后点「重试」。
+**旧版 LocalSubProxy 仍在运行。** 一线牵原名 LocalSubProxy。新版首次启动时会把旧版的连接和配置迁移过来（旧目录保留为 `localsubproxy.backup-<时间>` 备份），不需要重新配对；但旧版还开着时无法迁移。从菜单栏或托盘退出旧版后点「重试」。迁移完成后，macOS 上请把「应用程序」里的旧版 `LocalSubProxy.app` 移到废纸篓（Windows 安装包会自动删除旧版的安装目录和快捷方式）；不要再打开旧版，它会以未配对的状态重新开始。
 
 ![旧版仍在运行](images/guide/17-legacy-app-running.png)
 

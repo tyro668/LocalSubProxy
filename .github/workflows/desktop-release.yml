@@ -134,6 +134,8 @@ jobs:
           fi
           ./scripts/build-macos.sh
           lipo -archs desktop/build/macos/Build/Products/Release/Avora.app/Contents/Frameworks/libavora.dylib
+          # 内核以 -trimpath 构建：不应带 CI 检出目录的绝对路径（改名复查）
+          if strings desktop/build/macos/Build/Products/Release/Avora.app/Contents/Frameworks/libavora.dylib | grep -qF "$GITHUB_WORKSPACE/"; then echo 'libavora.dylib embeds the checkout path; build it with -trimpath' >&2; exit 1; fi
       - name: Clean up keychain
         if: always() && steps.cert.outputs.keychain != ''
         run: security delete-keychain "${{ steps.cert.outputs.keychain }}" || true
@@ -200,7 +202,13 @@ jobs:
         env:
           CGO_ENABLED: '1'
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: ./scripts/build-windows.ps1 -BuildName '${{ needs.version.outputs.name }}' -BuildNumber '${{ needs.version.outputs.number }}' -Package
+        run: |
+          ./scripts/build-windows.ps1 -BuildName '${{ needs.version.outputs.name }}' -BuildNumber '${{ needs.version.outputs.number }}' -Package
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # 内核以 -trimpath 构建：avora.dll 不应带 CI 检出目录的绝对路径（改名复查）
+          $dll = 'desktop/build/windows/x64/runner/Release/avora.dll'
+          $ws = ($env:GITHUB_WORKSPACE -replace '\\', '/') + '/'
+          if ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path $dll).Path)).Contains($ws)) { Write-Error "avora.dll embeds the checkout path $ws; build it with -trimpath"; exit 1 }
       - name: Remove certificate
         if: always()
         run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP 'cert.pfx')

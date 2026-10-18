@@ -23,7 +23,7 @@
 
    ![连接列表](docs/images/guide/10-connections.png)
 
-> 从 LocalSubProxy 升级：本应用原名 LocalSubProxy。安装新版后首次启动会自动把已有的连接和配置迁移到新的数据目录，不需要重新配对，详见 [CHANGELOG.md](CHANGELOG.md)。
+> 从 LocalSubProxy 升级：本应用原名 LocalSubProxy。安装新版后首次启动会自动把已有的连接和配置迁移到新的数据目录，不需要重新配对。macOS 上迁移完成后请删除旧的 `LocalSubProxy.app`，详见 [CHANGELOG.md](CHANGELOG.md)。
 
 完整图文教程（方案管理、状态说明、用量统计、常见错误等）见 **[docs/guide.md](docs/guide.md)**。
 

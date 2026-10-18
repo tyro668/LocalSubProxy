@@ -10,7 +10,7 @@
 - 数据目录与桌面端相同，格式也相同（`identity.json`、`device_key.enc`、`adapters.enc`、`audit.db`）：Linux `~/.config/avora`，macOS `~/Library/Application Support/avora`，Windows `%AppData%\avora`。所有命令都可用 `--data-dir` 指定其他目录。
 - 同一数据目录同时只能有一个内核（`kernel.lock`）：桌面应用和 `serve` 不能同时运行，后启动的会报 `data directory in use` 并退出。
 - 控制通道只在本机：Linux/macOS 为数据目录下的 `control.sock`（权限 0600）；Windows 为仅当前用户可访问的命名管道 `\\.\pipe\avora-<目录哈希>`。不监听任何网络端口。
-- 从 LocalSubProxy 升级：第一次用默认数据目录启动 `avora serve`（或桌面应用）时，旧目录 `localsubproxy` 会被复制到 `avora`，旧目录改名为 `localsubproxy.backup-<时间>` 作为备份，已配对的连接直接可用。旧版仍在运行时不会迁移，需先停掉它。旧的 `LOCALSUBPROXY_*` 环境变量和 `localsubproxy` 命令（CLI 压缩包内的转发程序）在本版本仍可用，会打印提示，下个版本移除。
+- 从 LocalSubProxy 升级：第一次用默认数据目录启动 `avora serve`（或桌面应用）时，旧目录 `localsubproxy` 会被复制到 `avora`，旧目录改名为 `localsubproxy.backup-<时间>` 作为备份，已配对的连接直接可用。旧版仍在运行时不会迁移，需先停掉它。旧的 `LOCALSUBPROXY_*` 环境变量和 `localsubproxy` 命令（CLI 压缩包内的转发程序）在本版本仍可用，会打印提示，下个版本移除。已按下文配置成系统服务的，请把服务定义一并改成新名字（systemd 单元 `localsubproxy.service` → `avora.service`、LaunchAgent `com.localsubproxy.serve` → `com.avora.serve`、计划任务 `LocalSubProxy` → `Avora`，`ExecStart`/程序路径改为 `avora`），停用并删除旧服务，避免下个版本移除转发命令后服务无法启动。
 - 所有客户端命令都支持 `--json`，输出内核的原始 JSON 数据，便于脚本处理。
 
 ## 命令

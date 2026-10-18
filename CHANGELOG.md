@@ -24,4 +24,6 @@
 - 旧的 `LOCALSUBPROXY_*` 环境变量仍可读取，并打印弃用提示。
 - CLI 压缩包附带 `localsubproxy` 转发命令：提示改名后以相同参数运行 `avora`。
 - 设备先请求 `/.well-known/avora`，返回 404 时再请求旧的 `/.well-known/localsubproxy`；示例 SaaS 两个地址都提供。
-- Windows 安装包沿用原 AppId（升级时替换原卸载项），并删除旧的默认安装目录和快捷方式。
+- Windows 安装包沿用原 AppId（升级时替换原卸载项），并删除旧的默认安装目录和快捷方式。macOS 不会自动删除旧的 `LocalSubProxy.app`，迁移完成后请手动删除。
+- 无界面模式配置成系统服务（systemd / LaunchAgent / 计划任务）的，请把服务定义改用 `avora`，见 [docs/headless.md](docs/headless.md)。
+- 内核动态库（`libavora.dylib`、`avora.dll`）改为 `-trimpath` 构建，产物中不再带构建机的源码路径。
