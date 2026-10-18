@@ -23,13 +23,32 @@ import (
 
 var compactJWS = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+`)
 
+// readRepo reads a repository file; tests swap it to simulate a Windows
+// checkout (core.autocrlf=true turns LF into CRLF in text files).
+var readRepo = os.ReadFile
+
+// repoFile returns a repository text file with line endings normalized to
+// LF, so the line- and $-anchored scans below are OS independent (the
+// v2.0.0 release CI failed on Windows with CRLF checkouts).
 func repoFile(t *testing.T, rel string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", rel))
+	b, err := readRepo(filepath.Join("..", "..", filepath.FromSlash(rel)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b
+	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+}
+
+// TestSpecExamplesCRLFCheckout runs TestSpecExamples over a CRLF checkout
+// (what actions/checkout produces on windows-latest).
+func TestSpecExamplesCRLFCheckout(t *testing.T) {
+	old := readRepo
+	readRepo = func(name string) ([]byte, error) {
+		b, err := old(name)
+		return bytes.ReplaceAll(bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n")), err
+	}
+	defer func() { readRepo = old }()
+	TestSpecExamples(t)
 }
 
 // exampleDocs are the prose documents whose snippets must use LMBP 2.0.

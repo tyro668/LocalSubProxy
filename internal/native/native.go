@@ -1,6 +1,6 @@
 // Package native is the local kernel API: the JSON command dispatch behind
-// the desktop FFI library (cmd/localsubproxy_native) and the headless
-// `localsubproxy serve` control channel.
+// the desktop FFI library (cmd/avora_native) and the headless
+// `avora serve` control channel.
 package native
 
 import (
@@ -18,10 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/connector"
+	"github.com/tyro668/avora/internal/durable"
+	"github.com/tyro668/avora/internal/lmbp/client"
 )
 
 // localIdentity is identity.json: the per-install data key plus display
@@ -143,6 +143,8 @@ var runtime struct {
 	lastPair string
 	// lock is the data directory lock held while the kernel runs
 	lock *dirLock
+	// migration is set when this process moved the pre-rename data directory
+	migration Migration
 }
 
 func result(data any, err error) string {
@@ -179,7 +181,7 @@ func addLink(core *connector.Connector, dir string, id localIdentity, b binding)
 	}
 	p := b.Policy
 	// Probe the paired SaaS origin from the device identity; b.RemoteURL may
-	// be a display-only homepage that never serves /.well-known/localsubproxy.
+	// be a display-only homepage that never serves /.well-known/avora.
 	return core.AddLink(connector.LinkConfig{ID: b.ID, Identity: *v, RemoteURL: v.RemoteURL, Policy: &p, Paused: b.Paused})
 }
 
@@ -234,7 +236,7 @@ func reconcileLocked() error {
 		err = json.Unmarshal(raw, &disk)
 	}
 	if err != nil {
-		return fmt.Errorf("identity.json could not be verified after an interrupted save (%v); changes are blocked until it can be read — restart LocalSubProxy", err)
+		return fmt.Errorf("identity.json could not be verified after an interrupted save (%v); changes are blocked until it can be read — restart Avora", err)
 	}
 	for _, b := range runtime.local.Bindings {
 		if disk.find(b.ID) >= 0 {
@@ -294,7 +296,7 @@ func reconcileLocked() error {
 // setPaused is injected in tests to make applying a pause fail.
 var setPaused = (*connector.Connector).SetPaused
 
-var errUncertain = errors.New("identity.json state is uncertain (saved file could not be verified); nothing was deleted, restart LocalSubProxy and check the connection")
+var errUncertain = errors.New("identity.json state is uncertain (saved file could not be verified); nothing was deleted, restart Avora and check the connection")
 
 func (id localIdentity) clone() localIdentity {
 	c := id
@@ -380,6 +382,9 @@ func statusLocked() map[string]any {
 	if w := runtime.core.AdapterStorageWarning(); w != "" {
 		s["adapter_storage_warning"] = w
 	}
+	if runtime.migration.From != "" {
+		s["data_dir_migration"] = runtime.migration
+	}
 	s["cleanup_pending"] = append([]string{}, runtime.local.PendingCleanup...)
 	if len(runtime.local.PendingCleanup) > 0 || len(runtime.leftovers) > 0 {
 		s["warning"] = "some private key files of removed connections could not be deleted yet (retried at every start): " +
@@ -392,9 +397,10 @@ func statusLocked() map[string]any {
 	return s
 }
 
-// Start is LSP_Start of the native library: it opens the data directory
-// ({"data_dir": ...}, default os.UserConfigDir()/localsubproxy) and starts
-// the kernel. The reply is the JSON envelope {"ok", "data"|"error"}.
+// Start is AVORA_Start of the native library: it opens the data directory
+// ({"data_dir": ...}, default os.UserConfigDir()/avora) and starts
+// the kernel. With the default directory, a pre-rename data directory
+// (os.UserConfigDir()/localsubproxy) is migrated first (legacy_dir.go). The reply is the JSON envelope {"ok", "data"|"error"}.
 func Start(raw string) string { return start(raw) }
 
 func start(raw string) string {
@@ -412,12 +418,17 @@ func start(raw string) string {
 		if err != nil {
 			return result(nil, err)
 		}
-		dir = filepath.Join(userDir, "localsubproxy")
+		dir = filepath.Join(userDir, DataDirName)
 	}
 	runtime.Lock()
 	defer runtime.Unlock()
 	if runtime.core != nil {
 		return result(statusLocked(), nil)
+	}
+	if m, err := MigrateDefaultDataDir(dir); err != nil {
+		return result(nil, err)
+	} else if m.From != "" {
+		runtime.migration = m
 	}
 	runtime.pairs, runtime.lastPair = map[string]*pairSession{}, ""
 	lock, err := lockDir(dir)
@@ -629,8 +640,8 @@ func pairView(ps *pairSession) map[string]any {
 	return out
 }
 
-// Call is LSP_Call: one JSON action ({"action": ...}) against the running
-// kernel. Shared by the FFI library (desktop) and `localsubproxy serve`.
+// Call is AVORA_Call: one JSON action ({"action": ...}) against the running
+// kernel. Shared by the FFI library (desktop) and `avora serve`.
 func Call(raw string) string { return call(raw) }
 
 func call(raw string) string {

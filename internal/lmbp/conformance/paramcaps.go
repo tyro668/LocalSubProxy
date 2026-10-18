@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // mParamCaps declares its request-parameter support ("params") and honours

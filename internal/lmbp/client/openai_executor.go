@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // OpenAIExecutor runs tasks against a local OpenAI-compatible endpoint

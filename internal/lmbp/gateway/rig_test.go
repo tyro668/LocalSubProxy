@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 // fakeExec is a deterministic executor:
@@ -152,6 +152,9 @@ type rig struct {
 	jkt    string
 	dbPath string
 	logs   *syncBuf
+	id     client.Identity    // the paired device identity (raw-hello tests)
+	stop   context.CancelFunc // stops the rig's device client
+	done   chan struct{}      // closed when the device client's Run returns
 }
 
 type syncBuf struct {
@@ -188,7 +191,7 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	mux := http.NewServeMux()
 	mux.Handle("/", r.g.Handler())
 	var base string
-	mux.HandleFunc("/.well-known/localsubproxy", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/.well-known/avora", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(client.Discovery{GatewayURL: base, Tenant: "acme", LinkURL: base + "/link", Protocol: "lmbp"})
 	})
 	r.srv = httptest.NewServer(mux)
@@ -220,13 +223,15 @@ func newRigWith(t *testing.T, flow lmbp.Flow, slowN int, delay time.Duration, wr
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.devID = id.DeviceID
+	r.devID, r.id = id.DeviceID, id
 	r.dev, err = client.New(client.Config{Executor: r.exec, MaxConcurrency: 4, Logger: logger}, id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ready := make(chan error, 1)
-	go r.dev.Run(ctx, ready)
+	dctx, dcancel := context.WithCancel(ctx)
+	r.stop, r.done = dcancel, make(chan struct{})
+	go func() { defer close(r.done); _ = r.dev.Run(dctx, ready) }()
 	select {
 	case <-ready:
 	case <-time.After(5 * time.Second):

@@ -2,12 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/main.dart';
-import 'package:localsubproxy_ui/native_api.dart';
+import 'package:avora_ui/main.dart';
+import 'package:avora_ui/native_api.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 // HomePage dialog flows driven through the real widgets, with the kernel
-// replaced by NativeApi.debugTransport (same JSON actions as LSP_Call).
+// replaced by NativeApi.debugTransport (same JSON actions as AVORA_Call).
 
 class FakeKernel {
   Map<String, dynamic> status = {'paired': false, 'device_name': '测试电脑'};
@@ -77,7 +77,7 @@ void main() {
     kernel = FakeKernel();
     NativeApi.debugTransport = kernel.call;
     final m = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    for (final ch in ['window_manager', 'localsubproxy/tray']) {
+    for (final ch in ['window_manager', 'avora/tray']) {
       m.setMockMethodCallHandler(MethodChannel(ch), (_) async => null);
     }
   });

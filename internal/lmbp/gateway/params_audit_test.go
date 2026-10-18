@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/spec/testvectors"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/spec/testvectors"
 )
 
 // Third audit #2: request parameters are validated against the protocol

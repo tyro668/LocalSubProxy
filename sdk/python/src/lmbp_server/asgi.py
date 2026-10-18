@@ -103,7 +103,7 @@ def _path(scope: dict) -> str:
 
 
 class LMBPMiddleware:
-    """Starlette / FastAPI middleware: ``app.add_middleware(LMBPMiddleware, server=lsp)``."""
+    """Starlette / FastAPI middleware: ``app.add_middleware(LMBPMiddleware, server=lmbp)``."""
 
     def __init__(self, app: ASGIApp, server: Any):
         self._inner = LMBPASGI(server.engine, app)

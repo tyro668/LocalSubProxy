@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // SDK consistency review (2026-10, main@52f48ae), P2-2: a model the named,

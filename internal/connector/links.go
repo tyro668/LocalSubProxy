@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
 )
 
 // Policy is the per-connection (per-SaaS) local policy.
@@ -319,7 +319,7 @@ func (x *Connector) launch(l *link) {
 		x.mu.Unlock()
 		return
 	}
-	cl, err := client.New(client.Config{Executor: linkExec{x, l}, MaxConcurrency: x.linkCapLocked(l), Client: "localsubproxy-desktop/lmbp",
+	cl, err := client.New(client.Config{Executor: linkExec{x, l}, MaxConcurrency: x.linkCapLocked(l), Client: "avora-desktop/lmbp",
 		OnState: func(ok bool) { x.mu.Lock(); l.gatewayOK = ok; x.mu.Unlock() }}, l.cfg.Identity)
 	if err != nil {
 		l.lastErr, l.err = err.Error(), err
@@ -590,7 +590,7 @@ func (x *Connector) linkStatusLocked(l *link) map[string]any {
 	case l.cancel == nil && l.lastErr != "":
 		state = "error"
 	}
-	// discovery: optional /.well-known/localsubproxy probe of the SaaS origin (RECOMMENDED, not required).
+	// discovery: optional /.well-known/avora probe of the SaaS origin (RECOMMENDED, not required).
 	discovery := "none"
 	if l.cfg.RemoteURL != "" {
 		discovery = map[bool]string{true: "ok", false: "unavailable"}[l.remoteOK]

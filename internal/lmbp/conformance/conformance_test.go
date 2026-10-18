@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 func runAgainst(t *testing.T, cfg gateway.Config, verbose bool) []Result {

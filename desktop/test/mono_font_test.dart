@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/tokens.dart';
-import 'package:localsubproxy_ui/ui_kit.dart';
+import 'package:avora_ui/tokens.dart';
+import 'package:avora_ui/ui_kit.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 // Regression: monoStyle used a pre-prefixed family name; merged into the

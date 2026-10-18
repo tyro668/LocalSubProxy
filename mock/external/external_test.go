@@ -31,13 +31,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
-	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/connector"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/internal/lmbp/store"
+	"github.com/tyro668/avora/mock/fakemodel"
 )
 
 const dataKey = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"

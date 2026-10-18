@@ -29,11 +29,11 @@ func loadSchema(t *testing.T, name string) *jsonschema.Schema {
 		if err != nil {
 			t.Fatalf("%s: %v", e.Name(), err)
 		}
-		if err := c.AddResource("https://localsubproxy.dev/spec/lmbp/"+e.Name(), doc); err != nil {
+		if err := c.AddResource("https://avora.dev/spec/lmbp/"+e.Name(), doc); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s, err := c.Compile("https://localsubproxy.dev/spec/lmbp/" + name)
+	s, err := c.Compile("https://avora.dev/spec/lmbp/" + name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestReferenceTypesMatchSchema(t *testing.T) {
 	}
 	frames := [][]byte{
 		mk(Envelope{Type: TypeHello, ID: "h1"}, Hello{DeviceID: "dev_1", Client: "c", Models: []string{"m"}, MaxConcurrency: 1, Capabilities: Capabilities, Proof: "a.b.c"}),
-		mk(Envelope{Type: TypeWelcome, ID: "h1"}, Welcome{SessionID: "s", HeartbeatSeconds: 20, MaxFrameBytes: 1 << 20, TokenExpiresAt: 1, Capabilities: []string{}}),
+		mk(Envelope{Type: TypeWelcome, ID: "h1"}, Welcome{SessionID: "s", HeartbeatSeconds: 20, MaxFrameBytes: MaxFrameBytes, TokenExpiresAt: 1, Capabilities: []string{}, MaxConcurrency: 1}),
 		mk(Envelope{Type: TypeTaskRun, TaskID: "t", Seq: 1, JWS: "a.b.c"}, nil),
 		mk(Envelope{Type: TypeTaskDelta, TaskID: "t", Seq: 1}, TaskDelta{Text: "x"}),
 		mk(Envelope{Type: TypeTaskDone, TaskID: "t", Seq: 2}, TaskDone{FinishReason: "stop", Usage: &Usage{}}),

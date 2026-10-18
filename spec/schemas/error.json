@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/error.json",
+  "$id": "https://avora.dev/spec/lmbp/error.json",
   "title": "error",
   "description": "either direction; connection-level",
   "$ref": "defs.json#/$defs/errorBody"

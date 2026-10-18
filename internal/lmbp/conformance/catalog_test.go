@@ -3,6 +3,7 @@ package conformance
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -11,11 +12,26 @@ import (
 // The requirement table in spec §13.2 is exactly the catalog that
 // lmbp-conformance -list prints, and the spec's check count matches it.
 func TestSpecCatalogMatches(t *testing.T) {
-	b, err := os.ReadFile("../../../docs/lmbp-spec.md")
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "lmbp-spec.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(b)
+	checkCatalog(t, string(b))
+}
+
+// TestSpecCatalogMatchesCRLF: a Windows checkout (core.autocrlf=true) has
+// CRLF line endings; the catalog comparison must not depend on them.
+func TestSpecCatalogMatchesCRLF(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "lmbp-spec.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCatalog(t, strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n", "\r\n"))
+}
+
+func checkCatalog(t *testing.T, s string) {
+	t.Helper()
+	s = strings.ReplaceAll(s, "\r\n", "\n") // OS independent: compare LF text
 	i, j := strings.Index(s, "<!-- catalog:begin -->\n"), strings.Index(s, "<!-- catalog:end -->")
 	if i < 0 || j < i {
 		t.Fatal("spec §13.2 catalog markers not found")

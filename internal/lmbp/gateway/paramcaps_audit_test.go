@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func postJSON(t *testing.T, url string, body map[string]any) (int, string) {

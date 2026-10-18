@@ -50,12 +50,12 @@ async function main() {
     }
   }
   if (!tenants.length) console.error('warning: no tenants registered (use --tenant id:ENV_VAR)');
-  const lsp = new LMBPServer({ tenants, issuer: o.issuer, signingSeed: seedHex ? Buffer.from(seedHex, 'hex') : undefined,
+  const lmbp = new LMBPServer({ tenants, issuer: o.issuer, signingSeed: seedHex ? Buffer.from(seedHex, 'hex') : undefined,
     maxConcurrency: Number(o['max-concurrency']), chatUIDir: o['no-chat-ui'] ? '' : o['web-dir'], store: o.db ? new SqliteStore(o.db) : undefined,
     retention: o['retention-seconds'] ? Number(o['retention-seconds']) * 1000 : undefined });
   const i = o.listen.lastIndexOf(':');
-  const addr = await lsp.listen(Number(o.listen.slice(i + 1)), o.listen.slice(0, i) || '0.0.0.0');
-  console.error(`lmbp node mock gateway listening on ${addr.address}:${addr.port} issuer=${lsp.engine.cfg.issuer || '(request origin, dev mode)'} kid=${lsp.keys.kid()}`);
+  const addr = await lmbp.listen(Number(o.listen.slice(i + 1)), o.listen.slice(0, i) || '0.0.0.0');
+  console.error(`lmbp node mock gateway listening on ${addr.address}:${addr.port} issuer=${lmbp.engine.cfg.issuer || '(request origin, dev mode)'} kid=${lmbp.keys.kid()}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('gateway.mjs')) main().catch((e) => { console.error(e.message); process.exit(1); });

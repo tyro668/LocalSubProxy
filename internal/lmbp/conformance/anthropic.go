@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func (r *runner) messagesRaw(ctx context.Context, body any, hdr map[string]string) (int, http.Header, []byte) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review7 #1: the gateway ends tasks locally (here: the HTTP client goes

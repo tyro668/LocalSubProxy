@@ -43,7 +43,7 @@
 | URI scheme | IANA URI Schemes（RFC 7595，先 provisional） | `lmbp` |
 | well-known URI | IANA Well-Known URIs（RFC 8615） | `lmbp` |
 | JWS `typ` / 媒体类型 | IANA Media Types（`application/lmbp-task+jws` 等） | 见 §5.2 |
-| Problem type | 无需注册，使用 `https://localsubproxy.dev/problems/…` | — |
+| Problem type | 无需注册，使用 `https://avora.dev/problems/…` | — |
 
 RFC 化路径：先把规范改写为 Internet-Draft（xml2rfc v3），英文为准，中文作为非规范译本；需求 ID（§13.2）保留为附录。
 

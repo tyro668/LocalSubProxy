@@ -4,7 +4,7 @@
 //   1. pairing   GET /app/pair → link + QR; POST /app/pair/approve {user_code}; devices list/revoke
 //   2. LLM calls the official `openai` / `@anthropic-ai/sdk` clients with baseURL pointed at this
 //                server, or the SDK's in-process client.
-// Everything protocol-related (/lmbp/v1/*, /.well-known/*, /v1/*) is served by lsp.middleware().
+// Everything protocol-related (/lmbp/v1/*, /.well-known/*, /v1/*) is served by lmbp.middleware().
 //
 //   TENANT_API_KEY=$(openssl rand -hex 24) node server.mjs
 import fs from 'node:fs';
@@ -22,7 +22,7 @@ if (!apiKey) throw new Error('set TENANT_API_KEY (>= 32 chars; server-side secre
 const profile = process.env.TENANT_PROFILE_FILE ? JSON.parse(fs.readFileSync(process.env.TENANT_PROFILE_FILE, 'utf8'))[tenant]
   : { display_name: 'Acme Chat (Express)', requested_scopes: ['lmbp.chat', 'lmbp.tools', 'lmbp.vision'] };
 
-const lsp = new LMBPServer({
+const lmbp = new LMBPServer({
   tenants: [{ id: tenant, apiKey, profile }],
   issuer: process.env.LMBP_ISSUER,                         // e.g. https://saas.example.com in production
   store: process.env.LMBP_DB ? new SqliteStore(process.env.LMBP_DB) : undefined,
@@ -31,7 +31,7 @@ const lsp = new LMBPServer({
 });
 
 const app = express();
-app.use(lsp.middleware());            // protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages
+app.use(lmbp.middleware());            // protocol endpoints + /v1/chat/completions, /v1/models, /v1/messages
 app.use(express.json());
 
 // Your own login decides who the end user is. Demo: a header.
@@ -39,15 +39,15 @@ const user = (req) => req.get('x-demo-user') || 'demo-user';
 const issuer = (req) => process.env.LMBP_ISSUER || `${req.protocol}://${req.get('host')}`;
 
 // ---- 1. pairing ----
-app.get('/app/pair', (req, res) => res.json(lsp.pairing.create(tenant, issuer(req))));
+app.get('/app/pair', (req, res) => res.json(lmbp.pairing.create(tenant, issuer(req))));
 app.post('/app/pair/approve', (req, res) => {
-  try { res.json(lsp.pairing.approve(tenant, user(req), req.body.user_code)); } catch (e) {
+  try { res.json(lmbp.pairing.approve(tenant, user(req), req.body.user_code)); } catch (e) {
     if (e instanceof PairingError) return res.status(e.code === 'NOT_FOUND' ? 404 : 400).json({ error: e.message });
     throw e;
   }
 });
-app.get('/app/devices', (req, res) => res.json(lsp.pairing.listDevices(tenant, user(req))));
-app.post('/app/devices/:id/revoke', (req, res) => res.json({ revoked: lsp.pairing.revokeDevice(tenant, user(req), req.params.id) }));
+app.get('/app/devices', (req, res) => res.json(lmbp.pairing.listDevices(tenant, user(req))));
+app.post('/app/devices/:id/revoke', (req, res) => res.json({ revoked: lmbp.pairing.revokeDevice(tenant, user(req), req.params.id) }));
 
 // ---- 2. LLM calls with the official clients, unchanged ----
 const openai = new OpenAI({ baseURL: `http://127.0.0.1:${port}/v1`, apiKey });
@@ -70,12 +70,12 @@ app.post('/app/ask/claude', async (req, res, next) => {
 // ...or without an HTTP hop:
 app.post('/app/ask/inprocess', async (req, res, next) => {
   try {
-    const m = await lsp.client(tenant, user(req)).messages.create({ model: req.body.model, max_tokens: 512, messages: [{ role: 'user', content: req.body.prompt }] });
+    const m = await lmbp.client(tenant, user(req)).messages.create({ model: req.body.model, max_tokens: 512, messages: [{ role: 'user', content: req.body.prompt }] });
     res.json({ answer: m.content.filter((b) => b.type === 'text').map((b) => b.text).join('') });
   } catch (e) { next(e); }
 });
 app.use((err, _req, res, _next) => res.status(err.status || 500).json({ error: err.message }));
 
 const server = http.createServer(app);
-lsp.attach(server);                   // WebSocket upgrades for /lmbp/v1/connect
+lmbp.attach(server);                   // WebSocket upgrades for /lmbp/v1/connect
 server.listen(port, host, () => console.error(`express example on http://${host}:${port} (tenant ${tenant})`));

@@ -3,7 +3,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>dev.localsubproxy</groupId>
+    <groupId>dev.avora</groupId>
     <artifactId>lmbp-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <relativePath>../../sdk/java/pom.xml</relativePath>
@@ -14,7 +14,7 @@
 
   <dependencies>
     <dependency>
-      <groupId>dev.localsubproxy</groupId>
+      <groupId>dev.avora</groupId>
       <artifactId>lmbp-spring-boot-starter</artifactId>
     </dependency>
     <dependency>

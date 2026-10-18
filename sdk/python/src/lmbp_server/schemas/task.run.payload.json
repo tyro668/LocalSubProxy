@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/task.run.payload.json",
+  "$id": "https://avora.dev/spec/lmbp/task.run.payload.json",
   "title": "task.run.payload",
   "description": "JWS payload of task.run (gateway→device). Either messages (cleartext) or e2ee (sealed request) MUST be present.",
   "type": "object",

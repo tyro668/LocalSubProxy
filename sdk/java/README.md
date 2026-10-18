@@ -1,6 +1,6 @@
 # LMBP 服务端 Java SDK（`lmbp-core` + `lmbp-spring-boot-starter`）
 
-让 Java SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
+让 Java SaaS 后端使用**用户自己电脑上的模型**（经 Avora 桌面端）。业务代码只做两件事：
 
 1. **配对**：展示配对链接，批准用户在桌面端看到的配对码；
 2. **调用模型**：标准 OpenAI（`/v1/chat/completions`、`/v1/models`）或 Anthropic（`/v1/messages`）请求，直接用官方 `openai` / `anthropic` 客户端，或用 SDK 的进程内客户端。
@@ -28,7 +28,7 @@ TENANT_API_KEY=$(openssl rand -hex 24) java -jar ../../examples/spring-boot-demo
 
 ```xml
 <dependency>
-  <groupId>dev.localsubproxy</groupId>
+  <groupId>dev.avora</groupId>
   <artifactId>lmbp-spring-boot-starter</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
@@ -65,16 +65,16 @@ Starter 注册的路由：`/.well-known/lmbp`、`/.well-known/jwks.json`、`/lmb
 ## 不用 Spring：`lmbp-core`
 
 ```java
-LMBPServer lsp = LMBPServer.builder()
+LMBPServer lmbp = LMBPServer.builder()
     .issuer("https://saas.example.com")
     .tenant("acme", System.getenv("TENANT_API_KEY"), Map.of("display_name", "Acme CRM"))
     .store(JdbcStore.open("jdbc:sqlite:lmbp.db"))      // 默认 MemoryStore
     .build();
 
-String link = lsp.pairing().link("acme");                              // 1. 配对
-lsp.pairing().approve("acme", userId, userCode);
+String link = lmbp.pairing().link("acme");                              // 1. 配对
+lmbp.pairing().approve("acme", userId, userCode);
 
-InProcessClient c = lsp.client("acme", userId);                        // 2. 调用
+InProcessClient c = lmbp.client("acme", userId);                        // 2. 调用
 Map<String, Object> r = c.call(Map.of("model", model, "messages", msgs));
 try (LmbpStream st = c.stream(Map.of("model", model, "messages", msgs))) {
   for (Map<String, Object> chunk : st) { ... }   // 结束于 [DONE]；错误事件抛 LmbpApiException；截断抛 IncompleteStreamException

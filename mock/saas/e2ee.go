@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // e2eeChat is the tenant back end side of end-to-end encryption

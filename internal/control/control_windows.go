@@ -22,7 +22,7 @@ func Address(dataDir string) string {
 		abs = dataDir
 	}
 	sum := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(abs))))
-	return `\\.\pipe\localsubproxy-` + hex.EncodeToString(sum[:8])
+	return `\\.\pipe\avora-` + hex.EncodeToString(sum[:8])
 }
 
 // PipeSDDL grants full access to the given user SID only (no inherited

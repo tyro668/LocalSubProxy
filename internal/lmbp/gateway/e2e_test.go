@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 var weatherTool = []map[string]any{{"type": "function", "function": map[string]any{"name": "get_weather", "parameters": map[string]any{"type": "object"}}}}
@@ -156,7 +156,10 @@ func TestE2EBackpressure(t *testing.T) {
 	r := newRig(t, lmbp.Flow{TaskWindow: 8 << 10, ConnWindow: 32 << 10}, n, 0)
 	// No wall-clock cap on the whole 6 MB stream (the shared client's 30 s
 	// Timeout cut slow -race runs mid-stream); a generous ctx bounds it.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	// 3 minutes was not enough on the Windows runner (ci-macfix: cut at
+	// 19459/20000 chunks); this runs in about 5 s on Linux.
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	start := time.Now()
 	defer cancel()
 	resp, err := (&http.Client{}).Do(r.req("POST", "/v1/chat/completions", map[string]any{"model": r.model("slow"), "stream": true, "messages": user("go")}, nil).WithContext(ctx))
 	if err != nil {
@@ -189,11 +192,13 @@ func TestE2EBackpressure(t *testing.T) {
 	if stalled >= n {
 		t.Fatalf("no backpressure: device emitted all %d chunks while the client was paused", stalled)
 	}
+	paused := time.Since(start)
 	evs := readSSE(br, nil)
 	text, fin := textOf(evs)
 	if fin != "stop" || strings.Count(text, "[") != n {
-		t.Fatalf("stream after backpressure: %q, %d chunks", fin, strings.Count(text, "["))
+		t.Fatalf("stream after backpressure: %q, %d chunks (stalled after %v, then read for %v)", fin, strings.Count(text, "["), paused, time.Since(start)-paused)
 	}
+	t.Logf("stalled after %v, rest of the stream read in %v", paused, time.Since(start)-paused)
 	t.Logf("device paused after %d/%d chunks while the client was not reading", stalled, n)
 }
 

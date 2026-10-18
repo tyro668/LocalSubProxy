@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Adapter mappings for tools and multimodal input against fake providers.

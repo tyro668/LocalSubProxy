@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tyro668/avora/internal/compat"
 	"io"
 	"log"
 	"net"
@@ -21,10 +22,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/durable"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
 )
 
 type Config struct {
@@ -88,6 +89,7 @@ type AdapterHealth struct {
 type Connector struct {
 	cfgVer          uint64            // bumped by every adapter-list change
 	invalid         map[string]string // adapter id → why its saved config failed validation (never served)
+	notes           map[string]string // adapter id → what the load repaired (served; shown until the scheme is edited)
 	loadWarnings    []string          // saved entries that could not be loaded at all
 	closed          bool              // Shutdown started: adapter changes refused
 	muts            sync.WaitGroup    // adapter changes in progress (Shutdown waits)
@@ -217,6 +219,9 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 			return fmt.Errorf("unknown model capability %q", c)
 		}
 	}
+	if _, dups := lmbp.Unique(a.Capabilities); len(dups) > 0 {
+		return fmt.Errorf("duplicate capability %q (each capability may be listed once)", dups[0])
+	}
 	switch a.Type {
 	case "codex_app_server":
 		if len(a.Capabilities) > 0 {
@@ -283,7 +288,110 @@ func (x *Connector) checkTotalLocked(a AdapterConfig) error {
 	if n := x.publishedCountLocked(a.ID) + len(a.Models); n > lmbp.MaxModels {
 		return fmt.Errorf("enabled schemes would publish %d models; the protocol allows at most %d", n, lmbp.MaxModels)
 	}
+	// The encoded hello / models.update must fit one frame (audit3 P2-1):
+	// worst case, every configured model of every enabled scheme published.
+	list := []AdapterConfig{}
+	for _, o := range x.adapters {
+		if o.ID != a.ID && o.Enabled && x.invalid[o.ID] == "" {
+			list = append(list, o)
+		}
+	}
+	list = append(list, a)
+	if n := announceBytes(list); n > announceBudget {
+		return fmt.Errorf("enabled schemes would announce %d bytes of model data; one hello/models.update frame allows %d (max_frame_bytes %d less protocol overhead): use fewer or shorter model IDs and names", n, announceBudget, lmbp.MaxFrameBytes)
+	}
 	return nil
+}
+
+// announceBudget is the share of a hello / models.update frame the model
+// list may use: max_frame_bytes less a reserve for the envelope, proof,
+// e2ee key statement, flow and resume task list.
+const announceBudget = lmbp.MaxFrameBytes - 16<<10
+
+// announceOf builds the published models, capabilities and names of the
+// given schemes with their published model lists.
+func announceOf(as []AdapterConfig, models func(AdapterConfig) []string) ([]string, map[string][]string, map[string]string) {
+	ids, caps, names := []string{}, map[string][]string{}, map[string]string{}
+	for _, a := range as {
+		ms := models(a)
+		n := strings.TrimSpace(a.Name)
+		for _, m := range ms {
+			id := a.ID + "/" + m
+			ids = append(ids, id)
+			caps[id] = capsOf(a)
+			if n == "" {
+				continue
+			}
+			if len(a.Models) > 1 {
+				names[id] = n + " · " + m
+			} else {
+				names[id] = n
+			}
+		}
+	}
+	return ids, caps, names
+}
+
+// announceBytes is the encoded size of the model data the schemes publish
+// (every configured model).
+func announceBytes(as []AdapterConfig) int {
+	ids, caps, names := announceOf(as, func(a AdapterConfig) []string { return a.Models })
+	b, _ := json.Marshal(lmbp.ModelsUpdate{Models: ids, ModelCapabilities: caps, ModelNames: names})
+	return len(b)
+}
+
+type published struct {
+	a      AdapterConfig
+	models []string
+}
+
+// publishedLocked is the single source of what is announced (hello,
+// models.update and its metadata): enabled, valid, healthy schemes in a
+// stable order, each with the models its last probe found (audit3 P2-9;
+// SkipModelProbe keeps the configured list), within lmbp.MaxModels and the
+// frame budget (audit3 P2-1). Capabilities and names only describe models
+// that are published.
+func (x *Connector) publishedLocked() []published {
+	var out []published
+	total := 0
+	var sel []AdapterConfig
+	for _, id := range x.sortedAdapterIDsLocked() {
+		a := x.adapters[id]
+		if !a.Enabled || x.invalid[a.ID] != "" {
+			continue
+		}
+		ms := a.Models
+		if h, ok := x.health[a.ID]; ok {
+			if h.Health != "ready" {
+				continue
+			}
+			ms = nil
+			for _, m := range a.Models { // probe results, in configured order
+				if has(h.Models, m) {
+					ms = append(ms, m)
+				}
+			}
+			if len(ms) == 0 {
+				continue
+			}
+		}
+		if total+len(ms) > lmbp.MaxModels { // guarded at save and load; never send an invalid hello
+			continue
+		}
+		p := published{a: a, models: ms}
+		cand := append(append([]AdapterConfig(nil), sel...), a)
+		pm := map[string][]string{}
+		for _, q := range out {
+			pm[q.a.ID] = q.models
+		}
+		pm[a.ID] = ms
+		ids, caps, names := announceOf(cand, func(c AdapterConfig) []string { return pm[c.ID] })
+		if b, _ := json.Marshal(lmbp.ModelsUpdate{Models: ids, ModelCapabilities: caps, ModelNames: names}); len(b) > announceBudget {
+			continue // guarded at save; never send a frame the gateway closes with 1009
+		}
+		sel, out, total = cand, append(out, p), total+len(ms)
+	}
+	return out
 }
 
 // sortedAdapterIDsLocked is the stable order used to publish and to decide
@@ -384,7 +492,8 @@ func capsOf(a AdapterConfig) []string {
 	case a.Type == "ollama_http":
 		caps = []string{lmbp.ModelCapTools}
 	}
-	return append(caps, paramCaps(a.Type)...)
+	caps, _ = lmbp.Unique(append(caps, paramCaps(a.Type)...)) // published as model_capabilities: unique items
+	return caps
 }
 
 func adapterSlots(a AdapterConfig) int {
@@ -412,65 +521,40 @@ func (e knownFailure) Error() string { return string(e) }
 
 // ---------- lmbp Executor ----------
 
-// Models lists "adapterID/modelID" for enabled adapters that are not known to be unhealthy.
+// Models lists "adapterID/modelID" for the published models (publishedLocked).
 func (x *Connector) Models() []string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := []string{}
-	for _, id := range x.sortedAdapterIDsLocked() {
-		a := x.adapters[id]
-		if !a.Enabled || x.invalid[a.ID] != "" {
-			continue
-		}
-		if h, ok := x.health[a.ID]; ok && h.Health != "ready" {
-			continue
-		}
-		if len(out)+len(a.Models) > lmbp.MaxModels { // guarded at save and load; never send an invalid hello
-			continue
-		}
-		for _, m := range a.Models {
-			out = append(out, a.ID+"/"+m)
-		}
-	}
-	return out
+	ids, _, _ := x.announceLocked()
+	return ids
 }
 
-// ModelCapabilities advertises per-model flags (lmbp model_capabilities).
+func (x *Connector) announceLocked() ([]string, map[string][]string, map[string]string) {
+	pub := x.publishedLocked()
+	as := make([]AdapterConfig, len(pub))
+	pm := map[string][]string{}
+	for i, p := range pub {
+		as[i], pm[p.a.ID] = p.a, p.models
+	}
+	return announceOf(as, func(a AdapterConfig) []string { return pm[a.ID] })
+}
+
+// ModelCapabilities advertises per-model flags (lmbp model_capabilities)
+// for the published models only.
 func (x *Connector) ModelCapabilities() map[string][]string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := map[string][]string{}
-	for _, a := range x.adapters {
-		if x.invalid[a.ID] != "" { // never published; keys could break models.update
-			continue
-		}
-		for _, m := range a.Models {
-			out[a.ID+"/"+m] = capsOf(a)
-		}
-	}
-	return out
+	_, caps, _ := x.announceLocked()
+	return caps
 }
 
-// ModelNames advertises the scheme (adapter) name per model id (lmbp
-// model_names) so gateways can show it instead of the raw id.
+// ModelNames advertises the scheme (adapter) name per published model id
+// (lmbp model_names) so gateways can show it instead of the raw id.
 func (x *Connector) ModelNames() map[string]string {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	out := map[string]string{}
-	for _, a := range x.adapters {
-		n := strings.TrimSpace(a.Name)
-		if n == "" || x.invalid[a.ID] != "" {
-			continue
-		}
-		for _, m := range a.Models {
-			if len(a.Models) > 1 {
-				out[a.ID+"/"+m] = n + " · " + m
-			} else {
-				out[a.ID+"/"+m] = n
-			}
-		}
-	}
-	return out
+	_, _, names := x.announceLocked()
+	return names
 }
 
 // Execute runs one verified (and, for E2EE tasks, already decrypted) task and
@@ -487,7 +571,7 @@ func (x *Connector) serve(ctx context.Context, l *link, run lmbp.TaskRun, emit f
 	x.mu.Lock()
 	if x.closed {
 		x.mu.Unlock()
-		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "LocalSubProxy is shutting down", Retryable: true}
+		return nil, &lmbp.ErrorBody{Code: lmbp.ErrDeviceBusy, Message: "Avora is shutting down", Retryable: true}
 	}
 	x.reqs.Add(1)
 	x.mu.Unlock()
@@ -739,18 +823,24 @@ func (x *Connector) notifyModels() {
 }
 
 func (x *Connector) checkRemote(ctx context.Context, remote string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+"/.well-known/localsubproxy", nil)
-	if err != nil {
-		return err
+	status := 0
+	for _, path := range compat.DiscoveryPaths {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+path, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := x.client.Do(req)
+		if err != nil {
+			return err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if status = resp.StatusCode; status != http.StatusNotFound {
+			break // 404: pre-rename SaaS, try the legacy path
+		}
 	}
-	resp, err := x.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("remote service discovery: HTTP %d", resp.StatusCode)
+	if status != http.StatusOK {
+		return fmt.Errorf("remote service discovery: HTTP %d", status)
 	}
 	return nil
 }
@@ -967,6 +1057,14 @@ func (x *Connector) loadAdapterFile() error {
 	// runnable right now is not a validation failure here (review9 P2-4).
 	for _, a := range saved {
 		a.Name = clipBytes(strings.TrimSpace(a.Name), MaxSchemeNameBytes) // an over-long legacy name never bricks startup
+		// saved before duplicates were refused: drop repeats, keep serving
+		if u, dups := lmbp.Unique(a.Capabilities); len(dups) > 0 {
+			a.Capabilities = u
+			if x.notes == nil {
+				x.notes = map[string]string{}
+			}
+			x.notes[a.ID] = fmt.Sprintf("duplicate capability %q removed from the saved configuration", dups[0])
+		}
 		if err := validateLoadedAdapter(&a); err != nil {
 			if _, dup := x.adapters[a.ID]; a.ID == "" || len(a.ID) > 64 || strings.Contains(a.ID, "/") || dup {
 				x.loadWarnings = append(x.loadWarnings, fmt.Sprintf("a saved scheme with an unusable ID %q was skipped (%v); it is dropped at the next scheme change", a.ID, err))

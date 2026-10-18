@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 // event is one device→gateway data frame (or a synthetic gateway terminal
@@ -210,8 +210,7 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 		if why := t.checkDeltaLocked(data); why != "" {
 			t.mu.Unlock()
 			t.g.cfg.Logger.Printf("lmbp: task %s: %s", t.id, why)
-			t.cancel("protocol_error")
-			t.failLocal(lmbp.ErrInternal, "device sent an invalid delta: "+why, false)
+			t.abort("protocol_error", lmbp.ErrInternal, "device sent an invalid delta: "+why)
 			return
 		}
 	}
@@ -282,8 +281,7 @@ func (t *gtask) onDeviceFrame(in lmbp.Envelope) {
 func (t *gtask) persistFailed(seq int64, what string, err error) {
 	t.g.cfg.Logger.Printf("lmbp: task %s: persisting %s for seq %d failed: %v (not acknowledged)", t.id, what, seq, err)
 	t.storeFailed.Store(true)
-	t.cancel("internal_error")
-	t.failLocal(lmbp.ErrInternal, "gateway could not persist task output", false)
+	t.abort("internal_error", lmbp.ErrInternal, "gateway could not persist task output")
 }
 
 // maybeAck acknowledges what every attached subscriber has consumed (or all
@@ -314,8 +312,7 @@ func (t *gtask) maybeAck() {
 	if in != nil {
 		in.Acked(t.id, target)
 	}
-	b, _ := json.Marshal(lmbp.TaskAck{Seq: target})
-	_ = t.ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: t.id, Data: b})
+	t.ds.sendAck(t.id, target)
 }
 
 // watchdog fails the task when subscribers stop consuming for too long.
@@ -356,6 +353,20 @@ func (t *gtask) sendCancel(reason string) {
 		b, _ := json.Marshal(lmbp.TaskCancel{Reason: reason})
 		_ = t.ds.control(lmbp.Envelope{Type: lmbp.TypeTaskCancel, TaskID: t.id, Data: b})
 	}
+}
+
+// abort ends the task with a gateway-local error (protocol violation,
+// storage failure) and tells the device to stop. The outcome is decided
+// BEFORE task.cancel goes out: otherwise the device's reply to the cancel
+// (task.error CANCELLED) could win the decision and the task would end as
+// a device cancellation instead of INTERNAL (seen on the Windows runner).
+func (t *gtask) abort(reason, code, msg string) {
+	if !t.decide() {
+		return
+	}
+	t.sendCancel(reason)
+	hook(t, "abort-cancel-sent")
+	t.commitLocal(code, msg, false)
 }
 
 // failLocal ends the task with a gateway-local terminal error, if it wins
@@ -465,8 +476,8 @@ func (t *gtask) finishWith(state string, fromDevice, _ bool) {
 			in.Forget(t.id)
 		}
 		if ackNow > 0 {
-			b, _ := json.Marshal(lmbp.TaskAck{Seq: ackNow})
-			_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: t.id, Data: b})
+			hook(t, "finish-ack")
+			ds.sendAck(t.id, ackNow)
 		}
 		if slot {
 			ds.release()
@@ -482,6 +493,9 @@ func (t *gtask) finishWith(state string, fromDevice, _ bool) {
 			delete(t.g.tasks, t.id)
 		}
 		t.g.mu.Unlock()
+		if t.ds != nil {
+			t.ds.forgetAck(t.id)
+		}
 	})
 }
 

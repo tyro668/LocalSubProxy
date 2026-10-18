@@ -1,6 +1,6 @@
 // Package demo wires fake model + gateway + two tenants' SaaS + connector
 // in-process and walks through pair → connect → stream → cancel → errors →
-// isolation → encryption-at-rest → revoke. Used by `lspmock demo` and tests.
+// isolation → encryption-at-rest → revoke. Used by `lmbpmock demo` and tests.
 package demo
 
 import (
@@ -25,12 +25,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
-	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
-	"github.com/tyro668/LocalSubProxy/mock/saas"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/internal/lmbp/store"
+	"github.com/tyro668/avora/mock/fakemodel"
+	"github.com/tyro668/avora/mock/saas"
 )
 
 type Result struct {

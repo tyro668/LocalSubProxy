@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/task.delta.json",
+  "$id": "https://avora.dev/spec/lmbp/task.delta.json",
   "title": "task.delta",
   "description": "device→gateway. Exactly one of: text, tool_calls (both MAY appear together), or e2ee (sealed {text?,tool_calls?}).",
   "type": "object",

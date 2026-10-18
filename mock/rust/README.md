@@ -10,7 +10,7 @@ HTTP 与 WebSocket 用标准库线程手写，没有异步运行时和 Web 框�
 
 ```bash
 (cd mock/rust && cargo build --release)              # → mock/rust/target/release/lmbp-mock
-export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)
+export LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)
 export LMBP_SIGNING_SEED=$(openssl rand -hex 32)      # 可选
 mock/rust/target/release/lmbp-mock --listen 127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json
 ```

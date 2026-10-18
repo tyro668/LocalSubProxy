@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/task.error.json",
+  "$id": "https://avora.dev/spec/lmbp/task.error.json",
   "title": "task.error",
   "description": "device→gateway",
   "$ref": "defs.json#/$defs/errorBody"

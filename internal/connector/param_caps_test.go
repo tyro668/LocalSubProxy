@@ -17,7 +17,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func f64(v float64) *float64 { return &v }

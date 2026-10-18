@@ -12,8 +12,8 @@ import (
 func shortDir(t *testing.T) string { return t.TempDir() }
 
 func TestPipeNamePerDataDir(t *testing.T) {
-	a, b := Address(`C:\Users\a\AppData\Roaming\localsubproxy`), Address(`c:\users\a\appdata\roaming\LOCALSUBPROXY\`)
-	if a != b || !strings.HasPrefix(a, `\\.\pipe\localsubproxy-`) {
+	a, b := Address(`C:\Users\a\AppData\Roaming\avora`), Address(`c:\users\a\appdata\roaming\AVORA\`)
+	if a != b || !strings.HasPrefix(a, `\\.\pipe\avora-`) {
 		t.Fatalf("pipe names %q / %q", a, b)
 	}
 	if Address(`C:\other`) == a {

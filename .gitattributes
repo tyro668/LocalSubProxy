@@ -1,2 +1,10 @@
 # 测试向量按字节比对，Windows 检出时不能转换为 CRLF
 spec/testvectors/** -text
+# 规范与文档按行/行尾锚点扫描，所有平台统一 LF 检出（测试也会把 CRLF 归一化）
+docs/** text eol=lf
+spec/*.yaml text eol=lf
+spec/schemas/** text eol=lf
+# 图片是二进制，不能按文本做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary

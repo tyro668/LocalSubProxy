@@ -233,10 +233,11 @@
 
 完整定义见 [`spec/openapi.yaml`](../spec/openapi.yaml)。所有接口 MUST 通过 TLS 1.2 及以上版本提供；仅在开发环境的回环地址上可以例外。
 
-**缓存**：网关返回的每个 JSON 响应（`application/json`、`application/problem+json`，包括成功结果、错误、列表、`/healthz`，以及 401/404 这类在路由或认证阶段就返回的错误）MUST 带 `Cache-Control: no-store`。唯一例外是 §6.1 的公开发现文档（`/.well-known/jwks.json`、`/.well-known/lmbp`、`/.well-known/localsubproxy`）：它们不含秘密，MAY 用 `Cache-Control: public, max-age=<秒>` 允许缓存（参考实现为 300 秒）。SSE 响应沿用 `Cache-Control: no-cache`。
+**缓存**：网关返回的每个 JSON 响应（`application/json`、`application/problem+json`，包括成功结果、错误、列表、`/healthz`，以及 401/404 这类在路由或认证阶段就返回的错误）MUST 带 `Cache-Control: no-store`。唯一例外是 §6.1 的公开发现文档（`/.well-known/jwks.json`、`/.well-known/lmbp`、`/.well-known/avora`）：它们不含秘密，MAY 用 `Cache-Control: public, max-age=<秒>` 允许缓存（参考实现为 300 秒）。SSE 响应沿用 `Cache-Control: no-cache`。
 
 ### 6.1 发现
-- 租户后端 SHOULD 在 `GET /.well-known/localsubproxy` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`（`protocol` 是协议族名，不含版本），供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+- 租户后端 SHOULD 在 `GET /.well-known/avora` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`（`protocol` 是协议族名，不含版本），供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
+  - 兼容：参考实现改名前使用 `/.well-known/localsubproxy`。设备 SHOULD 在 `/.well-known/avora` 返回 404 时再尝试该旧路径；租户后端 MAY 在过渡期同时提供两个路径。
 - 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
 - 网关 MUST 提供 `GET /.well-known/lmbp[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
 
@@ -270,7 +271,7 @@
 | `GET /lmbp/v1/tenant/tasks/{task}/events` | 按 `Last-Event-ID` 重新接入任务的 SSE 流（§14.4） |
 | `POST /lmbp/v1/tenant/devices/{device}/revoke` | 吊销设备，网关 MUST 立即关闭该设备的在线会话 |
 
-- 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://localsubproxy.dev/problems/<code 的小写连字符形式>`。
+- 错误响应 MUST 使用 RFC 9457（`application/problem+json`），含 `type`、`title`、`status`、`detail`，以及扩展成员 `code`（§9 的错误码）。`type` 为 `https://avora.dev/problems/<code 的小写连字符形式>`。
 - 访问不属于该租户或该终端用户的设备，MUST 返回 404（不透露设备是否存在）。
 - 同一租户每分钟确认失败超过 10 次时，网关 MUST 返回 429（`RATE_LIMITED`），用于防止暴力猜测配对码。
 
@@ -351,7 +352,7 @@
 
 ### 7.2 帧
 - 每条 WebSocket **文本**消息正好包含一个 JSON 对象。MUST NOT 发送二进制消息；收到二进制消息时 SHOULD 以关闭码 1003 断开。
-- 单帧 MUST ≤ `welcome.max_frame_bytes`（参考实现为 262144 字节）。超限时接收方 MUST 以 1009 断开。
+- 单帧 MUST ≤ `welcome.max_frame_bytes`；该值 MUST 恰为 262144 字节（§10 的规范上限，不协商；welcome.json 拒绝其他值）。超限时接收方 MUST 以 1009 断开。
 - 握手之后，网关收到 `v ≠ 2` 或无法解析为信封的帧时，MUST 回复 `error`（`BAD_REQUEST`）并丢弃该帧，MUST NOT 断开；设备收到 `v ≠ 2` 的帧 MUST 丢弃。
 
 信封：
@@ -390,7 +391,7 @@
    2. `data` 符合 `hello.json`，否则 `BAD_REQUEST`。其中 `max_concurrency` 是 1–16 的整数（必填），`model_names` 的显示名为 1–128 字符；越界值 MUST 拒绝，MUST NOT 截断；
    3. `data.device_id == token.sub`，证明 JWT 有效（`ath` 绑定**本次连接使用的访问令牌**）且 `jti` 未用过，否则 `UNAUTHENTICATED`；
    4. `flow`、`e2ee_key` 等扩展的语义检查（§15.1、§17.1），否则 `BAD_REQUEST`。
-3. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）、`max_concurrency`。`welcome.max_concurrency = min(hello.max_concurrency, 网关上限)`：网关 MAY 降低，MUST NOT 提高；设备 MUST 以它为准。
+3. 网关回复 `welcome`：`session_id`、`heartbeat_seconds`、`max_frame_bytes`、`token_expires_at`、`capabilities`（§11）、`max_concurrency`（必填）。`welcome.max_concurrency = min(hello.max_concurrency, 网关上限)`：网关 MAY 降低，MUST NOT 提高；设备 MUST 以它为准。
 
 ### 7.5 任务与顺序
 - 网关收到 OpenAI 请求后，创建 `task_id`，发送 `task.run`。
@@ -590,7 +591,7 @@ OAuth 接口的错误值沿用 RFC 6749/8628：`invalid_request`、`invalid_gran
 
 设备的一致性：能验证 `spec/testvectors` 中所有正例、拒绝所有反例，并实现 §7.4–§7.7 与 §8.6 设备侧各行。
 
-conformance 从元数据读取 `profiles`：core 与已声明配置的检查必须通过，未声明配置的检查报告为 SKIP，不计失败；任何检查都不会因前面的步骤失败而被静默跳过（没跑到的检查记为失败）。只实现 core 的网关只协商 `session.token`、`models.update`；参考网关的 `localsubproxy server -core-only` 就是这种配置（`profiles: ["core", "openai"]`，调用方接口仍需 openai），用于证明 Core 可以单独通过。
+conformance 从元数据读取 `profiles`：core 与已声明配置的检查必须通过，未声明配置的检查报告为 SKIP，不计失败；任何检查都不会因前面的步骤失败而被静默跳过（没跑到的检查记为失败）。只实现 core 的网关只协商 `session.token`、`models.update`；参考网关的 `avora server -core-only` 就是这种配置（`profiles: ["core", "openai"]`，调用方接口仍需 openai），用于证明 Core 可以单独通过。
 
 ### 13.2 需求 ID 与检查
 每条需求有稳定的 ID，ID 一经发布不再改变含义，退役的 ID 不复用（REL-07 已并入 CORE-22）；conformance 检查编号同样稳定（以 E 开头的检查最早来自 1.0 勘误，编号保留）。下表与 `go run ./cmd/lmbp-conformance -list` 的输出一致（`spec/validate.sh` 校验）。
@@ -621,6 +622,7 @@ conformance 从元数据读取 `profiles`：core 与已声明配置的检查必�
 | CORE-21 | §4.1 | core | X-End-User 为 1–128 个可打印 ASCII 字符 | L2 |
 | CORE-22 | §8.6 | core | 确认属于 Core，不依赖 flow：按序数据帧累计确认，跳号让任务失败，本地结束的任务迟到帧照常确认直到终止帧；未知或已结束任务的数据帧回 task.cancel(unknown_task)，不确认 | S1 S2 S3 S4 S5 E7 |
 | CORE-23 | §16.1 | core | model_names 只用于展示，未声明模型的条目被忽略 | X-N1 |
+| CORE-24 | §8.6 | core | 设备数据帧先校验信封与正文（task.done/task.error 须符合各自 Schema），再接受序号、持久化和确认；非法终止帧让任务失败（task.cancel protocol_error），不确认 | S6 |
 | REL-01 | §14、§15 | reliable | 协商 resume 与 flow；协商后确认同样覆盖全部数据帧，网关数据帧（含 blob.chunk）连续编号，续传后跳号仍让任务失败 | X1r X-F1 X-F2 X-F3 |
 | REL-02 | §14.2–§14.3 | reliable | 断线续传：重传不重复、不丢失，续传参数有界 | X-R1 X-R2 Z3 |
 | REL-03 | §14.4 | reliable | SSE 事件带 id，Last-Event-ID 精确重放 | X-H2 X-H3 |
@@ -648,7 +650,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
   -gateway https://your-gateway -tenant <tenant> -schemas spec/schemas \
   [-issuer https://public-origin]   # 网关位于反向代理后、访问地址与 issuer 不同时
 ```
-`lmbp-conformance` 依次扮演设备和租户后端，共 127 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
+`lmbp-conformance` 依次扮演设备和租户后端，共 128 项检查，按上表的配置分组统计结果（E6 需用 `-retention <网关保留期>` 启用，否则记为跳过）。它还会用 JSON Schema 校验网关发出的每一帧。
 
 ---
 
@@ -885,7 +887,7 @@ lmbp://pair?v=2&gateway=<https issuer origin>&tenant=<tenant id>[&remote=<SaaS o
 - MUST NOT 记录 prompt、输出、工具参数或附件内容。
 - 统计：按 `saas`、`model`、`day`、`hour`、`status`、`connection` 任意组合聚合请求数、失败数、prompt/completion/total tokens、平均与最大延迟、未计量请求数；时间桶默认 UTC，可选本地时区。
 - 保留期默认 90 天，MUST 定期清理；用户可以手动清理。
-- 参考实现：`internal/audit`（SQLite `audit.db`）；本地 API `audit_list`、`usage_stats`、`audit_purge`；CLI `localsubproxy usage`、`localsubproxy audit`。
+- 参考实现：`internal/audit`（SQLite `audit.db`）；本地 API `audit_list`、`usage_stats`、`audit_purge`；CLI `avora usage`、`avora audit`。
 
 ## 21. 尚未定义的内容
 

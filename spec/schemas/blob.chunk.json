@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/blob.chunk.json",
+  "$id": "https://avora.dev/spec/lmbp/blob.chunk.json",
   "title": "blob.chunk",
   "description": "gateway→device data frame (seq-numbered, flow-controlled). Chunks follow the task.run that references the blob (task.run.blobs lists id, size, sha256), in offset order; the device MUST verify size and sha256 before executing.",
   "type": "object",

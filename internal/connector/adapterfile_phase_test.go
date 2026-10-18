@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/durable"
+	"github.com/tyro668/avora/internal/durable"
 )
 
 // Review4 E: adapters.enc commit phases (rename ok, directory sync fails).

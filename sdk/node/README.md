@@ -1,6 +1,6 @@
 # lmbp-server：LMBP 服务端 Node.js SDK
 
-让你的 SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
+让你的 SaaS 后端使用**用户自己电脑上的模型**（经 Avora 桌面端）。业务代码只做两件事：
 
 1. **配对**：展示配对链接 / 二维码，批准用户在桌面端看到的配对码；
 2. **调用模型**：标准 OpenAI（`/v1/chat/completions`、`/v1/models`）或 Anthropic（`/v1/messages`）请求，直接用官方 `openai` / `@anthropic-ai/sdk`，或用 SDK 的进程内客户端。
@@ -24,28 +24,28 @@ import http from 'node:http';
 import express from 'express';
 import { LMBPServer, SqliteStore, PairingError } from 'lmbp-server';
 
-const lsp = new LMBPServer({
+const lmbp = new LMBPServer({
   tenants: [{ id: 'acme', apiKey: process.env.TENANT_API_KEY, profile: { display_name: 'Acme CRM' } }],
   issuer: 'https://saas.example.com',    // 留空为开发模式（取请求 Host）
   store: new SqliteStore('lmbp.db'),     // 默认 MemoryStore
 });
 
 const app = express();
-app.use(lsp.middleware());               // 协议路径 + /v1/*，其余 next()
+app.use(lmbp.middleware());               // 协议路径 + /v1/*，其余 next()
 app.use(express.json());
 // 1. 配对
-app.get('/app/pair', (req, res) => res.json(lsp.pairing.create('acme')));   // { link, qrSVG, qrDataURL }
-app.post('/app/pair/approve', (req, res) => res.json(lsp.pairing.approve('acme', req.user.id, req.body.user_code)));
+app.get('/app/pair', (req, res) => res.json(lmbp.pairing.create('acme')));   // { link, qrSVG, qrDataURL }
+app.post('/app/pair/approve', (req, res) => res.json(lmbp.pairing.approve('acme', req.user.id, req.body.user_code)));
 // 2. 调用模型
 app.post('/app/ask', async (req, res) => {
-  const c = lsp.client('acme', req.user.id);
+  const c = lmbp.client('acme', req.user.id);
   const [m] = await c.models();
   const msg = await c.messages.create({ model: m.id, max_tokens: 512, messages: [{ role: 'user', content: req.body.prompt }] });
   res.json(msg);
 });
 
 const server = http.createServer(app);
-lsp.attach(server);                      // /lmbp/v1/connect 的 WebSocket 升级
+lmbp.attach(server);                      // /lmbp/v1/connect 的 WebSocket 升级
 server.listen(3000);
 ```
 
@@ -53,9 +53,9 @@ server.listen(3000);
 
 其他框架：
 
-- 原生 `node:http`：`http.createServer(lsp.handler)` 后 `lsp.attach(server)`，或直接 `await lsp.listen(8080)`。
-- Fastify：`await app.register(lsp.fastifyPlugin)`（自动注册路由和 WebSocket 升级）。
-- Koa / Connect 等：使用 `lsp.middleware()`，或按 `PATHS` 显式转发到 `lsp.handler`。
+- 原生 `node:http`：`http.createServer(lmbp.handler)` 后 `lmbp.attach(server)`，或直接 `await lmbp.listen(8080)`。
+- Fastify：`await app.register(lmbp.fastifyPlugin)`（自动注册路由和 WebSocket 升级）。
+- Koa / Connect 等：使用 `lmbp.middleware()`，或按 `PATHS` 显式转发到 `lmbp.handler`。
 
 ## API
 

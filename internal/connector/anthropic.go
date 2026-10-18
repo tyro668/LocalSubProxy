@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Anthropic Messages mapping (docs/lmbp-spec.md §11.6):

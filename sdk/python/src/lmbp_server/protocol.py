@@ -277,6 +277,13 @@ class OutboxClosed(Exception):
     pass
 
 
+class TaskForgotten(OutboxClosed):
+    """The task ended (Outbox.forget): it never re-enters the send queue."""
+
+
+MAX_FORGOTTEN = 4096
+
+
 class Outbox:
     """Sending half: send() completes once the frame fits the peer's windows;
     unacknowledged frames are retransmitted on resume. write() must be
@@ -289,6 +296,9 @@ class Outbox:
         self.waiters: list[dict] = []
         self.write = None
         self.closed = False
+        # tasks dropped with forget() (bounded, insertion ordered): their
+        # sends fail instead of re-creating state no retransmit list covers
+        self.forgotten: dict[str, None] = {}
 
     def set_flow(self, f):
         self.flow = f
@@ -320,6 +330,11 @@ class Outbox:
                 self.waiters.pop(0)
                 if not w["fut"].done():
                     w["fut"].set_exception(OutboxClosed())
+                continue
+            if w["task"] in self.forgotten:
+                self.waiters.pop(0)
+                if not w["fut"].done():
+                    w["fut"].set_exception(TaskForgotten())
                 continue
             t = self._task(w["task"])
             seq = t["next"] + 1
@@ -355,6 +370,8 @@ class Outbox:
             return dumps(e)
         if self.closed:
             raise OutboxClosed()
+        if tid in self.forgotten:
+            raise TaskForgotten()
         w = {"task": tid, "mk": mk, "fut": asyncio.get_running_loop().create_future()}
         self.waiters.append(w)
         self._wake()  # commits w synchronously when it is first and fits
@@ -386,9 +403,25 @@ class Outbox:
         self._flush(tid)
 
     def forget(self, tid):
+        """Drop a terminal task for good, atomically: release its credit and
+        fail every send of it still queued for credit BEFORE waking the
+        others, so it can never re-create its entry and re-consume
+        connection credit that no resume returns (audit3 P1)."""
         t = self.tasks.pop(tid, None)
         if t is not None:
             self.conn_used -= t["used"]
+        if tid not in self.forgotten:
+            self.forgotten[tid] = None
+            if len(self.forgotten) > MAX_FORGOTTEN:
+                del self.forgotten[next(iter(self.forgotten))]
+        kept = []
+        for w in self.waiters:
+            if w["task"] == tid:
+                if not w["fut"].done():
+                    w["fut"].set_exception(TaskForgotten())
+            else:
+                kept.append(w)
+        self.waiters = kept
         self._wake()
 
     def close(self):

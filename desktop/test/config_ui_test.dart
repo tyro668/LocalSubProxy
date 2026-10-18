@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/native_api.dart';
-import 'package:localsubproxy_ui/profile_workspace.dart';
-import 'package:localsubproxy_ui/ui_kit.dart';
+import 'package:avora_ui/native_api.dart';
+import 'package:avora_ui/profile_workspace.dart';
+import 'package:avora_ui/ui_kit.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 void main() {

@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/tyro668/avora/internal/compat"
 	"html/template"
 	"io"
 	"net/http"
@@ -47,7 +48,8 @@ func New(cfg Config) *Server {
 
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	m.HandleFunc("/.well-known/localsubproxy", s.discovery)
+	m.HandleFunc(compat.DiscoveryPath, s.discovery)
+	m.HandleFunc(compat.LegacyDiscoveryPath, s.discovery) // pre-rename devices (one release)
 	m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"status":"ok"}`)) })
 	m.HandleFunc("/login", s.login)
 	m.HandleFunc("/logout", s.logout)

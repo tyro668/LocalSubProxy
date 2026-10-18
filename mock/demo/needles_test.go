@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
+	"github.com/tyro668/avora/mock/fakemodel"
 )
 
 // The plaintext check must only fire on the secret: none of its needles may

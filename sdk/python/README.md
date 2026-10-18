@@ -1,6 +1,6 @@
 # lmbp-server：LMBP 服务端 Python SDK（ASGI）
 
-让你的 SaaS 后端使用**用户自己电脑上的模型**（经 LocalSubProxy 桌面端）。业务代码只做两件事：
+让你的 SaaS 后端使用**用户自己电脑上的模型**（经 Avora 桌面端）。业务代码只做两件事：
 
 1. **配对**：展示配对链接 / 二维码，批准用户在桌面端看到的配对码；
 2. **调用模型**：标准 OpenAI（`/v1/chat/completions`、`/v1/models`）或 Anthropic（`/v1/messages`）请求，直接用官方 `openai` / `anthropic` 包，或用 SDK 的异步进程内客户端。
@@ -24,26 +24,26 @@ pip install lmbp-server[server]          # 仓库内：pip install -e sdk/python
 from fastapi import FastAPI
 from lmbp_server import LMBPServer, LMBPMiddleware, SQLiteStore, TenantConfig
 
-lsp = LMBPServer(
+lmbp = LMBPServer(
     tenants=[TenantConfig("acme", os.environ["TENANT_API_KEY"], {"display_name": "Acme CRM"})],
     issuer="https://saas.example.com",       # 留空为开发模式
     store=SQLiteStore("lmbp.db"),            # 默认 MemoryStore
 )
 app = FastAPI()
-app.add_middleware(LMBPMiddleware, server=lsp)   # 协议路径 + /v1/*，其余交给 FastAPI
+app.add_middleware(LMBPMiddleware, server=lmbp)   # 协议路径 + /v1/*，其余交给 FastAPI
 
 @app.get("/app/pair")                            # 1. 配对
 def pair():
-    info = lsp.pairing.create("acme")            # info.link / info.qr_svg
+    info = lmbp.pairing.create("acme")            # info.link / info.qr_svg
     return {"link": info.link, "qr_svg": info.qr_svg}
 
 @app.post("/app/pair/approve")
 def approve(body: dict, user=Depends(current_user)):
-    return lsp.pairing.approve("acme", user.id, body["user_code"])
+    return lmbp.pairing.approve("acme", user.id, body["user_code"])
 
 @app.post("/app/ask")                            # 2. 调用模型
 async def ask(body: dict, user=Depends(current_user)):
-    c = lsp.client("acme", user.id)
+    c = lmbp.client("acme", user.id)
     model = (await c.models())[0]["id"]
     return await c.messages.create(model=model, max_tokens=512, messages=[{"role": "user", "content": body["prompt"]}])
 ```
@@ -54,7 +54,7 @@ uvicorn app:app --ws websockets
 
 完整示例：[`examples/fastapi/app.py`](../../examples/fastapi/app.py)。
 
-其他框架：任何 ASGI 应用都可以用 `lsp.asgi(app)` 包一层（未知路径交给 `app`），或用 `LMBPMiddleware`（Starlette / FastAPI）；独立运行用 `lsp.run(host, port)`。
+其他框架：任何 ASGI 应用都可以用 `lmbp.asgi(app)` 包一层（未知路径交给 `app`），或用 `LMBPMiddleware`（Starlette / FastAPI）；独立运行用 `lmbp.run(host, port)`。
 
 ## API
 

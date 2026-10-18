@@ -15,7 +15,7 @@ import (
 var FS embed.FS
 
 // Base is the $id prefix of every schema in this directory.
-const Base = "https://localsubproxy.dev/spec/lmbp/"
+const Base = "https://avora.dev/spec/lmbp/"
 
 var (
 	once     sync.Once
@@ -48,7 +48,7 @@ func load(name string) (*jsonschema.Schema, error) {
 				return
 			}
 		}
-		for _, n := range []string{"task.run.payload.json", "hello.json", "models.update.json"} {
+		for _, n := range []string{"task.run.payload.json", "hello.json", "models.update.json", "task.done.json", "task.error.json"} {
 			s, err := c.Compile(Base + n)
 			if err != nil {
 				errLoad = err
@@ -68,3 +68,9 @@ func Hello() (*jsonschema.Schema, error) { return load("hello.json") }
 
 // ModelsUpdate returns the compiled models.update data schema (spec §7.4).
 func ModelsUpdate() (*jsonschema.Schema, error) { return load("models.update.json") }
+
+// TaskDone returns the compiled task.done data schema (device→gateway).
+func TaskDone() (*jsonschema.Schema, error) { return load("task.done.json") }
+
+// TaskError returns the compiled task.error data schema (device→gateway).
+func TaskError() (*jsonschema.Schema, error) { return load("task.error.json") }

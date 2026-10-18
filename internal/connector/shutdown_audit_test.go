@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review5 P2-b: Shutdown must wait for a finished task's audit write, so

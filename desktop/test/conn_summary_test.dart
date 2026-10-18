@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/main.dart';
-import 'package:localsubproxy_ui/status_contract.dart';
+import 'package:avora_ui/main.dart';
+import 'package:avora_ui/status_contract.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 Map<String, dynamic> conn(String id, String state, {bool? connected}) => {

@@ -1070,7 +1070,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             ClipRRect(
               borderRadius: BorderRadius.circular(AppRadius.control),
               child: Image.asset(
-                'assets/brand/localsubproxy_mark.png',
+                'assets/brand/avora_mark.png',
                 width: 28,
                 height: 28,
               ),

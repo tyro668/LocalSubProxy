@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 pub type Guard = MutexGuard<'static, St>;
 
-pub const PROBLEM_BASE: &str = "https://localsubproxy.dev/problems/";
+pub const PROBLEM_BASE: &str = "https://avora.dev/problems/";
 const USER_CODE_CHARS: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
 const ROLES: [&str; 5] = ["system", "user", "assistant", "tool", "developer"];
 const WEB_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
@@ -1331,6 +1331,19 @@ fn on_session_message(g: &mut Guard, wsid: u64, dsh: u64, dev_id: &str, raw: &st
 fn on_device_data(g: &mut Guard, dsh: u64, inp: &Value, size: i64) -> bool {
     let tid = json::js_string(get(inp, "task_id"));
     let tk = g.dstates[&dsh].tasks.iter().find(|t| t.0 == tid).map(|t| t.1);
+    // envelope + body validated before the seq is accepted, persisted or
+    // ACKed: an invalid terminal frame (task.done {}) never becomes SUCCEEDED
+    if let Some(bad) = params::device_data_problem(inp) {
+        eprintln!("lmbp: device task {}: {}", tid, bad);
+        match tk {
+            Some(tk) => {
+                task_cancel(g, tk, "protocol_error");
+                task_fail_local(g, tk, "INTERNAL", &format!("device sent an invalid frame: {}", bad), false);
+            }
+            None => send_ds_err(g, dsh, id_of(inp).as_deref(), "BAD_REQUEST", &bad),
+        }
+        return true;
+    }
     let seq = get(inp, "seq").as_f64().map(|f| f as i64).unwrap_or(0);
     let Some(tk) = tk else {
         let d = g.ds(dsh);

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/hello.json",
+  "$id": "https://avora.dev/spec/lmbp/hello.json",
   "title": "hello",
   "description": "device→gateway",
   "type": "object",

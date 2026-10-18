@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build the headless CLI (localsubproxy) for Linux, macOS and Windows,
+# Cross-build the headless CLI (avora) for Linux, macOS and Windows,
 # amd64 and arm64, into dist/: tar.gz for Linux/macOS, zip for Windows.
 #   scripts/build-cli.sh [version]      # default: desktop/pubspec.yaml version
 # Pure Go (CGO_ENABLED=0): no C toolchain needed for any target.
@@ -13,10 +13,12 @@ trap 'rm -rf "$work"' EXIT
 mkdir -p "$out"
 for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
   os=${target%/*} arch=${target#*/}
-  name=localsubproxy-cli-$version-$os-$arch
-  exe=localsubproxy; [ "$os" = windows ] && exe=localsubproxy.exe
+  name=avora-cli-$version-$os-$arch
+  ext=; [ "$os" = windows ] && ext=.exe
   mkdir -p "$work/$name"
-  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$work/$name/$exe" ./cmd/localsubproxy
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$work/$name/avora$ext" ./cmd/avora
+  # 改名兼容（保留一个版本）：旧命令名 localsubproxy 提示后转发到 avora
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$work/$name/localsubproxy$ext" ./cmd/localsubproxy
   cp docs/headless.md "$work/$name/"
   if [ "$os" = windows ]; then
     rm -f "$out/$name.zip"

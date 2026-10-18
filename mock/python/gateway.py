@@ -53,18 +53,18 @@ def build(argv=None):
                 tenants.append(TenantConfig(tid, key, p))
     if not tenants:
         print("warning: no tenants registered (use --tenant id:ENV_VAR)", file=sys.stderr)
-    lsp = LMBPServer(tenants, issuer=a.issuer, retention=a.retention_seconds, signing_seed=bytes.fromhex(seed_hex) if seed_hex else None,
+    lmbp = LMBPServer(tenants, issuer=a.issuer, retention=a.retention_seconds, signing_seed=bytes.fromhex(seed_hex) if seed_hex else None,
                      max_concurrency=a.max_concurrency, chat_ui_dir="" if a.no_chat_ui else a.web_dir,
                      store=SQLiteStore(a.db) if a.db else None)
-    return a, lsp
+    return a, lmbp
 
 
 def main():
-    a, lsp = build()
+    a, lmbp = build()
     host, _, port = a.listen.rpartition(":")
-    print(f"lmbp python mock gateway listening on {a.listen} issuer={lsp.engine.cfg['issuer'] or '(request origin, dev mode)'} kid={lsp.keys.kid()}",
+    print(f"lmbp python mock gateway listening on {a.listen} issuer={lmbp.engine.cfg['issuer'] or '(request origin, dev mode)'} kid={lmbp.keys.kid()}",
           file=sys.stderr, flush=True)
-    uvicorn.run(lsp.asgi(), host=host or "0.0.0.0", port=int(port), log_level="warning", ws="websockets",
+    uvicorn.run(lmbp.asgi(), host=host or "0.0.0.0", port=int(port), log_level="warning", ws="websockets",
                 ws_max_size=MAX_FRAME_BYTES, ws_ping_interval=20, ws_ping_timeout=20)
 
 

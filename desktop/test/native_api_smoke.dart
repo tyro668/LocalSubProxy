@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'dart:isolate';
-import 'package:localsubproxy_ui/native_api.dart';
+import 'package:avora_ui/native_api.dart';
 
 Future<void> main() async {
-  final dir = await Directory.systemTemp.createTemp('localsubproxy-native-');
+  final dir = await Directory.systemTemp.createTemp('avora-native-');
   final api = NativeApi.instance;
   try {
     final started = api.start(dataDir: dir.path);

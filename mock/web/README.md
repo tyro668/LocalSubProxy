@@ -28,7 +28,7 @@
 
 这相当于让浏览器扮演“租户后端”，**仅供开发与演示使用**。真实 SaaS 中，租户 Key 只能放在后端，`X-End-User` 应由后端根据登录会话注入。因此：
 
-- Go 参考网关默认**不提供**此页面，需要显式加 `-chat-ui`（`lspmock gateway` 默认开启）；
+- Go 参考网关默认**不提供**此页面，需要显式加 `-chat-ui`（`lmbpmock gateway` 默认开启）；
 - Node/Python 模拟网关默认开启，可用 `--no-chat-ui` 关闭。
 
 所有页面文件都带严格的 CSP（`script-src 'self'`，`connect-src 'self'`，`frame-ancestors 'none'`），以及 `X-Content-Type-Options: nosniff` 和 `Referrer-Policy: no-referrer`。用户和模型的文本一律用 `textContent` 渲染。
@@ -38,20 +38,20 @@
 最快的方式是 `scripts/mock-start.sh [go|node|python|java|rust]`：它会自动完成下面这几步，并打印登录信息和 Connector 命令。手动步骤如下：
 
 ```bash
-export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)        # 租户 API Key，登录页面时粘贴它
-export LOCALSUBPROXY_DATA_KEY=$(openssl rand -hex 32)     # 连接器加密本机适配器配置用
+export LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)        # 租户 API Key，登录页面时粘贴它
+export AVORA_DATA_KEY=$(openssl rand -hex 32)     # 连接器加密本机适配器配置用
 
 # 1) 假模型（同时提供 Ollama 原生 /api/chat 和 OpenAI /v1）；有真实 Ollama 时可跳过
-go run ./mock/cmd/lspmock fakemodel -listen 127.0.0.1:11500 -models qwen3-8b &
+go run ./mock/cmd/lmbpmock fakemodel -listen 127.0.0.1:11500 -models qwen3-8b &
 
 # 2) 任选一个网关（都在 http://127.0.0.1:8080/chat 提供页面）
-go run ./cmd/localsubproxy server -listen 127.0.0.1:8080 -db /tmp/gw.db -tenants acme:LSP_TENANT_KEY_ACME \
+go run ./cmd/avora server -listen 127.0.0.1:8080 -db /tmp/gw.db -tenants acme:LMBP_TENANT_KEY_ACME \
   -tenant-profiles mock/tenant-profiles.example.json -issuer http://127.0.0.1:8080 -chat-ui &
 #   node mock/node/gateway.mjs --listen 127.0.0.1:8080 --issuer http://127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json &
 #   mock/python/.venv/bin/python mock/python/gateway.py --listen 127.0.0.1:8080 --issuer http://127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json &
 
-# 3) 浏览器打开 http://127.0.0.1:8080/chat ，以 acme / alice / $LSP_TENANT_KEY_ACME 登录，复制页面上的 Connector 命令，例如：
-go run ./cmd/localsubproxy connector -pair-link 'lmbp://pair?v=2&gateway=http%3A%2F%2F127.0.0.1%3A8080&tenant=acme' \
+# 3) 浏览器打开 http://127.0.0.1:8080/chat ，以 acme / alice / $LMBP_TENANT_KEY_ACME 登录，复制页面上的 Connector 命令，例如：
+go run ./cmd/avora connector -pair-link 'lmbp://pair?v=2&gateway=http%3A%2F%2F127.0.0.1%3A8080&tenant=acme' \
   -adapter-id local -ollama-url http://127.0.0.1:11500 -models qwen3-8b -capabilities vision \
   -identity /tmp/dev/id.json -adapter-file /tmp/dev/adapters.enc -audit-db /tmp/dev/audit.db
 #    在终端确认授权后，把连接器打印的配对码填到页面上，点“批准”。设备上线后就可以对话（模型名为 local/qwen3-8b）。

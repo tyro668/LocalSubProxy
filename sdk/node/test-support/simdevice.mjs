@@ -34,6 +34,7 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
     ...(x ? { e2ee_key: E.signKeyStatement(p.priv, p.pub, tok.device_id, x.pub) } : {}), proof: proof(p.priv, tok.device_id, L.PROOF.hello, tok.access_token), ...(opts.helloPatch || {}) };
   ws.send(JSON.stringify({ v: L.VERSION, type: 'hello', id: 'h1', data: hello, ...(opts.envPatch || {}) }));
   const welcome = await new Promise((ok, bad) => ws.once('message', (m) => { const w = JSON.parse(m); w.type === 'welcome' ? ok(w) : bad(new Error(String(m))); }));
+  opts.onWelcome?.(welcome); // e.g. keep the resume token
   // opts.flood {n, size, stats}: answer every task with n deltas of size
   // bytes, honouring the gateway's flow window (§15.3); stats.sent counts
   // bytes the window let through.

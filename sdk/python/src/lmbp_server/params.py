@@ -19,7 +19,7 @@ MAX_STOP_SEQUENCES = 4
 MAX_STOP_LENGTH = 256
 MAX_TOOLS = 128
 TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
-BASE = "https://localsubproxy.dev/spec/lmbp/"
+BASE = "https://avora.dev/spec/lmbp/"
 _schemas: Optional[SchemaSet] = None
 
 
@@ -27,7 +27,7 @@ def _schema_set() -> SchemaSet:
     global _schemas
     if _schemas is None:
         d = resources.files("lmbp_server") / "schemas"
-        _schemas = SchemaSet([json.loads((d / n).read_text("utf-8")) for n in ("defs.json", "task.run.payload.json", "hello.json", "models.update.json")])
+        _schemas = SchemaSet([json.loads((d / n).read_text("utf-8")) for n in ("defs.json", "task.run.payload.json", "hello.json", "models.update.json", "task.done.json", "task.error.json")])
     return _schemas
 
 
@@ -268,6 +268,28 @@ def validate_anthropic_params(m: dict) -> None:
             raise _perr("tool_choice", f"type must be auto, any, tool or none, got {json.dumps(ty)}")
         if not names:
             raise _perr("tool_choice", "requires tools")
+
+
+def device_data_problem(inp) -> str:
+    """Validate a device data frame's envelope and, for task.done /
+    task.error, its body against task.done.json / task.error.json: "" when
+    acceptable (audit3 P2-6: checked before the seq is accepted, persisted or
+    ACKed)."""
+    typ = inp.get("type")
+    tid, seq, data = inp.get("task_id"), inp.get("seq"), inp.get("data")
+    if not isinstance(tid, str) or not tid:
+        return f"{typ} without task_id"
+    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+        return f"{typ} seq must be an integer >= 1"
+    if not isinstance(data, dict):
+        return f"{typ} data must be a JSON object"
+    if typ not in ("task.done", "task.error"):
+        return ""
+    e = _schema_set().validate(BASE + typ + ".json", json.loads(json.dumps(data)))
+    if not e:
+        return ""
+    path, msg = e
+    return typ + ("." + ".".join(map(str, path)) if path else "") + ": " + msg
 
 
 def announce_problem(data, hello: bool) -> str:

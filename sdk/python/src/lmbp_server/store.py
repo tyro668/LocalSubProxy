@@ -74,6 +74,12 @@ class Store(Protocol):
     # runs again. Stores without it keep everything (the gateway logs that).
     # def purge(self, cutoff: float) -> int: ...
 
+    # unfinished_tasks (optional) returns the ids of tasks without a terminal
+    # state (QUEUED, RUNNING or unknown). A starting gateway owns no task, so
+    # these are orphans of a previous process; it stores OUTCOME_UNKNOWN for
+    # them so replays agree and retention applies (audit3 P2-5).
+    # def unfinished_tasks(self) -> list[str]: ...
+
     def close(self) -> None: ...
 
 
@@ -154,6 +160,9 @@ class MemoryStore:
         t["events"].append(ev)
         t["state"] = state
         t["finished"] = time.time()
+
+    def unfinished_tasks(self):
+        return [i for i, t in self.tasks.items() if t.get("state") not in TERMINAL_STATES]
 
     def purge(self, cutoff):
         old = [i for i, t in self.tasks.items() if t.get("state") in TERMINAL_STATES and t.get("finished", float("inf")) < cutoff]
@@ -306,6 +315,12 @@ class SQLiteStore:
             except BaseException:
                 self.db.execute("ROLLBACK")
                 raise
+
+    def unfinished_tasks(self):
+        with self._lock:
+            rows = self.db.execute("SELECT id FROM lmbp_tasks WHERE json_extract(doc, '$.state') IS NULL"
+                                   " OR json_extract(doc, '$.state') NOT IN ('SUCCEEDED','FAILED','CANCELLED')").fetchall()
+        return [r[0] for r in rows]
 
     def purge(self, cutoff):
         """One transaction: finished tasks before cutoff with their events and idempotency records, and expired pairings."""

@@ -4,7 +4,7 @@
 
 | 实现 | 位置 | 成熟度 |
 |---|---|---|
-| Go | `internal/lmbp`、`localsubproxy server`、`sdk/go` | **参考实现**：`sdk/go` 内嵌参考网关 `internal/lmbp/gateway`，与 `localsubproxy server` 是同一份代码。行为以它为准。 |
+| Go | `internal/lmbp`、`avora server`、`sdk/go` | **参考实现**：`sdk/go` 内嵌参考网关 `internal/lmbp/gateway`，与 `avora server` 是同一份代码。行为以它为准。 |
 | Node.js | `sdk/node`（`mock/node` 是它的命令行外壳） | **独立重新实现**，与 Go 不共享代码，存在真实的行为差异。例如：JWKS 返回 `application/json`（Go 为 `application/jwk-set+json`）；`Store` 接口是同步的、没有 `context`，Go 的接口返回 `error`；HTTP/WebSocket 栈、超时与默认参数的实现细节不同。 |
 | Python | `sdk/python`（`mock/python` 是它的命令行外壳） | **独立重新实现**（纯 ASGI，自带 HTTP/SSE 渲染），同样与 Go 存在真实差异：`Store` 是同步 Protocol；WebSocket 依赖 uvicorn 的 `websockets` 实现；时间参数以秒为单位，等等。 |
 | Rust | `mock/rust`（模拟网关）、`spec/examples/rust`（协议示例骨架） | `mock/rust` 是 Node 引擎的**模拟网关移植**：通过 `lmbp-conformance`、连接器端到端、官方客户端与聊天页 E2E，但状态只在内存（无持久化存储）、HTTP/WebSocket 为手写最小实现，**不是 SDK，不面向生产**。`spec/examples/rust` 仍只是 JOSE/E2EE/流控骨架。 |
@@ -29,7 +29,7 @@
 
 ## 常用命令
 
-- Go 参考网关：`localsubproxy server -issuer https://<网关公网地址> [-tenant-profiles profiles.json]`。`profiles.json` 配置每个租户在桌面端同意页上显示的身份，格式见 [mock/tenant-profiles.example.json](../mock/tenant-profiles.example.json)。
-- 黑盒一致性测试（127 项，按配置统计；`-list` 输出需求表）：`LMBP_TENANT_KEY=... go run ./cmd/lmbp-conformance -gateway <url> -tenant <id> [-retention <网关保留期>]`。E6（保留期清理）只在给出 `-retention` 时运行，网关需以同样的短保留期启动（例如 `--retention-seconds 2`），否则记为跳过。`scripts/mock-interop.sh` 默认让每个网关（含 `mock/java`、`mock/rust`）以 2 秒保留期启动并运行 E6；设 `LMBP_RETENTION_SECONDS=` 为空可恢复默认保留期。只检查网关在元数据 `profiles` 中声明的配置，未声明配置的检查记为跳过。
-- Core-only 网关：`localsubproxy server -core-only ...` 只协商 `session.token`、`models.update`，声明 `profiles: ["core", "openai"]`；`scripts/mock-interop.sh go-core` 验证它单独通过全部 Core 检查。
+- Go 参考网关：`avora server -issuer https://<网关公网地址> [-tenant-profiles profiles.json]`。`profiles.json` 配置每个租户在桌面端同意页上显示的身份，格式见 [mock/tenant-profiles.example.json](../mock/tenant-profiles.example.json)。
+- 黑盒一致性测试（128 项，按配置统计；`-list` 输出需求表）：`LMBP_TENANT_KEY=... go run ./cmd/lmbp-conformance -gateway <url> -tenant <id> [-retention <网关保留期>]`。E6（保留期清理）只在给出 `-retention` 时运行，网关需以同样的短保留期启动（例如 `--retention-seconds 2`），否则记为跳过。`scripts/mock-interop.sh` 默认让每个网关（含 `mock/java`、`mock/rust`）以 2 秒保留期启动并运行 E6；设 `LMBP_RETENTION_SECONDS=` 为空可恢复默认保留期。只检查网关在元数据 `profiles` 中声明的配置，未声明配置的检查记为跳过。
+- Core-only 网关：`avora server -core-only ...` 只协商 `session.token`、`models.update`，声明 `profiles: ["core", "openai"]`；`scripts/mock-interop.sh go-core` 验证它单独通过全部 Core 检查。
 - 契约与测试向量校验：`spec/validate.sh`。

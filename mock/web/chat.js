@@ -99,7 +99,7 @@
     $('pairLink').textContent = pairLink;
     if ($('code').value.trim()) openPairModal(null);
   }
-  const cmd = () => `localsubproxy connector -pair-link '${pairLink}' -adapter-id local -ollama-url http://127.0.0.1:11434 -models <模型名> -capabilities vision`;
+  const cmd = () => `avora connector -pair-link '${pairLink}' -adapter-id local -ollama-url http://127.0.0.1:11434 -models <模型名> -capabilities vision`;
   const copy = (t, what) => navigator.clipboard?.writeText(t).then(() => toast('已复制' + what), () => toast('复制失败', true));
   $('copyLink').onclick = () => copy(pairLink, '配对链接');
   $('copyCmd').onclick = () => copy(cmd(), ' Connector 命令');

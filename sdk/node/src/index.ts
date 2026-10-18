@@ -81,7 +81,7 @@ export class LMBPServer {
   }
 
   /**
-   * Fastify plugin: `await app.register(lsp.fastifyPlugin)`. Registers the
+   * Fastify plugin: `await app.register(lmbp.fastifyPlugin)`. Registers the
    * protocol routes and the WebSocket upgrade on app.server.
    *
    * The protocol routes need the raw request body, so they live in their own

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Transport is an http.RoundTripper that serves requests in-process through

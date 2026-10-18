@@ -18,15 +18,15 @@ pids=()
 cleanup() { for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$tmp"; }
 trap cleanup EXIT
 
-export LSP_TENANT_KEY_ACME LSP_SIGNING_SEED LMBP_RETENTION_SECONDS
+export LMBP_TENANT_KEY_ACME LMBP_SIGNING_SEED LMBP_RETENTION_SECONDS
 # Every gateway runs with a short retention (default 2 s) so conformance E6
 # (finished tasks and their idempotency records are purged) runs too. Set it
 # empty to keep each gateway's default (7 days); E6 is then reported as skipped.
 ret=${LMBP_RETENTION_SECONDS-2}
 LMBP_RETENTION_SECONDS=$ret; [ -n "$ret" ] || unset LMBP_RETENTION_SECONDS
 retflag() { [ -n "$ret" ] && echo "$1$ret${2:-}"; return 0; }
-LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # never printed
-LSP_SIGNING_SEED=${LSP_SIGNING_SEED:-$(openssl rand -hex 32)}   # the Go gateway refuses an ephemeral key
+LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # never printed
+LMBP_SIGNING_SEED=${LMBP_SIGNING_SEED:-$(openssl rand -hex 32)}   # the Go gateway refuses an ephemeral key
 go build -o "$tmp/lmbp-conformance" ./cmd/lmbp-conformance
 
 start() { # impl port
@@ -42,9 +42,9 @@ start() { # impl port
       db=(); [ "$impl" = python-sqlite ] && db=(--db "$tmp/python.db")
       (cd mock/python && exec .venv/bin/python gateway.py --listen "127.0.0.1:$port" --tenant-profiles ../tenant-profiles.example.json "${db[@]}" $(retflag "--retention-seconds ")) >"$tmp/$impl.log" 2>&1 & ;;
     go|go-core)
-      go build -o "$tmp/localsubproxy" ./cmd/localsubproxy
+      go build -o "$tmp/avora" ./cmd/avora
       core=(); [ "$impl" = go-core ] && core=(-core-only)
-      "$tmp/localsubproxy" server "${core[@]}" -listen "127.0.0.1:$port" -db "$tmp/$impl.db" -tenants acme:LSP_TENANT_KEY_ACME \
+      "$tmp/avora" server "${core[@]}" -listen "127.0.0.1:$port" -db "$tmp/$impl.db" -tenants acme:LMBP_TENANT_KEY_ACME \
         -tenant-profiles mock/tenant-profiles.example.json -issuer "http://127.0.0.1:$port" -chat-ui $(retflag "-retention " s) >"$tmp/$impl.log" 2>&1 & ;;
     java)
       mock/java/build.sh >/dev/null
@@ -55,21 +55,21 @@ start() { # impl port
     spring-boot|spring-boot-sqlite)   # sdk/java: lmbp-spring-boot-starter in examples/spring-boot-demo
       (cd sdk/java && mvn -B -q -DskipTests install) >"$tmp/$impl.build" 2>&1 || { echo "$impl build failed:"; tail -40 "$tmp/$impl.build"; exit 1; }
       store=memory; [ "$impl" = spring-boot-sqlite ] && store="jdbc:sqlite:$tmp/spring.db"
-      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LMBP_STORE=$store \
+      TENANT_API_KEY=$LMBP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LMBP_STORE=$store \
         java -jar examples/spring-boot-demo/target/spring-boot-demo-0.1.0-SNAPSHOT.jar >"$tmp/$impl.log" 2>&1 & ;;
     express)
       (cd sdk/node && { [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build)
       (cd examples/express && [ -d node_modules ] || npm ci --no-audit --no-fund >/dev/null)
-      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port \
+      TENANT_API_KEY=$LMBP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port \
         node examples/express/server.mjs >"$tmp/$impl.log" 2>&1 & ;;
     fastapi)
       [ -x examples/fastapi/.venv/bin/python ] || { python3 -m venv examples/fastapi/.venv && (cd examples/fastapi && .venv/bin/pip install -q -r requirements.txt); }
-      (cd examples/fastapi && TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=../../mock/tenant-profiles.example.json PORT=$port \
+      (cd examples/fastapi && TENANT_API_KEY=$LMBP_TENANT_KEY_ACME TENANT_PROFILE_FILE=../../mock/tenant-profiles.example.json PORT=$port \
         exec .venv/bin/uvicorn app:app --host 127.0.0.1 --port "$port" --ws websockets --log-level warning) >"$tmp/$impl.log" 2>&1 & ;;
     sdk-go|sdk-go-sqlite)   # examples/go-nethttp: the sdk/go module imported from another module
       (cd examples/go-nethttp && go build -o "$tmp/go-nethttp" .)
       db=""; [ "$impl" = sdk-go-sqlite ] && db="$tmp/sdkgo.db"
-      TENANT_API_KEY=$LSP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LMBP_DB=$db \
+      TENANT_API_KEY=$LMBP_TENANT_KEY_ACME TENANT_PROFILE_FILE=mock/tenant-profiles.example.json PORT=$port LMBP_DB=$db \
         "$tmp/go-nethttp" >"$tmp/$impl.log" 2>&1 & ;;
     *) echo "unknown implementation $impl" >&2; exit 2 ;;
   esac
@@ -87,7 +87,7 @@ for impl in "${impls[@]}"; do
   rf=(); [ -n "$ret" ] && rf=(-retention "${ret}s")
   if [ "$impl" = go-core ]; then
     # Core-only: 0 failed, every core/openai check ran, only undeclared profiles are not applicable.
-    if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" -json >"$tmp/$impl.json" 2>"$tmp/$impl.conf" &&
+    if LMBP_TENANT_KEY=$LMBP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" -json >"$tmp/$impl.json" 2>"$tmp/$impl.conf" &&
        summary=$(python3 - "$tmp/$impl.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -105,12 +105,12 @@ PY
     fi
     continue   # no Anthropic surface: the official-client e2e needs the full gateway
   fi
-  if LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" >"$tmp/$impl.conf" 2>&1; then
+  if LMBP_TENANT_KEY=$LMBP_TENANT_KEY_ACME "$tmp/lmbp-conformance" -gateway "http://127.0.0.1:$port" -tenant acme "${rf[@]}" >"$tmp/$impl.conf" 2>&1; then
     echo "   conformance: $(tail -1 "$tmp/$impl.conf")"
   else
     echo "   conformance: FAILED"; grep -v '^PASS' "$tmp/$impl.conf"; echo "   --- $impl gateway log (tail)"; tail -30 "$tmp/$impl.log"; fail=1
   fi
-  if LMBP_OFFICIAL_CLIENTS=${LMBP_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LMBP_EXPECT_EXTERNAL=1 LMBP_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LMBP_TENANT=acme LMBP_TENANT_KEY=$LSP_TENANT_KEY_ACME \
+  if LMBP_OFFICIAL_CLIENTS=${LMBP_OFFICIAL_CLIENTS-$PWD/scripts/official-clients.sh} LMBP_EXPECT_EXTERNAL=1 LMBP_EXTERNAL_GATEWAY="http://127.0.0.1:$port" LMBP_TENANT=acme LMBP_TENANT_KEY=$LMBP_TENANT_KEY_ACME \
       scripts/strict-test.py go -count=1 ./mock/external -run TestExternalGateway >"$tmp/$impl.e2e" 2>&1; then
     echo "   connector e2e: ok ($(tail -1 "$tmp/$impl.e2e" | sed 's/^strict-test: ok: //'))"
   else

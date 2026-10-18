@@ -184,7 +184,7 @@ func generate() vectors {
 	}
 	frames := []any{
 		map[string]any{"v": Version, "type": "hello", "id": "h1", "data": map[string]any{"device_id": devID, "client": "example/1.0", "models": []string{"lm/qwen3-8b"}, "max_concurrency": 1, "capabilities": Capabilities, "proof": v.JWS[3].Compact}},
-		map[string]any{"v": Version, "type": "welcome", "id": "h1", "data": map[string]any{"session_id": "sess_01", "heartbeat_seconds": 20, "max_frame_bytes": 1 << 20, "token_expires_at": vecIat + 600, "capabilities": Capabilities}},
+		map[string]any{"v": Version, "type": "welcome", "id": "h1", "data": map[string]any{"session_id": "sess_01", "heartbeat_seconds": 20, "max_frame_bytes": DefaultMaxFrameBytes, "token_expires_at": vecIat + 600, "capabilities": Capabilities, "max_concurrency": 1}},
 		map[string]any{"v": Version, "type": "task.run", "task_id": run.TaskID, "seq": 1, "jws": runJWS.Compact},
 		map[string]any{"v": Version, "type": "task.delta", "task_id": run.TaskID, "seq": 1, "data": map[string]any{"text": "你好"}},
 		map[string]any{"v": Version, "type": "task.done", "task_id": run.TaskID, "seq": 2, "data": map[string]any{"finish_reason": "stop", "usage": map[string]any{"prompt_tokens": 7, "completion_tokens": 2}}},
@@ -237,7 +237,12 @@ func generate() vectors {
 		{"bad_error_code", "error codes are UPPER_SNAKE", `{"v":2,"type":"error","data":{"code":"oops","message":"x"}}`},
 		{"ack_without_seq", "task.ack requires data.seq", `{"v":2,"type":"task.ack","task_id":"t1","data":{}}`},
 		{"blob_chunk_bad_base64url", "blob.chunk data is unpadded base64url", `{"v":2,"type":"blob.chunk","task_id":"t1","seq":1,"data":{"blob_id":"b1","offset":0,"data":"iVBO+w=="}}`},
-		{"flow_window_too_small", "windows MUST be >= 65536 (max_frame_bytes floor)", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":65536,"token_expires_at":1,"capabilities":[],"flow":{"task_window":100,"conn_window":100}}}`},
+		{"flow_window_too_small", "windows MUST be >= 65536 (max_frame_bytes floor)", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":262144,"token_expires_at":1,"capabilities":[],"max_concurrency":1,"flow":{"task_window":100,"conn_window":100}}}`},
+		{"welcome_without_max_concurrency", "welcome.max_concurrency is required", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":262144,"token_expires_at":1,"capabilities":[]}}`},
+		{"welcome_max_frame_bytes_1mib", "welcome.max_frame_bytes is exactly 262144, not 1 MiB", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":1048576,"token_expires_at":1,"capabilities":[],"max_concurrency":1}}`},
+		{"welcome_max_frame_bytes_262143", "welcome.max_frame_bytes is exactly 262144 (one below)", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":262143,"token_expires_at":1,"capabilities":[],"max_concurrency":1}}`},
+		{"welcome_max_frame_bytes_262145", "welcome.max_frame_bytes is exactly 262144 (one above)", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":262145,"token_expires_at":1,"capabilities":[],"max_concurrency":1}}`},
+		{"welcome_max_concurrency_zero", "welcome.max_concurrency is 1..16", `{"v":2,"type":"welcome","id":"h1","data":{"session_id":"s","heartbeat_seconds":20,"max_frame_bytes":262144,"token_expires_at":1,"capabilities":[],"max_concurrency":0}}`},
 		{"delta_text_and_e2ee", "a sealed delta carries no cleartext text/tool_calls", `{"v":2,"type":"task.delta","task_id":"t1","seq":1,"data":{"text":"leak","e2ee":"AAAA"}}`},
 		{"resume_negative_recv_seq", "recv_seq >= 0", `{"v":2,"type":"hello","id":"h1","data":{"device_id":"d","client":"c","models":[],"max_concurrency":1,"proof":"a.b.c","resume":{"token":"r","tasks":[{"task_id":"t","recv_seq":-1}]}}}`},
 		{"bad_model_capability", "model capabilities are tools|vision|audio", `{"v":2,"type":"models.update","data":{"models":["m"],"model_capabilities":{"m":["telepathy"]}}}`},

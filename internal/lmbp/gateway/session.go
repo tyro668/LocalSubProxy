@@ -15,9 +15,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
-	"github.com/tyro668/LocalSubProxy/spec/schemas"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/store"
+	"github.com/tyro668/avora/spec/schemas"
 )
 
 // dstate is one device's protocol state. It outlives a single WebSocket
@@ -53,6 +53,38 @@ type dstate struct {
 	ready    bool
 	slotWait []chan struct{}
 	dropped  bool
+
+	// ackMu serializes task.ack writes; ackSent is the highest seq ACKed
+	// per task. ACKs are decided on several goroutines (read loop, local
+	// finish, subscribers); without this a lower ACK decided earlier could
+	// reach the wire after a higher one (seen as a stray ACK after the
+	// terminal frame on the macOS runner, v2.1.1).
+	ackMu   sync.Mutex
+	ackSent map[string]int64
+}
+
+// sendAck writes task.ack {seq} unless an equal or higher ACK for the task
+// already went out (ACKs are cumulative, so a lower one is redundant).
+// Callers must not hold ds.mu.
+func (ds *dstate) sendAck(taskID string, seq int64) {
+	ds.ackMu.Lock()
+	defer ds.ackMu.Unlock()
+	if seq <= ds.ackSent[taskID] {
+		return
+	}
+	if ds.ackSent == nil {
+		ds.ackSent = map[string]int64{}
+	}
+	ds.ackSent[taskID] = seq
+	b, _ := json.Marshal(lmbp.TaskAck{Seq: seq})
+	_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: taskID, Data: b})
+}
+
+// forgetAck drops a task's ACK record once no frame of it can arrive.
+func (ds *dstate) forgetAck(taskID string) {
+	ds.ackMu.Lock()
+	delete(ds.ackSent, taskID)
+	ds.ackMu.Unlock()
 }
 
 func (ds *dstate) connected() bool {
@@ -321,6 +353,15 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	gwFlow := g.cfg.Flow
 	ds.mu.Lock()
+	if resumed && hello.Resume.Token != ds.resumeToken {
+		// Overlapping resume handshakes (audit3 P2-2): both matched the
+		// token before either rotated it. The first to get here owns the
+		// session; this one must not bump the generation, swap the
+		// connection or install its sender.
+		ds.mu.Unlock()
+		early(lmbp.ErrUnauthenticated, "resume token already used by another connection")
+		return
+	}
 	prevConn := ds.conn
 	ds.gen++
 	gen := ds.gen
@@ -392,16 +433,33 @@ func (g *Gateway) connect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	wb, _ := json.Marshal(welcome)
-	if ds.control(lmbp.Envelope{Type: lmbp.TypeWelcome, ID: env.ID, Data: wb}) != nil {
-		return
-	}
 	write := func(b []byte) error {
 		wmu.Lock()
 		defer wmu.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteMessage(websocket.TextMessage, b)
 	}
+	// The welcome and the sender are bound to this connection's generation
+	// (audit3 P2-2): the welcome goes on this conn (never ds.conn, which a
+	// newer handshake may already own) and a superseded handshake installs
+	// no sender over the newer one.
+	ds.mu.Lock()
+	current := ds.gen == gen
+	ds.mu.Unlock()
+	if !current {
+		return
+	}
+	wenv, _ := json.Marshal(lmbp.Envelope{V: lmbp.Version, Type: lmbp.TypeWelcome, ID: env.ID, Data: wb})
+	if write(wenv) != nil {
+		return
+	}
+	ds.mu.Lock()
+	if ds.gen != gen {
+		ds.mu.Unlock()
+		return
+	}
 	wgen := ds.out.AttachOwned(write)
+	ds.mu.Unlock()
 	if resumed {
 		g.resumes.Add(1)
 		for _, rt := range resumeTasks {
@@ -583,6 +641,22 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 			defer after()
 		}
 	}
+	// Envelope and body are validated BEFORE the seq is accepted, the frame
+	// persisted or ACKed: an invalid terminal frame (e.g. task.done {}) must
+	// never become SUCCEEDED (audit3 P2-6). The task fails as a protocol
+	// error; the frame is not acknowledged.
+	if why := checkDeviceData(in); why != "" {
+		ds.mu.Lock()
+		t := ds.tasks[in.TaskID]
+		ds.mu.Unlock()
+		g.cfg.Logger.Printf("lmbp: device %s task %s: %s", ds.deviceID, in.TaskID, why)
+		if t != nil {
+			t.abort("protocol_error", lmbp.ErrInternal, "device sent an invalid frame: "+why)
+		} else {
+			ds.sendErr(in.ID, lmbp.ErrBadRequest, why)
+		}
+		return true
+	}
 	// Lookup and Accept are one step under ds.mu, serialized with the local
 	// finish transition in finishWith (Review8 P2-a).
 	ds.mu.Lock()
@@ -610,8 +684,7 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 		ds.mu.Unlock()
 		if late { // ended here, still running there: release its credit
 			if in.Seq > acked {
-				b, _ := json.Marshal(lmbp.TaskAck{Seq: in.Seq})
-				_ = ds.control(lmbp.Envelope{Type: lmbp.TypeTaskAck, TaskID: in.TaskID, Data: b})
+				ds.sendAck(in.TaskID, in.Seq)
 			}
 			return true
 		}
@@ -624,8 +697,7 @@ func (g *Gateway) onDeviceData(ds *dstate, in lmbp.Envelope, size int) bool {
 		t.maybeAck() // the device may have missed our ack
 		return true
 	case lmbp.Gap:
-		t.cancel("protocol_error")
-		t.failLocal(lmbp.ErrInternal, "sequence gap from device", false)
+		t.abort("protocol_error", lmbp.ErrInternal, "sequence gap from device")
 		return true
 	case lmbp.Overflow:
 		ds.sendErr("", lmbp.ErrFlowControl, "flow-control window exceeded")
@@ -720,6 +792,47 @@ func checkAnnounce(data json.RawMessage, hello bool) string {
 			return what + " does not match " + what + ".json: " + firstLeaf(ve)
 		}
 		return what + " does not match " + what + ".json"
+	}
+	return ""
+}
+
+// checkDeviceData validates a device data frame's envelope (task_id, seq
+// >= 1, a JSON object body) and, for task.done / task.error, the body
+// against task.done.json / task.error.json. "" means acceptable.
+func checkDeviceData(in lmbp.Envelope) string {
+	if in.TaskID == "" {
+		return in.Type + " without task_id"
+	}
+	if in.Seq < 1 {
+		return fmt.Sprintf("%s seq %d, want >= 1", in.Type, in.Seq)
+	}
+	d := bytes.TrimSpace(in.Data)
+	if len(d) == 0 || d[0] != '{' {
+		return in.Type + " data must be a JSON object"
+	}
+	var load func() (*jsonschema.Schema, error)
+	switch in.Type {
+	case lmbp.TypeTaskDone:
+		load = schemas.TaskDone
+	case lmbp.TypeTaskError:
+		load = schemas.TaskError
+	default:
+		return ""
+	}
+	sch, err := load()
+	if err != nil {
+		return in.Type + " schema unavailable"
+	}
+	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(d))
+	if err != nil {
+		return in.Type + " data must be a JSON object"
+	}
+	if err := sch.Validate(inst); err != nil {
+		var ve *jsonschema.ValidationError
+		if errors.As(err, &ve) {
+			return in.Type + " does not match " + in.Type + ".json: " + firstLeaf(ve)
+		}
+		return in.Type + " does not match " + in.Type + ".json"
 	}
 	return ""
 }

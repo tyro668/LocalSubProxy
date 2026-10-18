@@ -39,7 +39,7 @@ import java.util.regex.Pattern;
  * reader. Blocking waits release it (Condition), socket writes run unlocked.
  */
 final class Gateway {
-  static final String PROBLEM_BASE = "https://localsubproxy.dev/problems/";
+  static final String PROBLEM_BASE = "https://avora.dev/problems/";
   static final String USER_CODE_CHARS = "BCDFGHJKLMNPQRSTVWXZ";
   static final Map<String, Integer> STATUS_OF = Map.ofEntries(
       Map.entry("BAD_REQUEST", 400), Map.entry("CAPABILITY_UNSUPPORTED", 400), Map.entry("PAYLOAD_TOO_LARGE", 413),
@@ -687,6 +687,18 @@ final class Gateway {
 
   boolean onDeviceData(DState ds, Map<String, Object> inp, int size) {
     String tid = inp.get("task_id") instanceof String s ? s : String.valueOf(inp.get("task_id"));
+    // envelope + body validated before the seq is accepted, persisted or ACKed: an invalid
+    // terminal frame (task.done {}) never becomes SUCCEEDED
+    String bad = Params.deviceDataProblem(inp);
+    if (bad != null) {
+      Task tt = ds.tasks.get(tid);
+      log("lmbp: device " + ds.deviceID + " task " + tid + ": " + bad);
+      if (tt != null) {
+        tt.cancel("protocol_error");
+        tt.failLocal("INTERNAL", "device sent an invalid frame: " + bad, false);
+      } else ds.sendErr(inp.get("id") instanceof String i ? i : null, "BAD_REQUEST", bad);
+      return true;
+    }
     Task t = ds.tasks.get(tid);
     Object sq = inp.get("seq");
     long seq = Json.isNumber(sq) ? (long) ((Number) sq).doubleValue() : 0;

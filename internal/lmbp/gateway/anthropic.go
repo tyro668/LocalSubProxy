@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // anthropicW marks a response as Anthropic-shaped for apiError/httpError/serve.
@@ -319,6 +319,10 @@ func (g *Gateway) serveAnthropic(w http.ResponseWriter, r *http.Request, t *gtas
 		}
 		if fail != nil {
 			anthropicError(w, errStatus(fail.Code), fail.Code, fail.Message)
+			return
+		}
+		if done == nil { // never dereference a missing terminal event
+			anthropicError(w, 500, lmbp.ErrInternal, "task ended without a terminal event")
 			return
 		}
 		content := []any{}

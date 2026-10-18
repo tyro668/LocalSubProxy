@@ -8,7 +8,7 @@ LMBP 网关（[docs/lmbp-spec.md](../../docs/lmbp-spec.md)）的 Java 版模拟�
 
 ```bash
 mock/java/build.sh                                   # → mock/java/build/lmbp-mock.jar
-export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)    # 租户 API Key（≥ 32 字符）
+export LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)    # 租户 API Key（≥ 32 字符）
 export LMBP_SIGNING_SEED=$(openssl rand -hex 32)      # 可选：固定网关签名密钥
 java -jar mock/java/build/lmbp-mock.jar --listen 127.0.0.1:8080 --tenant-profiles mock/tenant-profiles.example.json
 ```

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/welcome.json",
+  "$id": "https://avora.dev/spec/lmbp/welcome.json",
   "title": "welcome",
   "description": "gateway→device",
   "type": "object",
@@ -9,7 +9,8 @@
     "heartbeat_seconds",
     "max_frame_bytes",
     "token_expires_at",
-    "capabilities"
+    "capabilities",
+    "max_concurrency"
   ],
   "properties": {
     "session_id": {
@@ -22,7 +23,9 @@
     },
     "max_frame_bytes": {
       "type": "integer",
-      "minimum": 65536
+      "minimum": 262144,
+      "maximum": 262144,
+      "description": "Exactly 262144 (MAX_FRAME_BYTES, §10): the normative frame limit, not a negotiated value."
     },
     "token_expires_at": {
       "$ref": "defs.json#/$defs/numericDate"

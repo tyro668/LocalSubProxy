@@ -4,8 +4,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:localsubproxy_ui/main.dart';
-import 'package:localsubproxy_ui/native_api.dart';
+import 'package:avora_ui/main.dart';
+import 'package:avora_ui/native_api.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 
 import 'connection_dialog_scroll_test.dart' as conn;
@@ -218,7 +218,7 @@ void main() {
     kernel = DesignKernel(status: designStatus(), adapters: designAdapters());
     NativeApi.debugTransport = kernel.call;
     final m = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    for (final ch in ['window_manager', 'localsubproxy/tray']) {
+    for (final ch in ['window_manager', 'avora/tray']) {
       m.setMockMethodCallHandler(MethodChannel(ch), (_) async => null);
     }
   });
@@ -407,7 +407,7 @@ void main() {
 
   testWidgets('12 kernel start failed', (t) async {
     kernel.startError =
-        'LSP_Start: open ~/.localsubproxy/state.db: database is locked';
+        'AVORA_Start: open ~/.avora/state.db: database is locked';
     await pumpApp(t);
     expect(find.byKey(const ValueKey('kernel-error')), findsOneWidget);
     expect(find.text('本机数据库被占用'), findsOneWidget);
@@ -455,10 +455,21 @@ void main() {
 
   testWidgets('16 data directory in use', (t) async {
     kernel.startError =
-        'data directory in use: ~/.config/localsubproxy is used by another LocalSubProxy process (the desktop app or "localsubproxy serve"); stop it first';
+        'data directory in use: ~/.config/avora is used by another Avora process (the desktop app or "avora serve"); stop it first';
     await pumpApp(t);
-    expect(find.text('数据目录正被另一个 LocalSubProxy 使用'), findsOneWidget);
+    expect(find.text('数据目录正被另一个 Avora 使用'), findsOneWidget);
     await shot(t, '16_data_dir_in_use');
+    await unmount(t);
+  }, variant: desktop);
+
+  // 改名兼容：旧版 LocalSubProxy 仍占用旧数据目录时，迁移推迟并给出专门提示
+  testWidgets('17 old app still running (rename migration)', (t) async {
+    kernel.startError =
+        'data directory in use: the old LocalSubProxy app (or "localsubproxy serve") is still running; quit it and start Avora again so its connections can be moved over';
+    await pumpApp(t);
+    expect(find.text('旧版 LocalSubProxy 仍在运行'), findsOneWidget);
+    expect(find.textContaining('不需要重新配对'), findsOneWidget);
+    await shot(t, '17_legacy_app_running');
     await unmount(t);
   }, variant: desktop);
 }

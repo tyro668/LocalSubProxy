@@ -15,27 +15,29 @@ class NativeApi {
   static final NativeApi instance = NativeApi._();
 
   static String libraryPath() {
-    final override = Platform.environment['LSP_NATIVE_LIB'];
+    // LSP_NATIVE_LIB: pre-2.1 name, kept for one release.
+    final override = Platform.environment['AVORA_NATIVE_LIB'] ??
+        Platform.environment['LSP_NATIVE_LIB'];
     if (override != null && override.isNotEmpty) return override;
     final executableDir = File(Platform.resolvedExecutable).parent.path;
-    if (Platform.isWindows) return '$executableDir\\localsubproxy.dll';
-    return '$executableDir/../Frameworks/liblocalsubproxy.dylib';
+    if (Platform.isWindows) return '$executableDir\\avora.dll';
+    return '$executableDir/../Frameworks/libavora.dylib';
   }
 
   late final DynamicLibrary _library = DynamicLibrary.open(libraryPath());
   late final _DartCall _start = _library.lookupFunction<_NativeCall, _DartCall>(
-    'LSP_Start',
+    'AVORA_Start',
   );
   _DartCall _startFn() => _start;
   late final _DartCall _call = _library.lookupFunction<_NativeCall, _DartCall>(
-    'LSP_Call',
+    'AVORA_Call',
   );
   late final _DartFree _free = _library.lookupFunction<_NativeFree, _DartFree>(
-    'LSP_Free',
+    'AVORA_Free',
   );
 
   /// Test seam: when set, every kernel call goes here instead of the native
-  /// library (payload as sent to LSP_Call; LSP_Start gets `'action': 'start'`),
+  /// library (payload as sent to AVORA_Call; AVORA_Start gets `'action': 'start'`),
   /// and the *Async helpers run on the calling isolate. Never set in the app.
   @visibleForTesting
   static dynamic Function(Map<String, dynamic> payload)? debugTransport;
@@ -250,6 +252,9 @@ class NativeApi {
 
 // These closures are created outside widget State. Isolate.run otherwise can
 // retain a State (including its Timer), which cannot cross isolate boundaries.
+/// Stops the local kernel off the UI isolate so a caller can bound the wait.
+Future<void> stopAsync() => _offThread(() => NativeApi.instance.stop());
+
 Future<Map<String, dynamic>> pairPrepareAsync(String urlOrLink) =>
     _offThread(() => NativeApi.instance.pairPrepare(urlOrLink));
 

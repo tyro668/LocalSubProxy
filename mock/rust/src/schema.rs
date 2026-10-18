@@ -4,7 +4,7 @@ use crate::json::{self, get};
 use serde_json::Value;
 use std::collections::HashMap;
 
-const ANNOTATIONS: [&str; 7] = ["$schema", "$id", "$defs", "title", "description", "default", "$comment"];
+const ANNOTATIONS: [&str; 8] = ["$schema", "$id", "$defs", "title", "description", "default", "$comment", "examples"];
 const KEYWORDS: [&str; 22] = ["$ref", "type", "required", "properties", "additionalProperties", "items", "minItems", "maxItems", "minimum", "maximum",
     "minLength", "maxLength", "enum", "const", "pattern", "oneOf", "anyOf", "allOf", "if", "then", "else", "uniqueItems"];
 

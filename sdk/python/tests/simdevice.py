@@ -32,7 +32,7 @@ async def finish_pairing(base, key, a):
     return r.json()
 
 
-async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None, manual=None, hello_patch=None, env_patch=None):
+async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4, delay=0.0, on_run=None, flood=None, before_hello=None, manual=None, hello_patch=None, env_patch=None, on_welcome=None):
     x = E.x25519_key_pair() if e2ee else None
     ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                   additional_headers={"Authorization": "Bearer " + tok["access_token"]})
@@ -50,6 +50,8 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
     await ws.send(json.dumps({"v": L.VERSION, "type": "hello", "id": "h1", "data": hello, **(env_patch or {})}))
     w = json.loads(await ws.recv())
     assert w["type"] == "welcome", w
+    if on_welcome:
+        on_welcome(w)  # e.g. keep the resume token
     # flood {n, size, stats}: answer every task with n deltas of size bytes,
     # honouring the gateway's flow window (§15.3); stats["sent"] counts bytes.
     fl = {"win": (w.get("data") or {}).get("flow", {}).get("task_window", float("inf")), "acked": 0, "frames": [],

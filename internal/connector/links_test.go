@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
-	"github.com/tyro668/LocalSubProxy/mock/fakemodel"
+	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/client"
+	"github.com/tyro668/avora/mock/fakemodel"
 )
 
 func testLink(id, issuer, tenant string, p *Policy) *link {

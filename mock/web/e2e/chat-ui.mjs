@@ -1,10 +1,10 @@
 // E2E for mock/web/chat.html: for each gateway implementation, start it with
-// the chat UI, pair the real Go connector (localsubproxy connector, Ollama
+// the chat UI, pair the real Go connector (avora connector, Ollama
 // adapter pointed at the fake model's /api/chat) through the page, chat with
 // streaming, multi-turn, image upload, stop, CONSENT_DENIED and DEVICE_OFFLINE.
 //
 //   node chat-ui.mjs [go node python java rust]
-// env: LMBP_BIN (dir with localsubproxy + lspmock), CHROME (browser path),
+// env: LMBP_BIN (dir with avora + lmbpmock), CHROME (browser path),
 //      SHOTS (screenshot dir), PYTHON (python with aiohttp/cryptography)
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -21,8 +21,8 @@ const python = process.env.PYTHON || path.join(repo, 'mock/python/.venv/bin/pyth
 const impls = process.argv.slice(2).length ? process.argv.slice(2) : ['go', 'node', 'python'];
 fs.mkdirSync(shots, { recursive: true });
 const key = crypto.randomBytes(24).toString('hex');            // tenant API key, never printed
-const env = { ...process.env, LSP_TENANT_KEY_ACME: key, LOCALSUBPROXY_DATA_KEY: crypto.randomBytes(32).toString('hex'),
-  LSP_SIGNING_SEED: process.env.LSP_SIGNING_SEED || crypto.randomBytes(32).toString('hex') };   // the Go gateway refuses an ephemeral key
+const env = { ...process.env, LMBP_TENANT_KEY_ACME: key, AVORA_DATA_KEY: crypto.randomBytes(32).toString('hex'),
+  LMBP_SIGNING_SEED: process.env.LMBP_SIGNING_SEED || crypto.randomBytes(32).toString('hex') };   // the Go gateway refuses an ephemeral key
 const procs = [];
 const run = (cmd, args, opts = {}) => {
   const p = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
@@ -42,7 +42,7 @@ function startGateway(impl, port) {
   const listen = `127.0.0.1:${port}`, iss = `http://${listen}`;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `lmbp-${impl}-`));
   switch (impl) {
-    case 'go': return run(path.join(bin, 'localsubproxy'), ['server', '-listen', listen, '-db', path.join(tmp, 'g.db'), '-tenants', 'acme:LSP_TENANT_KEY_ACME',
+    case 'go': return run(path.join(bin, 'avora'), ['server', '-listen', listen, '-db', path.join(tmp, 'g.db'), '-tenants', 'acme:LMBP_TENANT_KEY_ACME',
       '-tenant-profiles', profiles, '-issuer', iss, '-chat-ui']);
     case 'node': return run('node', [path.join(repo, 'mock/node/gateway.mjs'), '--listen', listen, '--issuer', iss, '--tenant-profiles', profiles]);
     case 'python': return run(python, [path.join(repo, 'mock/python/gateway.py'), '--listen', listen, '--issuer', iss, '--tenant-profiles', profiles]);
@@ -55,11 +55,11 @@ function startConnector(dir, link, modelURL) {
   const a = ['connector', '-yes', '-identity', path.join(dir, 'id.json'), '-adapter-id', 'local', '-ollama-url', modelURL, '-models', 'qwen3-8b',
     '-capabilities', 'vision', '-adapter-file', path.join(dir, 'adapters.enc'), '-audit-db', path.join(dir, 'audit.db')];
   if (link) a.push('-pair-link', link);
-  return run(path.join(bin, 'localsubproxy'), a, { cwd: dir });
+  return run(path.join(bin, 'avora'), a, { cwd: dir });
 }
 
 const modelPort = 11590;
-const fm = run(path.join(bin, 'lspmock'), ['fakemodel', '-listen', `127.0.0.1:${modelPort}`, '-models', 'qwen3-8b']);
+const fm = run(path.join(bin, 'lmbpmock'), ['fakemodel', '-listen', `127.0.0.1:${modelPort}`, '-models', 'qwen3-8b']);
 await until(async () => (await fetch(`http://127.0.0.1:${modelPort}/api/tags`)).ok, 10000, 'fake model');
 
 const browser = await chromium.launch({ executablePath: chrome, args: ['--no-sandbox'] });

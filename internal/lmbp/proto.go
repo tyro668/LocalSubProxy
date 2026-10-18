@@ -1,4 +1,4 @@
-// Package lmbp is the Go reference implementation of the LocalSubProxy
+// Package lmbp is the Go reference implementation of the Avora
 // LMBP (Local Model Bridge Protocol) wire format: envelope and message types, error codes,
 // and the JOSE profile (EdDSA JWS/JWT, RFC 7638 thumbprints, key-bound proof
 // JWTs). The normative spec is docs/lmbp-spec.md; schemas live in spec/.
@@ -64,6 +64,23 @@ const (
 	MaxModels       = 500
 	MaxModelIDChars = 256
 )
+
+// Unique returns xs without repeated entries, first occurrence kept, and the
+// entries that were dropped. Announced lists (models, model_capabilities)
+// carry uniqueItems in hello.json/models.update.json.
+func Unique(xs []string) (out, dups []string) {
+	out = make([]string, 0, len(xs)) // never nil: models is required
+	seen := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		if seen[x] {
+			dups = append(dups, x)
+			continue
+		}
+		seen[x] = true
+		out = append(out, x)
+	}
+	return out, dups
+}
 
 // ValidModelID checks one advertised model ID against defs.json modelId.
 func ValidModelID(s string) error {
@@ -261,7 +278,7 @@ type Welcome struct {
 	MaxFrameBytes    int            `json:"max_frame_bytes"`
 	TokenExpiresAt   int64          `json:"token_expires_at"`
 	Capabilities     []string       `json:"capabilities"`
-	MaxConcurrency   int            `json:"max_concurrency,omitempty"`
+	MaxConcurrency   int            `json:"max_concurrency"` // required (welcome.json)
 	Flow             *Flow          `json:"flow,omitempty"`
 	ResumeToken      string         `json:"resume_token,omitempty"`
 	ResumeSeconds    int            `json:"resume_window_seconds,omitempty"`

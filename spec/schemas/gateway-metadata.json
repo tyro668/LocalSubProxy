@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://localsubproxy.dev/spec/lmbp/gateway-metadata.json",
+  "$id": "https://avora.dev/spec/lmbp/gateway-metadata.json",
   "title": "gateway metadata (GET /.well-known/lmbp[?tenant=])",
   "description": "docs/lmbp-spec.md §18.2 and §19.1. Also the payload of signed_metadata (typ lmbp-metadata+jwt), which then omits signed_metadata itself. Consumers MUST use the signed values.",
   "type": "object",

@@ -1,6 +1,6 @@
-# LocalSubProxy 使用教程
+# Avora 使用教程
 
-LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Ollama 本地模型、OpenAI / Anthropic 兼容接口的 API Key），密钥始终留在本机。本教程按实际使用顺序介绍桌面端的全部操作。
+Avora 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Ollama 本地模型、OpenAI / Anthropic 兼容接口的 API Key），密钥始终留在本机。本教程按实际使用顺序介绍桌面端的全部操作。
 
 > 截图来自当前版本的界面，示例数据为虚构。
 
@@ -21,7 +21,7 @@ LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Oll
 
 ## 1. 安装
 
-从 [Releases](https://github.com/tyro668/LocalSubProxy/releases) 下载安装包：macOS 用 `.dmg`，Windows 用 `setup.exe`。安装包暂未签名，首次打开被系统拦截时，按 [release.md 的说明](release.md#未签名构建的注意事项) 处理。
+从 [Releases](https://github.com/tyro668/avora/releases) 下载安装包：macOS 用 `.dmg`，Windows 用 `setup.exe`。安装包暂未签名，首次打开被系统拦截时，按 [release.md 的说明](release.md#未签名构建的注意事项) 处理。
 
 ## 2. 首次启动
 
@@ -140,15 +140,19 @@ LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Oll
 
 **无法启动本机服务。** 启动失败时显示「无法启动本机服务」和原因。可以点「复制」把错误详情发给支持人员，点「打开数据目录」检查文件，处理后点「重试」。常见原因：
 
-- 「本机数据库被占用」：已有一个 LocalSubProxy 在运行。从托盘「退出」另一个实例后重试。
+- 「本机数据库被占用」：已有一个 Avora 在运行。从托盘「退出」另一个实例后重试。
 - 「没有访问本机数据目录的权限」：检查数据目录的读写权限。
 - 「磁盘空间不足」：清理磁盘后重试。
 
 ![本机数据库被占用](images/guide/13-kernel-error.png)
 
-**数据目录正被另一个 LocalSubProxy 使用。** 桌面应用和无界面模式（`localsubproxy serve`）不能同时使用同一个数据目录。停止 `serve`（或另一个桌面实例）后点「重试」。
+**数据目录正被另一个 Avora 使用。** 桌面应用和无界面模式（`avora serve`）不能同时使用同一个数据目录。停止 `serve`（或另一个桌面实例）后点「重试」。
 
 ![数据目录被占用](images/guide/14-data-dir-in-use.png)
+
+**旧版 LocalSubProxy 仍在运行。** Avora 原名 LocalSubProxy。新版首次启动时会把旧版的连接和配置迁移过来（旧目录保留为 `localsubproxy.backup-<时间>` 备份），不需要重新配对；但旧版还开着时无法迁移。从菜单栏或托盘退出旧版后点「重试」。迁移完成后，macOS 上请把「应用程序」里的旧版 `LocalSubProxy.app` 移到废纸篓（Windows 安装包会自动删除旧版的安装目录和快捷方式）；不要再打开旧版，它会以未配对的状态重新开始。
+
+![旧版仍在运行](images/guide/17-legacy-app-running.png)
 
 **窗口顶部出现红色提示条。** 例如「有 1 个已撤销连接的本机私钥未能删除，将在下次启动时重试。」通常是文件暂时被占用，应用会自动重试；点「查看详情」看具体文件，点 × 关闭提示。
 
@@ -164,4 +168,4 @@ LocalSubProxy 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Oll
 
 ## 12. 无界面模式
 
-在服务器或没有桌面环境的机器上，可以用命令行 `localsubproxy serve` 运行同一个内核，并用 `pair`、`scheme`、`status` 等命令完成上面的所有操作，也可以作为 systemd / launchd / Windows 计划任务运行。详见 [headless.md](headless.md)。
+在服务器或没有桌面环境的机器上，可以用命令行 `avora serve` 运行同一个内核，并用 `pair`、`scheme`、`status` 等命令完成上面的所有操作，也可以作为 systemd / launchd / Windows 计划任务运行。详见 [headless.md](headless.md)。

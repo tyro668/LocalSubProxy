@@ -95,6 +95,19 @@ type Event struct {
 	At     time.Time
 }
 
+// IsTerminalState reports whether a task state is one of the explicit
+// terminal states written by FinishTask.
+func IsTerminalState(s string) bool { return s == "SUCCEEDED" || s == "FAILED" || s == "CANCELLED" }
+
+// UnfinishedLister is implemented by stores that can list tasks without a
+// terminal state. On start the gateway owns no task yet, so every such task
+// is an orphan of a previous process: it gets a persisted OUTCOME_UNKNOWN
+// terminal event so replays agree and retention applies (audit3 P2-5).
+// Optional, so existing custom stores keep compiling.
+type UnfinishedLister interface {
+	UnfinishedTasks(ctx context.Context) ([]Task, error)
+}
+
 type Store interface {
 	PutTenant(ctx context.Context, t Tenant) error
 	TenantByAPIKeyHash(ctx context.Context, hash string) (Tenant, error)

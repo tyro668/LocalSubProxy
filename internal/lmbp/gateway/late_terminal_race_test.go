@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review8 P2-a: a local finish (client cancel) and the device's terminal

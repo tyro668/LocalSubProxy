@@ -3,7 +3,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>dev.localsubproxy</groupId>
+    <groupId>dev.avora</groupId>
     <artifactId>lmbp-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
@@ -28,8 +28,8 @@
     <resources>
       <resource>
         <directory>${project.basedir}/../../../spec/schemas</directory>
-        <targetPath>dev/localsubproxy/lmbp/schemas</targetPath>
-        <includes><include>defs.json</include><include>task.run.payload.json</include><include>hello.json</include><include>models.update.json</include></includes>
+        <targetPath>dev/avora/lmbp/schemas</targetPath>
+        <includes><include>defs.json</include><include>task.run.payload.json</include><include>hello.json</include><include>models.update.json</include><include>task.done.json</include><include>task.error.json</include></includes>
       </resource>
     </resources>
     <plugins>

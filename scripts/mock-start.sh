@@ -36,23 +36,33 @@ fi
 if [ ! -f "$dir/env" ]; then
   umask 077
   {
-    echo "LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)"
-    echo "LSP_SIGNING_SEED=$(openssl rand -hex 32)"
-    echo "LOCALSUBPROXY_DATA_KEY=$(openssl rand -hex 32)"
+    echo "LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)"
+    echo "LMBP_SIGNING_SEED=$(openssl rand -hex 32)"
+    echo "AVORA_DATA_KEY=$(openssl rand -hex 32)"
   } >"$dir/env"
   umask 022
 fi
-if ! grep -q '^LSP_TENANT_KEY_BETA=' "$dir/env"; then
-  (umask 077; echo "LSP_TENANT_KEY_BETA=$(openssl rand -hex 24)" >>"$dir/env")
+# 改名兼容（保留一个版本）：改名前生成的 .mock/env 里是 LOCALSUBPROXY_DATA_KEY
+if ! grep -q '^AVORA_DATA_KEY=' "$dir/env" && grep -q '^LOCALSUBPROXY_DATA_KEY=' "$dir/env"; then
+  (umask 077; sed -n 's/^LOCALSUBPROXY_DATA_KEY=/AVORA_DATA_KEY=/p' "$dir/env" >>"$dir/env")
+fi
+# 2.1 改名兼容：之前生成的 .mock/env 里是 LSP_TENANT_KEY_*、LSP_SIGNING_SEED，补上 LMBP_* 同值副本
+for v in LMBP_TENANT_KEY_ACME LMBP_TENANT_KEY_BETA LMBP_SIGNING_SEED; do
+  old="LSP_${v#LMBP_}"
+  if ! grep -q "^$v=" "$dir/env" && grep -q "^$old=" "$dir/env"; then
+    (umask 077; sed -n "s/^$old=/$v=/p" "$dir/env" >>"$dir/env")
+  fi
+done
+if ! grep -q '^LMBP_TENANT_KEY_BETA=' "$dir/env"; then
+  (umask 077; echo "LMBP_TENANT_KEY_BETA=$(openssl rand -hex 24)" >>"$dir/env")
 fi
 set -a; . "$dir/env"; set +a
-export LMBP_SIGNING_SEED=$LSP_SIGNING_SEED   # node/python/java/rust read this name
 
 gw="http://127.0.0.1:$port"
 cat >"$dir/tenant-profiles.json" <<JSON
 {
   "acme": {
-    "api_key_env": "LSP_TENANT_KEY_ACME",
+    "api_key_env": "LMBP_TENANT_KEY_ACME",
     "display_name": "Acme Chat (mock)",
     "homepage_uri": "$gw",
     "pairing_uri": "$gw/chat",
@@ -81,15 +91,15 @@ wait_http() { # name url
 }
 
 say "building (go) ..."
-go build -o "$dir/bin/lspmock" ./mock/cmd/lspmock
-go build -o "$dir/bin/localsubproxy" ./cmd/localsubproxy
+go build -o "$dir/bin/lmbpmock" ./mock/cmd/lmbpmock
+go build -o "$dir/bin/avora" ./cmd/avora
 
-bg fakemodel "$dir/bin/lspmock" fakemodel -listen "127.0.0.1:$model_port" -models "$models"
+bg fakemodel "$dir/bin/lmbpmock" fakemodel -listen "127.0.0.1:$model_port" -models "$models"
 wait_http fakemodel "http://127.0.0.1:$model_port/api/tags"
 
 case $impl in
   go)
-    bg gateway "$dir/bin/localsubproxy" server -listen "127.0.0.1:$port" -db "$dir/gateway.db" -tenants acme:LSP_TENANT_KEY_ACME \
+    bg gateway "$dir/bin/avora" server -listen "127.0.0.1:$port" -db "$dir/gateway.db" -tenants acme:LMBP_TENANT_KEY_ACME \
       -tenant-profiles "$dir/tenant-profiles.json" -issuer "$gw" -chat-ui ;;
   node)
     command -v node >/dev/null || { echo "missing tool: node" >&2; exit 1; }
@@ -121,7 +131,7 @@ if [ "$gateways" = 2 ]; then # second SaaS: its own issuer, tenant, db and profi
   cat >"$dir/tenant-profiles-beta.json" <<JSON
 {
   "beta": {
-    "api_key_env": "LSP_TENANT_KEY_BETA",
+    "api_key_env": "LMBP_TENANT_KEY_BETA",
     "display_name": "Beta Notes (mock)",
     "homepage_uri": "$gw2",
     "pairing_uri": "$gw2/chat",
@@ -130,7 +140,7 @@ if [ "$gateways" = 2 ]; then # second SaaS: its own issuer, tenant, db and profi
   }
 }
 JSON
-  bg gateway2 "$dir/bin/localsubproxy" server -listen "127.0.0.1:$port2" -db "$dir/gateway2.db" -tenants beta:LSP_TENANT_KEY_BETA \
+  bg gateway2 "$dir/bin/avora" server -listen "127.0.0.1:$port2" -db "$dir/gateway2.db" -tenants beta:LMBP_TENANT_KEY_BETA \
     -tenant-profiles "$dir/tenant-profiles-beta.json" -issuer "$gw2" -chat-ui
   wait_http gateway2 "$gw2/healthz"
 fi
@@ -141,12 +151,12 @@ cdir="$dir/connector"
 say ""
 say "mock stack is up ($impl gateway)"
 say "  chat page   $gw/chat"
-say "  login       tenant: acme   user: alice   key: $LSP_TENANT_KEY_ACME"
+say "  login       tenant: acme   user: alice   key: $LMBP_TENANT_KEY_ACME"
 say "  fake model  http://127.0.0.1:$model_port  (models: $models)"
 say "  pair link   $link"
 say ""
 say "connect a device (in another terminal; confirm, then approve the printed code on the chat page):"
-say "  LOCALSUBPROXY_DATA_KEY=$LOCALSUBPROXY_DATA_KEY $dir/bin/localsubproxy connector \\"
+say "  AVORA_DATA_KEY=$AVORA_DATA_KEY $dir/bin/avora connector \\"
 say "    -pair-link '$link' \\"
 say "    -adapter-id local -ollama-url http://127.0.0.1:$model_port -models $models -capabilities vision \\"
 say "    -identity $cdir/identity.json -adapter-file $cdir/adapters.enc -audit-db $cdir/audit.db"
@@ -156,7 +166,7 @@ if [ "$gateways" = 2 ]; then
   say ""
   say "second SaaS (multi-SaaS testing; add it as another connection in the desktop app)"
   say "  chat page   $gw2/chat"
-  say "  login       tenant: beta   user: alice   key: $LSP_TENANT_KEY_BETA"
+  say "  login       tenant: beta   user: alice   key: $LMBP_TENANT_KEY_BETA"
   say "  pair link   lmbp://pair?v=2&gateway=$enc2&tenant=beta"
 fi
 say ""

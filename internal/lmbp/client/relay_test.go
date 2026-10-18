@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review7 #12: completion tracking and parse-error policy of the relay.

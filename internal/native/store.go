@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
-	"github.com/tyro668/LocalSubProxy/internal/durable"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/connector"
+	"github.com/tyro668/avora/internal/durable"
+	"github.com/tyro668/avora/internal/lmbp/client"
 )
 
 // Identity store v2 (identity.json):

@@ -1,4 +1,4 @@
-module github.com/tyro668/LocalSubProxy
+module github.com/tyro668/avora
 
 go 1.22
 

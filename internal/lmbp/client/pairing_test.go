@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/gateway"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/gateway"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 const pairKey = "tk_pppppppppppppppppppppppppppppppppppppppp"

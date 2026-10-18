@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/client"
+	"github.com/tyro668/avora/internal/lmbp/client"
 )
 
 // Review4 C: a network failure during pair_approve keeps the consent

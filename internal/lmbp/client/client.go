@@ -12,13 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/tyro668/avora/internal/compat"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Executor runs one verified task. The run it receives is fully resolved:
@@ -118,7 +119,7 @@ func postForm(ctx context.Context, hc *http.Client, u string, in map[string]stri
 	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Discovery is the public, secret-free document a SaaS serves at /.well-known/localsubproxy.
+// Discovery is the public, secret-free document a SaaS serves at /.well-known/avora.
 type Discovery struct {
 	GatewayURL string `json:"gateway_url"`
 	Tenant     string `json:"tenant"`
@@ -131,17 +132,28 @@ func Discover(ctx context.Context, hc *http.Client, remoteURL string) (Discovery
 	if hc == nil {
 		hc = defaultHTTP()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+"/.well-known/localsubproxy", nil)
-	if err != nil {
-		return d, err
+	status := 0
+	for _, path := range compat.DiscoveryPaths {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+path, nil)
+		if err != nil {
+			return d, err
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			return d, err
+		}
+		status = resp.StatusCode
+		if status == http.StatusNotFound {
+			_ = resp.Body.Close()
+			continue // pre-rename SaaS: try the legacy path
+		}
+		d = Discovery{}
+		ok := status == 200 && json.NewDecoder(resp.Body).Decode(&d) == nil && d.GatewayURL != "" && d.Tenant != ""
+		_ = resp.Body.Close()
+		if ok {
+			return d, nil
+		}
+		break
 	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return d, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&d) != nil || d.GatewayURL == "" || d.Tenant == "" {
-		return d, fmt.Errorf("remote service does not support lmbp discovery (HTTP %d)", resp.StatusCode)
-	}
-	return d, nil
+	return d, fmt.Errorf("remote service does not support lmbp discovery (HTTP %d)", status)
 }

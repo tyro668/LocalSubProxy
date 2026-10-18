@@ -9,9 +9,9 @@
 ```bash
 cd mock/node
 npm ci                      # 通过 file:../../sdk/node 引用 SDK，会自动构建
-export LSP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key（≥ 32 字符）
+export LMBP_TENANT_KEY_ACME=$(openssl rand -hex 24)   # 租户 API Key（≥ 32 字符）
 export LMBP_SIGNING_SEED=$(openssl rand -hex 32)     # 可选：固定网关签名密钥
-node gateway.mjs --listen 127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
+node gateway.mjs --listen 127.0.0.1:8080 --tenant acme:LMBP_TENANT_KEY_ACME
 # 或带 SaaS 展示身份（同意页显示的名称、链接、请求的模型与作用域）：
 node gateway.mjs --listen 127.0.0.1:8080 --tenant-profiles ../tenant-profiles.example.json
 ```
@@ -32,11 +32,11 @@ Docker：
 
 ```bash
 docker build -f mock/node/Dockerfile -t lmbp-mock-node .   # 在仓库根目录构建，镜像内含聊天页
-docker run --rm -p 8080:8080 -e LSP_TENANT_KEY_ACME -e LMBP_SIGNING_SEED lmbp-mock-node \
-  --issuer http://127.0.0.1:8080 --tenant acme:LSP_TENANT_KEY_ACME
+docker run --rm -p 8080:8080 -e LMBP_TENANT_KEY_ACME -e LMBP_SIGNING_SEED lmbp-mock-node \
+  --issuer http://127.0.0.1:8080 --tenant acme:LMBP_TENANT_KEY_ACME
 ```
 
-连接 Go 连接器：`localsubproxy connector -pair-link 'lmbp://pair?v=2&gateway=http://127.0.0.1:8080&tenant=acme' ...`，然后用租户 Key 调用 `POST /lmbp/v1/tenant/devices/approvals` 批准显示的配对码（或直接打开本网关自带的聊天页 http://127.0.0.1:8080/chat ，见 [../web/README.md](../web/README.md)）。
+连接 Go 连接器：`avora connector -pair-link 'lmbp://pair?v=2&gateway=http://127.0.0.1:8080&tenant=acme' ...`，然后用租户 Key 调用 `POST /lmbp/v1/tenant/devices/approvals` 批准显示的配对码（或直接打开本网关自带的聊天页 http://127.0.0.1:8080/chat ，见 [../web/README.md](../web/README.md)）。
 
 单元测试：`npm test`（聊天页与 CSP）；协议单元测试在 `sdk/node`（`cd sdk/node && npm test`）。
 

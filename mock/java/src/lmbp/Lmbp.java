@@ -283,6 +283,10 @@ public final class Lmbp {
     final List<Waiter> waiters = new ArrayList<>();
     Consumer<String> write;
     boolean closed;
+    /** Tasks dropped with forget (bounded, insertion ordered): their sends fail
+     *  instead of re-creating state no retransmit list covers. audit3 P1. */
+    final java.util.LinkedHashSet<String> forgotten = new java.util.LinkedHashSet<>();
+    static final int MAX_FORGOTTEN = 4096;
 
     Outbox(Gateway g) { this.g = g; }
 
@@ -300,6 +304,7 @@ public final class Lmbp {
       while (!waiters.isEmpty()) {
         Waiter w = waiters.get(0);
         if (closed) { waiters.remove(0); w.done = true; w.err = "outbox closed"; continue; }
+        if (forgotten.contains(w.task)) { waiters.remove(0); w.done = true; w.err = "task forgotten"; continue; }
         OTask t = task(w.task);
         long seq = t.nextSeq + 1;
         String raw = w.mk.apply(seq);
@@ -332,6 +337,7 @@ public final class Lmbp {
     /** build(seq) returns the envelope without v/task_id/seq; caller holds the lock. */
     long send(String taskID, LongFunction<Map<String, Object>> build, Gateway.Abort abort) {
       if (closed) throw new IllegalStateException("outbox closed");
+      if (forgotten.contains(taskID)) throw new IllegalStateException("task forgotten");
       Waiter w = new Waiter();
       w.task = taskID;
       w.mk = seq -> {
@@ -375,9 +381,20 @@ public final class Lmbp {
       flush(id);
     }
 
+    /** Drops a terminal task for good, atomically: credit released and its queued
+     *  sends failed BEFORE the other waiters are woken (audit3 P1). */
     void forget(String id) {
       OTask t = tasks.remove(id);
       if (t != null) connUsed -= t.used;
+      if (forgotten.add(id) && forgotten.size() > MAX_FORGOTTEN) {
+        java.util.Iterator<String> it = forgotten.iterator();
+        it.next();
+        it.remove();
+      }
+      for (java.util.Iterator<Waiter> it = waiters.iterator(); it.hasNext();) {
+        Waiter w = it.next();
+        if (w.task.equals(id)) { it.remove(); w.done = true; w.err = "task forgotten"; }
+      }
       wake();
     }
 

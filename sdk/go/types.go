@@ -1,8 +1,8 @@
 package lmbpserver
 
 import (
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/internal/lmbp/store"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp/store"
 )
 
 // Protocol types re-exported so code outside this module can use them

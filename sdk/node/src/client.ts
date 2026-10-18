@@ -142,15 +142,20 @@ export class InProcessClient {
 
   private chatStream(method: string, path: string, body: unknown, opts: StreamOpts): LMBPStream<ChatCompletionChunk> {
     const st: LMBPStream<ChatCompletionChunk> = new LMBPStream(async function* (this: InProcessClient) {
-      for await (const e of this.sse(method, path, body, hdrs(opts), opts.signal, st)) {
-        if (e.data === '[DONE]') return;
-        const v = JSON.parse(e.data);
-        if (v.error) throw new LMBPAPIError(502, v.error.code, v.error.message, v);
-        if (e.id) st.lastEventId = e.id;
-        yield v;
+      try {
+        for await (const e of this.sse(method, path, body, hdrs(opts), st.signal, st)) {
+          if (e.data === '[DONE]') return;
+          const v = JSON.parse(e.data);
+          if (v.error) throw new LMBPAPIError(502, v.error.code, v.error.message, v);
+          if (e.id) st.lastEventId = e.id;
+          yield v;
+        }
+      } catch (err) {
+        if (st.closedByConsumer) return; // return()/throw() ended it: a pending next() is done
+        throw err;
       }
       throw new IncompleteStreamError(st.taskId, st.lastEventId);
-    }.bind(this));
+    }.bind(this), opts.signal);
     return st;
   }
 
@@ -161,15 +166,20 @@ export class InProcessClient {
     /** Anthropic Messages, streaming: async iterable of named events. */
     stream: (req: MessagesRequest, opts: StreamOpts = {}): LMBPStream<MessageStreamEvent> => {
       const st: LMBPStream<MessageStreamEvent> = new LMBPStream(async function* (this: InProcessClient) {
-        for await (const e of this.sse('POST', '/v1/messages', { ...req, stream: true }, hdrs(opts), opts.signal, st)) {
-          const v = JSON.parse(e.data);
-          if (v.type === 'error') throw new LMBPAPIError(502, v.error?.lmbp_code ?? 'ERROR', v.error?.message ?? 'error', v);
-          if (e.id) st.lastEventId = e.id;
-          if (v.type !== 'ping') yield v;
-          if (v.type === 'message_stop') return;
+        try {
+          for await (const e of this.sse('POST', '/v1/messages', { ...req, stream: true }, hdrs(opts), st.signal, st)) {
+            const v = JSON.parse(e.data);
+            if (v.type === 'error') throw new LMBPAPIError(502, v.error?.lmbp_code ?? 'ERROR', v.error?.message ?? 'error', v);
+            if (e.id) st.lastEventId = e.id;
+            if (v.type !== 'ping') yield v;
+            if (v.type === 'message_stop') return;
+          }
+        } catch (err) {
+          if (st.closedByConsumer) return; // return()/throw() ended it: a pending next() is done
+          throw err;
         }
         throw new IncompleteStreamError(st.taskId, st.lastEventId);
-      }.bind(this));
+      }.bind(this), opts.signal);
       return st;
     },
   };
@@ -202,11 +212,36 @@ export class LMBPStream<T> implements AsyncIterableIterator<T> {
   lastEventId = '';
   taskId = '';
   private it?: AsyncGenerator<T>;
-  constructor(private readonly make: () => AsyncGenerator<T>) {}
+  /** Fired synchronously by return()/throw(): an async generator queues
+   *  return() behind a pending next(), so with a silent model the request
+   *  (and the gateway task) would never end. The signal aborts the request
+   *  at once; the pending next() then settles as done (audit3 P2-8). */
+  private readonly cancel = new AbortController();
+  /** The caller's signal and return()/throw(), combined. */
+  readonly signal: AbortSignal;
+  constructor(private readonly make: () => AsyncGenerator<T>, outer?: AbortSignal) {
+    this.signal = this.cancel.signal;
+    if (outer) {
+      if (outer.aborted) this.cancel.abort(outer.reason);
+      else outer.addEventListener('abort', () => this.cancel.abort(outer.reason), { once: true });
+    }
+  }
+  /** True once return()/throw() ended the stream (not the caller's signal). */
+  closedByConsumer = false;
   private get g() { return (this.it ??= this.make()); }
   next() { return this.g.next(); }
-  return(v?: any) { return this.g.return(v); }
-  throw(e?: any) { return this.g.throw(e); }
+  return(v?: any) {
+    this.closedByConsumer = true;
+    this.cancel.abort(new Error('stream closed by consumer'));
+    if (!this.it) return Promise.resolve({ done: true as const, value: v });
+    return this.g.return(v);
+  }
+  throw(e?: any) {
+    this.closedByConsumer = true;
+    this.cancel.abort(e ?? new Error('stream closed by consumer'));
+    if (!this.it) return Promise.reject(e);
+    return this.g.throw(e);
+  }
   [Symbol.asyncIterator]() { return this; }
 }
 

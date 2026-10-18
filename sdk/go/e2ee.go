@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // End-to-end encryption from business code (spec §17). The gateway relays

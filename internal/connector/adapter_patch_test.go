@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/tyro668/LocalSubProxy/internal/connector"
+	"github.com/tyro668/avora/internal/connector"
 )
 
 func viewOf(t *testing.T, c *connector.Connector, id string) map[string]any {

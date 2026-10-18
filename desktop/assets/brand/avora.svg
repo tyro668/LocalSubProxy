@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Avora">
+  <defs>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#39218D"/>
+      <stop offset="0.55" stop-color="#5B37DD"/>
+      <stop offset="1" stop-color="#7855F0"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#surface)"/>
+  <path d="M32 18C47 11 74 10 94 20" fill="none" stroke="#FFFFFF" stroke-opacity=".12" stroke-width="3" stroke-linecap="round"/>
+  <g id="mark" fill="#FFFFFF">
+    <path d="M49 34H45C29 34 18 47 18 64s11 30 27 30h4" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M79 34h4c16 0 27 13 27 30S99 94 83 94h-4" fill="none" stroke="#FFFFFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M64 43 85 64 64 85 43 64Z"/>
+  </g>
+</svg>

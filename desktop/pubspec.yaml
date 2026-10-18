@@ -1,5 +1,5 @@
-name: localsubproxy_ui
-description: "A new Flutter project."
+name: avora_ui
+description: "Avora — 把本机模型安全地连接到 SaaS"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -61,7 +61,7 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/brand/localsubproxy_mark.png
+    - assets/brand/avora_mark.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

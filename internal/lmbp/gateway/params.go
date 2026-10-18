@@ -20,8 +20,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
-	"github.com/tyro668/LocalSubProxy/spec/schemas"
+	"github.com/tyro668/avora/internal/lmbp"
+	"github.com/tyro668/avora/spec/schemas"
 )
 
 const (

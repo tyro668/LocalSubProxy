@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/lmbp"
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Review7 #10: another path ends a queued task right before the queue exit
@@ -58,7 +58,21 @@ func TestQueuedDisconnectRecordsCancelled(t *testing.T) {
 		wg.Add(1)
 		go func() { defer wg.Done(); idemChat(t, r, "slow", "x", "") }()
 	}
-	time.Sleep(300 * time.Millisecond)
+	// all 4 slots taken before the next request (a fixed sleep raced slow CI runners)
+	slotsFull := func() bool {
+		r.g.mu.Lock()
+		ds := r.g.devs[r.devID]
+		r.g.mu.Unlock()
+		if ds == nil {
+			return false
+		}
+		ds.mu.Lock()
+		defer ds.mu.Unlock()
+		return ds.slots >= ds.maxConc
+	}
+	for end := time.Now().Add(5 * time.Second); !slotsFull() && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	req := r.req("POST", "/v1/chat/completions", map[string]any{"model": "echo", "messages": user("gone")}, map[string]string{"Idempotency-Key": "k-gone"}).WithContext(ctx)
 	go func() {
@@ -66,7 +80,22 @@ func TestQueuedDisconnectRecordsCancelled(t *testing.T) {
 			resp.Body.Close()
 		}
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// cancel only once the request waits in the slot queue: a fixed sleep let
+	// slow Windows runners cancel before the task row was even created
+	queued := func() bool {
+		r.g.mu.Lock()
+		ds := r.g.devs[r.devID]
+		r.g.mu.Unlock()
+		ds.mu.Lock()
+		defer ds.mu.Unlock()
+		return len(ds.slotWait) > 0
+	}
+	for end := time.Now().Add(10 * time.Second); !queued() && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !queued() {
+		t.Fatal("request never reached the slot queue")
+	}
 	cancel()
 	select {
 	case <-exited:

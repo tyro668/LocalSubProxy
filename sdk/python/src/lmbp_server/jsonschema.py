@@ -9,7 +9,7 @@ import re
 from typing import Any, Optional
 from urllib.parse import urljoin, unquote
 
-ANNOTATIONS = {"$schema", "$id", "$defs", "title", "description", "default", "$comment"}
+ANNOTATIONS = {"$schema", "$id", "$defs", "title", "description", "default", "$comment", "examples"}
 KEYWORDS = {"$ref", "type", "required", "properties", "additionalProperties", "items", "minItems", "maxItems",
             "minimum", "maximum", "minLength", "maxLength", "enum", "const", "pattern", "oneOf", "anyOf", "allOf",
             "if", "then", "else", "uniqueItems"}

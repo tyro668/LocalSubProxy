@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 pub const MAX_STOP_SEQUENCES: usize = 4;
 pub const MAX_STOP_LENGTH: usize = 256;
 pub const MAX_TOOLS: usize = 128;
-const BASE: &str = "https://localsubproxy.dev/spec/lmbp/";
+const BASE: &str = "https://avora.dev/spec/lmbp/";
 const ROLES: [&str; 5] = ["system", "user", "assistant", "tool", "developer"];
 
 #[derive(Debug, Clone)]
@@ -339,11 +339,37 @@ fn schemas() -> &'static Schema {
         let run: Value = serde_json::from_str(include_str!("../../../spec/schemas/task.run.payload.json")).unwrap();
         let hello: Value = serde_json::from_str(include_str!("../../../spec/schemas/hello.json")).unwrap();
         let mu: Value = serde_json::from_str(include_str!("../../../spec/schemas/models.update.json")).unwrap();
-        Schema::new(vec![defs, run, hello, mu])
+        let done: Value = serde_json::from_str(include_str!("../../../spec/schemas/task.done.json")).unwrap();
+        let err: Value = serde_json::from_str(include_str!("../../../spec/schemas/task.error.json")).unwrap();
+        Schema::new(vec![defs, run, hello, mu, done, err])
     })
 }
 
 /// Validates hello / models.update data against its schema (spec §7.4): None when valid, else a message.
+/// Validates a device data frame's envelope and, for task.done / task.error,
+/// its body against task.done.json / task.error.json: None when acceptable
+/// (checked before the seq is accepted, persisted or ACKed).
+pub fn device_data_problem(inp: &Value) -> Option<String> {
+    let ty = inp.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    match inp.get("task_id").and_then(|v| v.as_str()) {
+        Some(t) if !t.is_empty() => {}
+        _ => return Some(format!("{} without task_id", ty)),
+    }
+    let seq = inp.get("seq").unwrap_or(&Value::Null);
+    if !crate::json::is_int(seq) || seq.as_f64().unwrap_or(0.0) < 1.0 {
+        return Some(format!("{} seq must be an integer >= 1", ty));
+    }
+    let data = inp.get("data").unwrap_or(&Value::Null);
+    if !data.is_object() {
+        return Some(format!("{} data must be a JSON object", ty));
+    }
+    if ty != "task.done" && ty != "task.error" {
+        return None;
+    }
+    let e = schemas().validate(&format!("{}{}.json", BASE, ty), data)?;
+    Some(if e.path.is_empty() { format!("{}: {}", ty, e.message) } else { format!("{}.{}: {}", ty, e.path.join("."), e.message) })
+}
+
 pub fn announce_problem(data: &Value, hello: bool) -> Option<String> {
     let name = if hello { "hello" } else { "models.update" };
     let e = schemas().validate(&format!("{}{}.json", BASE, name), data)?;

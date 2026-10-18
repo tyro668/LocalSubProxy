@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Multi-SaaS acceptance against the native kernel library.
 
-The kernel (liblsp.so) runs in a separate child process that is SIGKILLed
+The kernel (libavora.so) runs in a separate child process that is SIGKILLed
 and restarted to check recovery after a real process exit. A slow streaming
 OpenAI-compatible model runs in this process so cancellations are visible.
 
-  go build -buildmode=c-shared -o /tmp/liblsp.so ./cmd/localsubproxy_native
+  go build -buildmode=c-shared -o /tmp/libavora.so ./cmd/avora_native
   LMBP_MOCK_DIR=/tmp/msmock LMBP_MOCK_GATEWAYS=2 scripts/mock-start.sh go 18480
-  scripts/multisaas-acceptance.py /tmp/liblsp.so /tmp/msmock 18480
+  scripts/multisaas-acceptance.py /tmp/libavora.so /tmp/msmock 18480
 """
 import json, os, signal, subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,12 +15,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if len(sys.argv) > 1 and sys.argv[1] == '--child':  # kernel process
     import ctypes
     lib = ctypes.CDLL(sys.argv[2])
-    for f in (lib.LSP_Start, lib.LSP_Call): f.restype = ctypes.c_void_p; f.argtypes = [ctypes.c_char_p]
-    lib.LSP_Free.argtypes = [ctypes.c_void_p]
+    for f in (lib.AVORA_Start, lib.AVORA_Call): f.restype = ctypes.c_void_p; f.argtypes = [ctypes.c_char_p]
+    lib.AVORA_Free.argtypes = [ctypes.c_void_p]
     for line in sys.stdin:
         req = json.loads(line)
-        fn = lib.LSP_Start if req.pop('_start', False) else lib.LSP_Call
-        p = fn(json.dumps(req).encode()); s = ctypes.string_at(p).decode(); lib.LSP_Free(p)
+        fn = lib.AVORA_Start if req.pop('_start', False) else lib.AVORA_Call
+        p = fn(json.dumps(req).encode()); s = ctypes.string_at(p).decode(); lib.AVORA_Free(p)
         sys.stdout.write(s + '\n'); sys.stdout.flush()
     sys.exit(0)
 
@@ -136,8 +136,8 @@ data = tempfile.mkdtemp(prefix='lsp-accept-')
 k = Kernel(data)
 k.call(action='create_adapter', adapter={'id': 'slow', 'type': 'openai_compatible', 'name': 'Slow', 'base_url': model_url + '/v1', 'api_key': 'k',
     'models': ['slow-1'], 'enabled': True, 'skip_model_probe': True, 'concurrency': 8})
-A = ('acme', f'http://127.0.0.1:{port}', env['LSP_TENANT_KEY_ACME'])
-B = ('beta', f'http://127.0.0.1:{port + 1}', env['LSP_TENANT_KEY_BETA'])
+A = ('acme', f'http://127.0.0.1:{port}', env['LMBP_TENANT_KEY_ACME'])
+B = ('beta', f'http://127.0.0.1:{port + 1}', env['LMBP_TENANT_KEY_BETA'])
 ids = {}
 for tenant, gw, key in (A, B):
     c = k.call(action='pair_start', link='lmbp://pair?v=2&gateway=' + urllib.parse.quote(gw, safe='') + '&tenant=' + tenant)
