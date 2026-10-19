@@ -10,10 +10,13 @@
 
 功能：
 
-- **配对状态**和**配对新设备**：生成 `lmbp://pair` 链接并提供复制链接与复制 CLI 命令两个按钮；当桌面端发起配对请求（或页面带 `?user_code=…&jkt=…` 打开）时，自动弹出居中配对码输入弹窗，输入 `user_code` 批准成功后弹窗自动消失。
-- **我的设备**：显示在线/离线设备及每台设备的模型与能力、吊销按钮；已吊销设备默认折叠在底部，可点击展开或收起查看。
-- **聊天**：在对话输入框底部发送按钮前选择模型，通过 `/v1/chat/completions` 的 SSE 流式输出；多轮历史；“停止”会中断请求，网关随即向设备发送 `task.cancel`；“添加图片”以 `data:` URI 发送（超过 16 KiB 时网关走 blob 分块）。
-- 每条回答显示首字耗时、总耗时、输入/输出 tokens、tok/s、`finish_reason` 与 `task_id`。
+- **对话**：左栏是品牌（租户名 + Chat）、新对话、历史对话（保存在浏览器 localStorage，按租户和用户区分，按今天/昨天/更早分组，可删除）、设备状态和当前用户。回答像 agent 一样显示一条可折叠的执行步骤：已派发到设备（收到 `X-Task-Id` 响应头）、开始生成（首个 delta，含首字耗时）、模型请求调用工具（`finish_reason: tool_calls`）、生成完成、已停止或出错。步骤只来自页面真实观察到的事件。
+- **工具调用**：模型在 `delta.tool_calls` 中请求的工具显示为卡片，标注「模型请求」，展示函数名、调用 ID 和参数；页面不执行工具，也不伪造结果。
+- **回答排版**：内置一个小型 Markdown 渲染器（标题、列表、引用、粗体/斜体、行内代码、`http(s)` 链接、代码块），代码块带简单高亮和「复制」按钮。所有文本经 `textContent` 写入，HTML 原样当文本显示。生成中末尾显示光标。
+- 回答下方一行显示首字耗时、总耗时、输入 → 输出 tokens、tok/s、非 `stop` 的 `finish_reason` 与 `task_id`。模型名显示短名，悬停显示完整 ID。
+- **输入框**：模型选择、添加图片（以 `data:` URI 发送，超过 16 KiB 时网关走 blob 分块）、发送；生成中显示停止按钮，停止会中断请求，网关随即向设备发送 `task.cancel`。
+- **配对新设备**：第一步复制 `lmbp://pair` 链接或 CLI 命令；桌面端发起配对后（`pending_pairings`，或页面带 `?user_code=…&jkt=…` 打开）弹窗自动出现，第二步输入 8 位配对码后批准或拒绝。`jkt` 收在默认折叠的「高级」里。
+- **我的设备**：点击左下角设备状态打开。只列在线设备及其模型与能力；离线和已吊销的设备收进「离线和已吊销 (N)」一行；吊销在每台设备的 ⋯ 菜单里，需确认。
 - 错误按错误码显示中文说明（`DEVICE_OFFLINE`、`CONSENT_DENIED`、`MODEL_NOT_FOUND`、`DEVICE_BUSY`、`CAPABILITY_UNSUPPORTED`、`PAYLOAD_TOO_LARGE`、`UNAUTHENTICATED` 等）。
 
 ## 认证（开发登录）
@@ -31,7 +34,7 @@
 - Go 参考网关默认**不提供**此页面，需要显式加 `-chat-ui`（`lmbpmock gateway` 默认开启）；
 - Node/Python 模拟网关默认开启，可用 `--no-chat-ui` 关闭。
 
-所有页面文件都带严格的 CSP（`script-src 'self'`，`connect-src 'self'`，`frame-ancestors 'none'`），以及 `X-Content-Type-Options: nosniff` 和 `Referrer-Policy: no-referrer`。用户和模型的文本一律用 `textContent` 渲染。
+所有页面文件都带严格的 CSP（`script-src 'self'`，`connect-src 'self'`，`frame-ancestors 'none'`），以及 `X-Content-Type-Options: nosniff` 和 `Referrer-Policy: no-referrer`。用户和模型的文本一律用 `textContent` 渲染。页面不依赖 CDN，字体使用系统字体。
 
 ## 运行
 
@@ -59,6 +62,10 @@ go run ./cmd/avora connector -pair-link 'lmbp://pair?v=2&gateway=http%3A%2F%2F12
 
 接真实 Ollama：`-ollama-url http://127.0.0.1:11434 -models llama3.2`。
 
+## 测试
+
+`node --test mock/web/test` 测试 `chat.js` 中的纯函数（Markdown、高亮、tool_calls 合并、执行步骤、历史分组）；装了 Node 时 `go test ./mock/web` 也会运行它。
+
 ## 端到端测试
 
 ```bash
@@ -72,8 +79,8 @@ scripts/chat-ui-e2e.sh go node python java rust；SHOTS=目录 指定截图位�
 3. 显示配对链接与二维码；
 4. 启动真实 Go 连接器（Ollama 适配器 → 假模型的 `/api/chat`），在页面上用 `user_code` + `jkt` 批准；
 5. 设备上线；
-6. 流式回答（逐步增长）带耗时与 tokens；
-7. 第二轮带上历史；
+6. 流式回答（逐步增长）带耗时、tokens 与执行步骤；
+7. 第二轮带上历史；刷新页面后历史对话仍在；
 8. 上传 ~35 KB 图片（走 blob）并被模型原样收到；
 9. 停止生效；
 10. 拒绝后再批准显示 `CONSENT_DENIED`；

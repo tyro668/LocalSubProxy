@@ -105,11 +105,13 @@ for (const impl of impls) {
     const code = await until(async () => (con.out.match(/pairing code: ([A-Z]{4}-[A-Z]{4})/) || [])[1], 15000, 'pairing code');
     const jkt = (con.out.match(/jkt=([A-Za-z0-9_-]{43})/) || [])[1];
     await page.waitForSelector('#pairModal:not(.hidden)', { timeout: 10000 });
-    await page.fill('#code', code); if (jkt) await page.fill('#jkt', jkt);
+    await page.fill('#code', code);
+    if (jkt) { if (!(await page.isVisible('#jkt'))) await page.click('#advToggle'); await page.fill('#jkt', jkt); }
     await page.click('#approve');
     await page.waitForFunction(() => document.getElementById('pairMsg').textContent.includes('已批准'));
     await page.waitForSelector('#pairModal.hidden', { state: 'attached', timeout: 5000 });
-    await page.waitForSelector('#devices .badge.on', { timeout: 20000 });
+    await page.waitForSelector('#devices .badge.on', { state: 'attached', timeout: 20000 });
+    await page.waitForFunction(() => document.getElementById('devTitle').textContent.includes('台设备在线'));
     await page.waitForFunction(() => [...document.querySelectorAll('#model option')].some((o) => o.value), null, { timeout: 15000 });
     await page.screenshot({ path: path.join(shots, `chat-${impl}-paired.png`) });
     ok(`paired ${code} (jkt ${jkt ? 'checked' : 'n/a'}); device online with models`);
@@ -119,7 +121,7 @@ for (const impl of impls) {
       await page.fill('#input', text); await page.press('#input', 'Enter');
       await page.waitForFunction((n) => { const t = document.querySelectorAll('.turn.assistant')[n]; return t && t.dataset.state; }, n, { timeout: 30000 });
       return page.evaluate((n) => { const t = document.querySelectorAll('.turn.assistant')[n];
-        return { state: t.dataset.state, text: t.querySelector('.bubble').textContent, meta: t.querySelector('.meta').textContent, err: t.querySelector('.err')?.textContent || '' }; }, n);
+        return { state: t.dataset.state, text: t.querySelector('.bubble').textContent, meta: t.querySelector('.mline')?.textContent || '', steps: t.querySelector('.steps, .live-line')?.textContent || '', err: t.querySelector('.err')?.textContent || '' }; }, n);
     };
     // streaming: watch the bubble grow while the request is in flight
     const growth = page.evaluate(() => new Promise((res) => {
@@ -129,12 +131,20 @@ for (const impl of impls) {
     }));
     let a = await send('你好');
     const sizes = await growth;
-    if (a.state !== 'done' || !a.text.includes('你说的是：你好') || !/tokens 输入 \d+ \/ 输出 \d+/.test(a.meta) || !a.meta.includes('首字')) throw new Error('turn 1: ' + JSON.stringify(a));
+    if (a.state !== 'done' || !a.text.includes('你说的是：你好') || !/\d+ → \d+ tokens/.test(a.meta) || !a.meta.includes('首字') || !a.steps.includes('已完成')) throw new Error('turn 1: ' + JSON.stringify(a));
     if (sizes < 4) throw new Error('reply did not stream incrementally');
     ok(`streamed reply (${sizes} intermediate lengths): "${a.text.slice(0, 40)}…" | ${a.meta}`);
     a = await send('再来一轮');
     if (!a.text.includes('第 2 轮')) throw new Error('multi-turn history not sent: ' + a.text);
     ok('multi-turn: model saw 2 user turns');
+    // history survives a reload (localStorage) and re-renders both answers with their step timelines
+    await page.reload(); await page.waitForSelector('#app:not(.hidden)');
+    await page.click('#hist .hi');
+    await page.waitForFunction(() => document.querySelectorAll('.turn.assistant[data-state=done]').length === 2);
+    const hist = await page.evaluate(() => ({ title: document.querySelector('#hist .hi').textContent, steps: document.querySelector('.turn.assistant .steps').textContent }));
+    if (!hist.title.includes('你好') || !hist.steps.includes('已派发到') || !hist.steps.includes('首字')) throw new Error('history: ' + JSON.stringify(hist));
+    ok('history list restored after reload: ' + hist.title + ' | ' + hist.steps);
+    await page.waitForFunction(() => [...document.querySelectorAll('#model option')].some((o) => o.value), null, { timeout: 15000 });
 
     // image upload (> 16 KiB → lmbp-blob + blob.chunk on the wire)
     const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = c.height = 200; const x = c.getContext('2d');
@@ -172,7 +182,7 @@ for (const impl of impls) {
 
     // DEVICE_OFFLINE: stop the connector, wait for the gateway to drop it, send again
     con.kill('SIGKILL');
-    await page.waitForSelector('#devices .badge.off', { timeout: 45000 });
+    await page.waitForSelector('#devices .badge.off', { state: 'attached', timeout: 45000 });
     a = await send('还在吗？');
     if (a.state !== 'error' || !/DEVICE_OFFLINE|OUTCOME_UNKNOWN|MODEL_NOT_FOUND/.test(a.err)) throw new Error('offline: ' + JSON.stringify(a));
     ok('offline device error shown: ' + a.err);

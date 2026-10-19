@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -59,7 +60,7 @@ func TestChatUILayoutRequirements(t *testing.T) {
 	if strings.Contains(html, `id="qr"`) {
 		t.Fatal("chat.html should not render QR code container")
 	}
-	for _, want := range []string{`id="pairLink"`, `id="copyLink"`, `id="copyCmd"`, `id="pairModal"`, `class="modal-mask hidden"`} {
+	for _, want := range []string{`id="pairLink"`, `id="copyLink"`, `id="copyCmd"`, `id="pairModal"`, `class="modal-mask hidden"`, `id="devModal"`, `id="advToggle"`, `id="hist"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("chat.html missing %s", want)
 		}
@@ -75,9 +76,36 @@ func TestChatUILayoutRequirements(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(jb)
-	for _, want := range []string{"pending_pairings", "revoked-group", "revoked-toggle", "openPairModal", "closePairModal"} {
+	for _, want := range []string{"pending_pairings", "revoked-group", "revoked-toggle", "openPairModal", "closePairModal", "localStorage", "X-Task-Id", "tool_calls"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("chat.js missing %s", want)
 		}
+	}
+}
+
+// Model text must never be parsed as HTML: chat.js may use innerHTML only for
+// its constant icon markup, never with message content.
+func TestChatJSNoHTMLInjection(t *testing.T) {
+	jb, _ := files.ReadFile("chat.js")
+	for _, line := range strings.Split(string(jb), "\n") {
+		if strings.Contains(line, "innerHTML") && !strings.Contains(line, "<svg") {
+			t.Fatalf("unexpected innerHTML use: %s", strings.TrimSpace(line))
+		}
+		if strings.Contains(line, "insertAdjacentHTML") || strings.Contains(line, "document.write") {
+			t.Fatalf("unexpected HTML sink: %s", strings.TrimSpace(line))
+		}
+	}
+}
+
+// TestChatJSUnit runs the Node unit tests of chat.js's pure helpers
+// (Markdown, highlighting, tool_calls merging, step timeline, history).
+func TestChatJSUnit(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	out, err := exec.Command(node, "--test", "test/").CombinedOutput()
+	if err != nil {
+		t.Fatalf("node --test failed: %v\n%s", err, out)
 	}
 }
