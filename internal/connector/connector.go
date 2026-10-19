@@ -52,7 +52,7 @@ type Config struct {
 	Audit *audit.Log
 }
 
-// AdapterConfig and AdapterHealth retain the existing management API schema.
+// AdapterConfig and AdapterHealth are the backend types under the management API names.
 type AdapterConfig = backend.Config
 type AdapterHealth = backend.Health
 
@@ -178,11 +178,6 @@ func validateAdapterOpt(a *AdapterConfig, requireRuntime bool) error {
 	}
 	if len(a.Name) > MaxSchemeNameBytes || len(a.Provider) > 64 || a.ContextWindow < 0 || a.ContextWindow > 2_000_000 || a.MaxOutputTokens < 0 || a.MaxOutputTokens > 1_000_000 || a.Concurrency < 0 || a.Concurrency > 16 {
 		return errors.New("invalid profile settings")
-	}
-	switch a.ReasoningEffort {
-	case "", "default", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
-	default:
-		return errors.New("invalid reasoning effort")
 	}
 	for _, c := range a.Capabilities {
 		if c != lmbp.ModelCapTools && c != lmbp.ModelCapVision && c != lmbp.ModelCapAudio {

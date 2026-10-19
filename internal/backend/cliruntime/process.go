@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
+	"sync"
 )
 
 // Options only contains a structured argv, never a shell command string.
@@ -21,47 +20,36 @@ type Options struct {
 	Args, Env       []string
 }
 
-func command(ctx context.Context, o Options) *exec.Cmd {
-	spec := Launch(runtime.GOOS, os.Getenv("ComSpec"), o.Executable, o.Args)
-	cmd := exec.CommandContext(ctx, spec.Path)
-	cmd.Args = spec.Args
-	cmd.Dir = o.Dir
-	cmd.Env = o.Env
-	cmd.Stderr = io.Discard // CLI diagnostics can include credentials or prompt content.
-	SetProcessGroup(cmd)
-	SetCmdLine(cmd, spec.CmdLine)
-	cmd.WaitDelay = 3 * time.Second
-	cmd.Cancel = func() error { KillProcessGroup(cmd); return nil }
-	return cmd
-}
-
 // Lines drains stdout with bounded framing. The callback may write a prompt
 // after a handshake; returning an error terminates and reaps the whole process.
 func Lines(ctx context.Context, o Options, consume func([]byte, io.WriteCloser) error) error {
 	return Exchange(ctx, o, nil, consume)
 }
 
+// MaxLine bounds one protocol line from a CLI.
+const MaxLine = 1 << 20
+
 // Exchange sends an initial protocol request before consuming stdout. It retains
-// Lines' cancellation, bounded framing, and process-group cleanup guarantees.
+// Lines' cancellation, bounded framing, and process-tree cleanup guarantees.
 func Exchange(ctx context.Context, o Options, initial []byte, consume func([]byte, io.WriteCloser) error) error {
-	cmd := command(ctx, o)
-	in, err := cmd.StdinPipe()
+	p := Command(ctx, o)
+	in, err := p.Cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
-	out, err := cmd.StdoutPipe()
+	out, err := p.Cmd.StdoutPipe()
 	if err != nil {
 		in.Close()
 		return err
 	}
-	if err = cmd.Start(); err != nil {
+	if err = p.Start(); err != nil {
 		in.Close()
 		out.Close()
 		return err
 	}
 	defer in.Close()
 	scan := bufio.NewScanner(out)
-	scan.Buffer(make([]byte, 64<<10), 1<<20)
+	scan.Buffer(make([]byte, 64<<10), MaxLine)
 	var readErr error
 	if len(initial) > 0 {
 		_, readErr = in.Write(initial)
@@ -75,10 +63,9 @@ func Exchange(ctx context.Context, o Options, initial []byte, consume func([]byt
 		readErr = scan.Err()
 	}
 	if readErr != nil {
-		KillProcessGroup(cmd)
+		p.Kill()
 	}
-	waitErr := cmd.Wait()
-	KillProcessGroup(cmd) // also clean up descendants retaining no stdio handles
+	waitErr := p.Finish()
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -104,14 +91,16 @@ func Output(ctx context.Context, o Options) ([]byte, error) {
 }
 
 func output(ctx context.Context, o Options, includeStderr bool) ([]byte, error) {
-	cmd := command(ctx, o)
+	p := Command(ctx, o)
 	b := &boundedBuffer{limit: 1 << 20}
-	cmd.Stdout = b
+	p.Cmd.Stdout = b
 	if includeStderr {
-		cmd.Stderr = b
+		p.Cmd.Stderr = b
 	}
-	err := cmd.Run()
-	KillProcessGroup(cmd)
+	err := p.Start()
+	if err == nil {
+		err = p.Wait()
+	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -150,18 +139,45 @@ func Workspace(prefix string) (string, error) {
 	}
 	return dir, nil
 }
+
+var flagCache sync.Map // executable path + size + mtime + base args -> help text
+
+// CheckFlags verifies that the CLI's --help lists every flag. The help text is
+// cached per executable path, size and modification time, so an upgraded CLI
+// is checked again.
 func CheckFlags(ctx context.Context, o Options, flags ...string) error {
+	key := ""
+	if info, err := os.Stat(o.Executable); err == nil {
+		key = fmt.Sprintf("%s\x00%d\x00%d\x00%s", o.Executable, info.Size(), info.ModTime().UnixNano(), strings.Join(o.Args, "\x00"))
+	}
+	var help string
+	if cached, ok := flagCache.Load(key); ok && key != "" {
+		help = cached.(string)
+	} else {
+		text, err := helpText(ctx, o)
+		if err != nil {
+			return err
+		}
+		help = text
+		if key != "" {
+			flagCache.Store(key, help)
+		}
+	}
+	for _, flag := range flags {
+		if !strings.Contains(help, flag) {
+			return fmt.Errorf("CLI version does not support required %s option", flag)
+		}
+	}
+	return nil
+}
+
+func helpText(ctx context.Context, o Options) (string, error) {
 	o.Args = append(append([]string(nil), o.Args...), "--help")
 	// Go-based CLIs commonly print --help to stderr. Only capture it for
 	// capability discovery, before a prompt or credential is supplied.
 	data, err := output(ctx, o, true)
 	if err != nil {
-		return fmt.Errorf("CLI capability check failed: %w", err)
+		return "", fmt.Errorf("CLI capability check failed: %w", err)
 	}
-	for _, flag := range flags {
-		if !strings.Contains(string(data), flag) {
-			return fmt.Errorf("CLI version does not support required %s option", flag)
-		}
-	}
-	return nil
+	return string(data), nil
 }

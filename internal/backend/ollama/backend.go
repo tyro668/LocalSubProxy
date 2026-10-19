@@ -16,8 +16,8 @@ type Adapter struct {
 
 func Definition() backend.Definition {
 	return backend.Definition{
-		Type: "ollama_http", Name: "ollama", DefaultCapabilities: []string{"tools"}, Parameters: lmbp.ParamCaps,
-		DefaultConcurrency: 4, InlineImagesOnly: true, Audio: false, Validate: httpapi.Validate,
+		Type: "ollama_http", Name: "Ollama", Label: "Ollama 协议（本地模型）", Short: "ollama", DefaultBaseURL: "http://127.0.0.1:11434", DefaultCapabilities: []string{"tools"}, Parameters: lmbp.ParamCaps,
+		DefaultConcurrency: 4, InlineImagesOnly: true, Audio: false, Validate: httpapi.ValidateLocal,
 		New: func(a backend.Config, d backend.Dependencies) backend.Backend {
 			n := a.Concurrency
 			if n <= 0 {

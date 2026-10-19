@@ -130,12 +130,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
 
   List<EffortOption> get effortOptions => [
     const EffortOption(''),
-    if (!isCLI) ...const [
-      EffortOption('off'),
-      EffortOption('low'),
-      EffortOption('medium'),
-      EffortOption('high'),
-    ] else if (currentModelCapabilities?.known == true)
+    if (!isCLI)
+      for (final e in backend.efforts) EffortOption(e)
+    else if (currentModelCapabilities?.known == true)
       ...currentModelCapabilities!.efforts,
   ];
 
@@ -294,7 +291,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     maxTokens.text = (a['max_output_tokens'] as int? ?? 0) == 0
         ? ''
         : '${a['max_output_tokens']}';
-    reasoning = normalizeEffort(provider, a['reasoning_effort'] as String?);
+    reasoning = normalizeEffort(a['reasoning_effort'] as String?);
     reasoningModel = model.text;
     modelCatalog = [];
     catalogSource = null;
@@ -893,9 +890,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       return '最大输出 Token 必须是正整数。';
     if (effortIssue != null) return effortIssue;
     if (!isCLI && baseURL.text.trim().isEmpty) return '请输入 API 根地址。';
-    if ((type == 'openai_compatible' || type == 'anthropic_compatible') &&
-        apiKey.text.trim().isEmpty &&
-        !hasReusableKey)
+    if (backend.needsApiKey && apiKey.text.trim().isEmpty && !hasReusableKey)
       return '请输入 API 密钥。';
     return null;
   }
@@ -985,14 +980,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   }
 
   String _providerLabel(Map<String, dynamic> adapter) =>
-      switch (adapter['type']) {
-        'codex_app_server' => 'OpenAI Codex（订阅）',
-        'grok_build' => 'Grok Build（CLI）',
-        'antigravity_cli' => 'Antigravity CLI',
-        'anthropic_compatible' => 'Anthropic 兼容协议',
-        'ollama_http' => 'Ollama 协议（本地模型）',
-        _ => 'OpenAI 兼容协议',
-      };
+      backendForType(adapter['type'] as String?).label;
 
   AppTokens get t => AppTokens.of(context);
 
@@ -1771,10 +1759,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                       ),
                     ],
                   ),
-                  if (provider != 'anthropic' && provider != 'ollama')
+                  if (isCLI || backend.efforts.isNotEmpty)
                     _field('思考强度', _reasoningSelect()),
-                  if (type == 'openai_compatible' ||
-                      type == 'anthropic_compatible')
+                  if (backend.needsApiKey)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16),
                       child: Row(
@@ -1900,7 +1887,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               )
             else ...[
               ('API 地址', val('${scheme['base_url'] ?? ''}')),
-              if (scheme['type'] != 'ollama_http')
+              if (profile.needsApiKey)
                 (
                   'API 密钥',
                   scheme['has_api_key'] == true
@@ -1909,16 +1896,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 ),
             ],
             ('模型', models.isEmpty ? auto('未设置') : val(models.join('、'))),
-            if (scheme['type'] != 'anthropic_compatible' &&
-                scheme['type'] != 'ollama_http')
+            if (cli || profile.efforts.isNotEmpty)
               (
                 '思考强度',
                 val(
                   _reasoningLabel(
-                    normalizeEffort(
-                      backendForType(scheme['type'] as String?).provider,
-                      scheme['reasoning_effort'] as String?,
-                    ),
+                    normalizeEffort(scheme['reasoning_effort'] as String?),
                   ),
                 ),
               ),
@@ -1968,7 +1951,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               key: ValueKey('unsaved-badge'),
               tone: Tone.warning,
             ),
-          if (!editorOpen && highlighted != null)
+          if (!editorOpen &&
+              highlighted != null &&
+              backendForType(highlighted!['type'] as String?).known)
             AppButton(
               label: '编辑',
               icon: LucideIcons.pencil,
@@ -2046,7 +2031,7 @@ SchemeHealth schemeHealth(Map<String, dynamic> a) {
   return switch (a['health']) {
     'ready' => SchemeHealth(
       Tone.success,
-      a['type'] == 'codex_app_server' ? '可用 · 已登录' : '可用',
+      backendForType(a['type'] as String?).isCLI ? '可用 · 已登录' : '可用',
     ),
     'unavailable' => const SchemeHealth(
       Tone.danger,

@@ -16,14 +16,17 @@ type Adapter struct {
 
 func Definition() backend.Definition {
 	return backend.Definition{
-		Type: "anthropic_compatible", Name: "anthropic", DefaultCapabilities: []string{"tools", "vision"}, Parameters: lmbp.ParamCaps,
-		DefaultConcurrency: 4, Audio: false, Validate: httpapi.Validate,
+		Type: "anthropic_compatible", Name: "Anthropic 兼容", Label: "Anthropic 兼容协议", Short: "anthropic", Cloud: true, NeedsAPIKey: true, DefaultCapabilities: []string{"tools", "vision"}, Parameters: lmbp.ParamCaps,
+		DefaultConcurrency: 4, Audio: false, Validate: httpapi.ValidateCloud,
 		New: func(a backend.Config, d backend.Dependencies) backend.Backend {
 			n := a.Concurrency
 			if n <= 0 {
 				n = 4
 			}
-			return &Adapter{Client: httpapi.Client{Config: a, ProbeClient: d.ProbeClient, Slots: n}, modelClient: d.ModelClient}
+			return &Adapter{Client: httpapi.Client{Config: a, ProbeClient: d.ProbeClient, Slots: n, Cloud: true, Authorize: func(r *http.Request, key string) {
+				r.Header.Set("x-api-key", key)
+				r.Header.Set("anthropic-version", "2023-06-01")
+			}}, modelClient: d.ModelClient}
 		},
 	}
 }

@@ -1,0 +1,161 @@
+[
+  {
+    "type": "codex_app_server",
+    "name": "Codex",
+    "label": "OpenAI Codex（订阅）",
+    "short": "codex",
+    "aliases": [],
+    "executable": "codex",
+    "login_command": "codex login",
+    "login_status": true,
+    "cloud": true,
+    "needs_api_key": false,
+    "capabilities": [],
+    "parameters": [],
+    "default_concurrency": 1,
+    "max_concurrency": 1,
+    "efforts": [
+      "default",
+      "off",
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ]
+  },
+  {
+    "type": "grok_build",
+    "name": "Grok Build",
+    "label": "Grok Build（CLI）",
+    "short": "grok",
+    "aliases": [],
+    "executable": "grok",
+    "login_command": "grok login",
+    "login_status": true,
+    "cloud": true,
+    "needs_api_key": false,
+    "capabilities": [],
+    "parameters": [],
+    "default_concurrency": 1,
+    "max_concurrency": 1,
+    "efforts": [
+      "default",
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  {
+    "type": "antigravity_cli",
+    "name": "Antigravity",
+    "label": "Antigravity CLI",
+    "short": "antigravity",
+    "aliases": [
+      "agy"
+    ],
+    "executable": "agy",
+    "login_command": "agy",
+    "login_status": true,
+    "cloud": true,
+    "needs_api_key": false,
+    "capabilities": [],
+    "parameters": [],
+    "default_concurrency": 1,
+    "max_concurrency": 1,
+    "efforts": [
+      "default",
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ]
+  },
+  {
+    "type": "openai_compatible",
+    "name": "OpenAI 兼容",
+    "label": "OpenAI 兼容协议",
+    "short": "openai",
+    "aliases": [],
+    "login_status": false,
+    "cloud": true,
+    "needs_api_key": true,
+    "capabilities": [
+      "tools",
+      "vision"
+    ],
+    "parameters": [
+      "temperature",
+      "top_p",
+      "stop",
+      "max_tokens"
+    ],
+    "default_concurrency": 4,
+    "efforts": [
+      "default",
+      "off",
+      "low",
+      "medium",
+      "high"
+    ]
+  },
+  {
+    "type": "anthropic_compatible",
+    "name": "Anthropic 兼容",
+    "label": "Anthropic 兼容协议",
+    "short": "anthropic",
+    "aliases": [],
+    "login_status": false,
+    "cloud": true,
+    "needs_api_key": true,
+    "capabilities": [
+      "tools",
+      "vision"
+    ],
+    "parameters": [
+      "temperature",
+      "top_p",
+      "stop",
+      "max_tokens"
+    ],
+    "default_concurrency": 4,
+    "efforts": [
+      "default"
+    ]
+  },
+  {
+    "type": "ollama_http",
+    "name": "Ollama",
+    "label": "Ollama 协议（本地模型）",
+    "short": "ollama",
+    "aliases": [],
+    "login_status": false,
+    "cloud": false,
+    "needs_api_key": false,
+    "default_base_url": "http://127.0.0.1:11434",
+    "capabilities": [
+      "tools"
+    ],
+    "parameters": [
+      "temperature",
+      "top_p",
+      "stop",
+      "max_tokens"
+    ],
+    "default_concurrency": 4,
+    "efforts": [
+      "default"
+    ]
+  }
+]

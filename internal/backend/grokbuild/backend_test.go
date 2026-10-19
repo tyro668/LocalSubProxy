@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/clitest"
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func TestMain(m *testing.M) {
+	clitest.RunGrandchild()
 	if len(os.Args) > 1 && os.Args[1] == "--no-auto-update" {
 		fakeCLI()
 		os.Exit(0)
@@ -42,6 +44,9 @@ func fakeCLI() {
 		return ""
 	}
 	if has("stdio") {
+		if value("--sandbox") != "read-only" {
+			os.Exit(47)
+		}
 		scanner := bufio.NewScanner(os.Stdin)
 		out := json.NewEncoder(os.Stdout)
 		for scanner.Scan() {
@@ -76,6 +81,9 @@ func fakeCLI() {
 		os.Exit(41)
 	}
 	prompt, err := os.ReadFile(value("--prompt-file"))
+	if d, ok := clitest.Find(string(prompt)); ok {
+		os.Exit(clitest.Play(d, os.Stdout, wire{}))
+	}
 	if err != nil || !strings.Contains(string(prompt), "[user]\nhello") {
 		os.Exit(42)
 	}
@@ -89,13 +97,23 @@ func fakeCLI() {
 			os.Exit(46)
 		}
 	}
-	dir, _ := os.Getwd()
-	home := os.Getenv("GROK_HOME")
-	home, _ = filepath.EvalSymlinks(home)
-	if !strings.HasPrefix(home, dir+string(os.PathSeparator)) || os.Getenv("GROK_AUTH_PATH") == "" || os.Getenv("GROK_CLAUDE_HOOKS_ENABLED") != "0" {
+	if !insideWorkdir(os.Getenv("GROK_HOME")) || os.Getenv("GROK_AUTH_PATH") == "" || os.Getenv("GROK_CLAUDE_HOOKS_ENABLED") != "0" {
 		os.Exit(43)
 	}
-	switch value("--model") {
+	model := value("--model")
+	if name, ok := strings.CutPrefix(model, "sample-"); ok {
+		data, err := samples.ReadFile("testdata/" + name + ".jsonl")
+		if err != nil {
+			os.Exit(48)
+		}
+		os.Stdout.Write(data)
+		return
+	}
+	switch model {
+	case "rate-limited":
+		fmt.Println(`{"type":"error","message":"Rate limit exceeded. Please retry in 30 seconds."}`)
+	case "quota":
+		fmt.Println(`{"type":"error","message":"You have reached your usage limit for this billing period."}`)
 	case "hang":
 		time.Sleep(time.Hour)
 	case "truncated":
@@ -161,6 +179,9 @@ func TestStreamRejectsActionsAndInvalidTerminal(t *testing.T) {
 		}
 	}
 	s := newStream(&backend.Emitter{Emit: func(lmbp.TaskDelta) error { return nil }})
+	if err := s.consume([]byte(`{"type":"available_commands","tools":[],"commands":[]}`)); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.consume([]byte(`{"type":"end","stopReason":"end_turn"}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +220,7 @@ func TestReasoningCatalogAndWireEffort(t *testing.T) {
 		t.Run(effort, func(t *testing.T) {
 			a := fixture(t).(*Adapter)
 			a.config.ReasoningEffort = effort
-			want := backend.NormalizeEffort("grok_build", effort)
+			want := Definition().Effort(effort)
 			if want == "" {
 				want = "default"
 			}
@@ -222,4 +243,17 @@ func TestCatalogDoesNotInventEfforts(t *testing.T) {
 	if err != nil || catalog[0].ReasoningKnown || !catalog[1].ReasoningKnown || len(catalog[1].ReasoningEfforts) != 0 || catalog[2].ReasoningEfforts[0].Value != "none" {
 		t.Fatalf("%+v %v", catalog, err)
 	}
+}
+
+// insideWorkdir compares resolved paths case-insensitively, because Windows
+// may report the same temp directory in short (RUNNER~1) and long form.
+func insideWorkdir(path string) bool {
+	dir, err := os.Getwd()
+	if err != nil || path == "" {
+		return false
+	}
+	dir, _ = filepath.EvalSymlinks(dir)
+	path, _ = filepath.EvalSymlinks(path)
+	prefix := dir + string(os.PathSeparator)
+	return len(path) > len(prefix) && strings.EqualFold(path[:len(prefix)], prefix)
 }

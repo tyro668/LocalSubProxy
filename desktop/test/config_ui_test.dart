@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:avora_ui/backend_catalog.dart';
 import 'package:avora_ui/native_api.dart';
 import 'package:avora_ui/profile_workspace.dart';
 import 'package:avora_ui/ui_kit.dart';
@@ -810,7 +811,7 @@ void main() {
     expect(state.body()['name'], '旧方案');
   });
 
-  testWidgets('旧 Codex 关闭配置必须显式修正，不显示不支持的关闭选项', (tester) async {
+  testWidgets('Codex 已存的 none 不在目录中时必须显式修正，不显示不支持的选项', (tester) async {
     NativeApi.debugTransport = (_) =>
         modelCatalog(['m'], efforts: ['low', 'high']);
     addTearDown(() => NativeApi.debugTransport = null);
@@ -822,7 +823,7 @@ void main() {
           'name': '旧方案',
           'type': 'codex_app_server',
           'models': ['m'],
-          'reasoning_effort': 'off',
+          'reasoning_effort': 'none', // the kernel stores off as none
           'enabled': true,
         },
       ],
@@ -895,7 +896,7 @@ void main() {
     expect(state.name.text, '第二个方案');
   });
 
-  testWidgets('目录获取失败保留已配置档位，旧 Grok 关闭显示默认', (tester) async {
+  testWidgets('目录获取失败保留已配置档位', (tester) async {
     NativeApi.debugTransport = (_) => throw StateError('offline');
     addTearDown(() => NativeApi.debugTransport = null);
     await pumpWorkspace(
@@ -917,15 +918,6 @@ void main() {
     await openAdvanced(tester);
     expect(find.byKey(const ValueKey('effort-high')), findsNothing);
     expect(find.textContaining('保留已配置档位'), findsNothing);
-    state.load({
-      'id': 's',
-      'name': '原配置',
-      'type': 'grok_build',
-      'models': ['m'],
-      'reasoning_effort': 'off',
-    });
-    await tester.pumpAndSettle();
-    expect(state.body()['reasoning_effort'], '');
   });
   testWidgets('后台不可用原因与手动测试记录分别显示', (tester) async {
     const model = 'gemini-3.8-flash-high';
@@ -953,5 +945,67 @@ void main() {
     expect(find.text(failure), findsOneWidget);
     expect(find.textContaining('✓ 通过'), findsOneWidget);
     expect(find.text('不可用'), findsWidgets);
+  });
+  testWidgets('未知类型的方案只读显示', (tester) async {
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 'future',
+          'name': '新版方案',
+          'type': 'future_cli',
+          'models': ['m'],
+          'enabled': true,
+        },
+      ],
+    );
+    expect(find.textContaining('未知类型（future_cli）'), findsWidgets);
+    expect(find.text('编辑'), findsNothing);
+  });
+
+  testWidgets('服务列表与表单来自内核的 backends', (tester) async {
+    final saved = backendProfiles;
+    addTearDown(() => backendProfiles = saved);
+    loadBackendProfiles([
+      {
+        'type': 'x_cli',
+        'name': 'X',
+        'label': 'X CLI（测试）',
+        'short': 'x',
+        'executable': 'xcli',
+        'login_command': 'xcli login',
+        'efforts': ['default', 'low'],
+      },
+      {
+        'type': 'y_http',
+        'name': 'Y',
+        'label': 'Y 协议',
+        'short': 'y',
+        'needs_api_key': true,
+        'cloud': true,
+        'efforts': ['default'],
+      },
+    ]);
+    expect(backendForType('x_cli').isCLI, isTrue);
+    expect(backendForType('x_cli').loginCommand, 'xcli login');
+    expect(backendForType('y_http').needsApiKey, isTrue);
+    expect(backendForType('y_http').efforts, isEmpty);
+    expect(backendForType('codex_app_server').known, isFalse);
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 'y',
+          'name': 'Y 方案',
+          'type': 'y_http',
+          'models': ['m'],
+          'enabled': true,
+          'has_api_key': true,
+        },
+      ],
+    );
+    expect(find.text('Y 协议'), findsWidgets);
+    expect(find.text('思考强度'), findsNothing); // no efforts besides default
+    expect(find.text('API 密钥'), findsOneWidget);
   });
 }

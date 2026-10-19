@@ -17,7 +17,7 @@
 ```text
 avora serve [--data-dir DIR] [--quiet]
 avora pair <https://SaaS 地址 | lmbp://pair?...> [--allow 方案/模型,...|*] [--yes] [--max-concurrency N]
-avora scheme add --type ollama|openai|anthropic|codex|grok|antigravity [--id ID] [--name 名称] [--base-url URL]
+avora scheme add --type codex|grok|antigravity|openai|anthropic|ollama [--id ID] [--name 名称] [--base-url URL]
                          [--models m1,m2] [--capabilities tools,vision,audio]
                          [--api-key-env 变量名 | --api-key-stdin] [--codex-bin codex]
                          [--executable CLI路径]
@@ -72,15 +72,9 @@ avora scheme test grok
 avora scheme test agy
 ```
 
-`--executable` 可省略，分别从 PATH 查找 `grok`、`agy`；包含空格的路径按所在 shell 的规则加引号。类型也支持完整名称 `grok_build`、`antigravity_cli`，`agy` 是 `antigravity` 的别名。Codex 继续使用原有 `--codex-bin`。
+`--executable` 可省略，默认从 PATH 查找官方命令；Codex 用 `--codex-bin`。`--type` 可用的名称和每种类型允许的 `--reasoning-effort` 见 `avora scheme add -h`。`default`（或省略）不覆盖模型设置。
 
-`--reasoning-effort default`（或省略此选项）不覆盖模型设置；显式档位只允许当前模型目录支持的值。`none` 是显式关闭，不能代替默认。Antigravity 会将档位映射到目录中的同组模型变体，不支持调整的模型只能使用默认。旧 `off` 在 Grok / Antigravity 中兼容为默认，在 Codex 中按 `none` 校验；不支持的档位在测试或执行时明确报错。
-
-这两种适配器只提供文本推理，每个方案并发为 1，不向远端开放 CLI 的文件、终端、MCP 或代理工具。CLI 必须支持当前适配器需要的 headless 参数及结构化输出，缺少选项会明确报错。当前已在本机验证 Grok Build 1.0.52 和已安装的 Antigravity CLI；不同平台的 CLI 安装与账号可用性仍取决于厂商。
-
-Antigravity 的全局 hooks、MCP、插件、规则或技能配置可能影响独立任务。目前发现这些配置会返回 `POLICY_DENIED` 并指出路径；请用无这些自定义项的系统用户运行，或自行禁用/移走对应配置。Avora 不会自动修改官方 CLI 配置。模型目录探测成功代表当前账号可见该模型，实际配额/服务可用性仍由推理请求确认。
-
-完整边界和扩展方式见 [本地后端架构](backend-architecture.md)。
+执行边界、隔离限制和错误映射见 [本地后端架构](backend-architecture.md#cli-后端)。
 
 ## 作为系统服务运行
 

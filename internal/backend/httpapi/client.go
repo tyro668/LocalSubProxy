@@ -12,16 +12,21 @@ import (
 	"github.com/tyro668/avora/internal/backend"
 )
 
+// Client is the shared model listing and health probe of HTTP backends.
+// Cloud backends list GET /models with Authorize's credentials; local ones
+// list Ollama's /api/tags.
 type Client struct {
 	Config      backend.Config
 	ProbeClient *http.Client
 	Slots       int
+	Cloud       bool
+	Authorize   func(req *http.Request, apiKey string)
 }
 
 func (x *Client) Probe(ctx context.Context) backend.Health {
 	a := x.Config
 	h := backend.Health{AdapterID: a.ID, AdapterType: a.Type, Models: a.Models, Health: "unavailable", AuthState: "ready", InferenceLocation: "local", FreeSlots: x.Slots}
-	cloud := a.Type == "openai_compatible" || a.Type == "anthropic_compatible"
+	cloud := x.Cloud
 	if cloud {
 		h.InferenceLocation, h.AuthState = "provider_cloud", "configured"
 	}
@@ -59,7 +64,7 @@ func (x *Client) Probe(ctx context.Context) backend.Health {
 // Ollama.
 func (x *Client) Models(ctx context.Context) ([]string, error) {
 	a := x.Config
-	cloud := a.Type == "openai_compatible" || a.Type == "anthropic_compatible"
+	cloud := x.Cloud
 	probeURL := strings.TrimRight(a.BaseURL, "/") + "/api/tags"
 	if cloud {
 		probeURL = Endpoint(a, "/models")
@@ -68,11 +73,8 @@ func (x *Client) Models(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if a.Type == "openai_compatible" {
-		req.Header.Set("Authorization", "Bearer "+a.APIKey)
-	} else if a.Type == "anthropic_compatible" {
-		req.Header.Set("x-api-key", a.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
+	if x.Authorize != nil {
+		x.Authorize(req, a.APIKey)
 	}
 	probeClient := *x.ProbeClient
 	probeClient.Timeout = 5 * time.Second

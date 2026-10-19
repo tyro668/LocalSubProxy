@@ -12,7 +12,8 @@ type Adapter struct{ config backend.Config }
 
 func Definition() backend.Definition {
 	return backend.Definition{
-		Type: "codex_app_server", Name: "OpenAI Codex", Executable: "codex", DefaultConcurrency: 1, MaxConcurrency: 1,
+		Type: "codex_app_server", Name: "Codex", Label: "OpenAI Codex（订阅）", Short: "codex", Executable: "codex", LoginCommand: "codex login", Cloud: true,
+		Efforts: []string{"off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}, EffortAliases: map[string]string{"off": "none"}, EffortPassthrough: true, DefaultConcurrency: 1, MaxConcurrency: 1,
 		Validate: func(a *backend.Config, required bool) error {
 			if len(a.Capabilities) > 0 {
 				return errors.New("the Codex adapter is text-only")
@@ -45,5 +46,6 @@ func (a *Adapter) Execute(ctx context.Context, r lmbp.TaskRun, out *backend.Emit
 	return &lmbp.TaskDone{FinishReason: "stop", Usage: usage}, err
 }
 
-// Interrupted is a confirmed upstream cancellation, retained for callers testing it.
-var Interrupted = errCodexInterrupted
+func (a *Adapter) LoginStatus(ctx context.Context) backend.LoginStatus {
+	return backend.LoginFromModels(ctx, Definition(), a.Models)
+}

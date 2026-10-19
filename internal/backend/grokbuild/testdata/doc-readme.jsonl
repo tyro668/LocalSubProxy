@@ -1,0 +1,4 @@
+{"type":"text","data":"Here's"}
+{"type":"text","data":" a summary"}
+{"type":"thought","data":"Analyzing the directory structure..."}
+{"type":"end","stopReason":"EndTurn","sessionId":"abc123","requestId":"xyz789"}

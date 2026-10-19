@@ -31,14 +31,9 @@ class EffortOption {
   final String model;
 }
 
-String normalizeEffort(String provider, String? effort) {
-  if (effort == null || effort == 'default') return '';
-  if (effort == 'off') {
-    if (provider == 'grok' || provider == 'antigravity') return '';
-    if (provider == 'codex') return 'none';
-  }
-  return effort;
-}
+/// The kernel stores efforts normalised; only "default" means unset.
+String normalizeEffort(String? effort) =>
+    effort == null || effort == 'default' ? '' : effort;
 
 String reasoningLabel(String? value) => switch (value) {
   null || '' || 'default' => '默认',

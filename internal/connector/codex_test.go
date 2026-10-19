@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 	// Antigravity model listing can legitimately take longer than the former
 	// five-second background deadline. This CLI double never calls a provider.
 	if len(os.Args) > 1 && os.Args[1] == "--help" {
-		fmt.Println("--agent --disable-slash-commands --input-format")
+		fmt.Println("--agent --disable-slash-commands --sandbox --input-format")
 		os.Exit(0)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "models" {
@@ -175,6 +175,16 @@ func fakeCodex() {
 	}
 }
 
+// runCodex executes one fake-model task through the Codex backend.
+func runCodex(ctx context.Context, emit func(string) error) (*lmbp.Usage, error) {
+	b := codex.Definition().New(backend.Config{Type: "codex_app_server", CodexBin: os.Args[0], Enabled: true}, backend.Dependencies{})
+	done, err := b.Execute(ctx, lmbp.TaskRun{Model: "fake-model", Messages: fakeMessages()}, &backend.Emitter{Emit: func(d lmbp.TaskDelta) error { return emit(d.Text) }})
+	if err != nil {
+		return nil, err
+	}
+	return done.Usage, nil
+}
+
 func fakeMessages() []lmbp.Message {
 	return []lmbp.Message{{Role: "user", Content: lmbp.Text("say hello")}}
 }
@@ -183,7 +193,7 @@ func TestCodexProbeAndStreaming(t *testing.T) {
 	t.Setenv("CODEX_HOME", "normal")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	models, err := CodexModels(ctx, os.Args[0])
+	models, err := codex.CodexModels(ctx, os.Args[0])
 	if err != nil || len(models) != 1 || models[0] != "fake-model" {
 		t.Fatalf("model discovery: %v %v", models, err)
 	}
@@ -192,7 +202,7 @@ func TestCodexProbeAndStreaming(t *testing.T) {
 		t.Fatalf("probe: %#v", h)
 	}
 	var answer string
-	if _, err := codex.Run(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if _, err := runCodex(ctx, func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -205,7 +215,7 @@ func TestCodexFinalAnswerFromTurnSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var answer string
-	if _, err := codex.Run(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if _, err := runCodex(ctx, func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -219,7 +229,7 @@ func TestCodexRejectsUnsupportedExecution(t *testing.T) {
 			t.Setenv("CODEX_HOME", mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err := codex.Run(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+			_, err := runCodex(ctx, func(string) error { return nil })
 			var known backend.Failure
 			if !errors.As(err, &known) {
 				t.Fatalf("expected known failure, got %v", err)
@@ -246,7 +256,7 @@ func TestCodexCancellationSendsInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := codex.Run(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		_, err := runCodex(ctx, func(string) error { return nil })
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -263,7 +273,7 @@ func TestCodexCancellationSendsInterrupt(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, codex.Interrupted) {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancel result %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -280,7 +290,7 @@ func TestCodexCancellationWithoutCompletionIsUncertain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := codex.Run(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		_, err := runCodex(ctx, func(string) error { return nil })
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -334,7 +344,7 @@ func TestCodexTaskThroughExecutor(t *testing.T) {
 func TestCodexReasoningCapabilitiesAndWireValue(t *testing.T) {
 	for _, effort := range []string{"", "default", "low", "medium", "high", "xhigh", "max", "ultra", "none", "off", "minimal"} {
 		t.Run(effort, func(t *testing.T) {
-			want := backend.NormalizeEffort("codex_app_server", effort)
+			want := codex.Definition().Effort(effort)
 			mode := "effort:" + want
 			if effort == "off" {
 				mode = "unsupported-none"

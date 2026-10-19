@@ -503,8 +503,9 @@ func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHe
 			if err != nil {
 				return AdapterHealth{}, err
 			}
+			d, _ := backendRegistry.Lookup(a.Type)
 			for _, model := range a.Models {
-				if _, err = backend.ResolveEffort(models, model, a.ReasoningEffort); err != nil {
+				if err = backend.CheckEffort(d, models, model, a.ReasoningEffort); err != nil {
 					return AdapterHealth{}, err
 				}
 			}

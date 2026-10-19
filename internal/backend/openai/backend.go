@@ -16,14 +16,14 @@ type Adapter struct {
 
 func Definition() backend.Definition {
 	return backend.Definition{
-		Type: "openai_compatible", Name: "openai", DefaultCapabilities: []string{"tools", "vision"}, Parameters: lmbp.ParamCaps,
-		DefaultConcurrency: 4, Audio: true, Validate: httpapi.Validate,
+		Type: "openai_compatible", Name: "OpenAI 兼容", Label: "OpenAI 兼容协议", Short: "openai", Cloud: true, NeedsAPIKey: true, Efforts: backend.HTTPEfforts, DefaultCapabilities: []string{"tools", "vision"}, Parameters: lmbp.ParamCaps,
+		DefaultConcurrency: 4, Audio: true, Validate: httpapi.ValidateCloud,
 		New: func(a backend.Config, d backend.Dependencies) backend.Backend {
 			n := a.Concurrency
 			if n <= 0 {
 				n = 4
 			}
-			return &Adapter{Client: httpapi.Client{Config: a, ProbeClient: d.ProbeClient, Slots: n}, modelClient: d.ModelClient}
+			return &Adapter{Client: httpapi.Client{Config: a, ProbeClient: d.ProbeClient, Slots: n, Cloud: true, Authorize: func(r *http.Request, key string) { r.Header.Set("Authorization", "Bearer "+key) }}, modelClient: d.ModelClient}
 		},
 	}
 }

@@ -1,73 +1,81 @@
 # 本地后端架构
 
-适配层统一放在 `internal/backend/`。`connector` 处理方案持久化、授权、任务准入、并发和审计；后端负责配置校验、模型发现、健康探测、请求映射和执行。新增提供方不需要在 connector 中增加类型分支。
+适配层在 `internal/backend/`。`connector` 负责方案持久化、授权、任务准入、并发和审计；后端负责配置校验、模型发现、健康探测、请求映射和执行。connector、命令行和桌面端都不按类型名分支，类型的一切描述都在注册表里。
 
 ```text
 internal/backend/
-  backend.go       Backend 接口、Definition 注册描述、依赖
-  types.go         配置和健康状态
-  registry.go      显式注册、工厂、能力和并发声明
-  request.go       按已声明能力检查请求
-  emitter.go       输出分片、UTF-8 边界、总量限制
-  errors.go        统一映射到 LMBP 错误
-  cli.go           CLI 纯文本映射及探测记账
-  builtin/         组装所有内置后端（唯一集中注册点）
-  httpapi/         HTTP 后端共用的 URL、探测和数据处理
-  cliruntime/      CLI 解析路径、argv、环境、工作目录、进程生命周期
-  codex/           Codex app-server 及原有登录流程
-  grokbuild/       Grok Build streaming-json
-  antigravity/     Antigravity CLI stream-json
-  openai/          OpenAI 兼容接口
-  anthropic/       Anthropic 兼容接口
-  ollama/          Ollama HTTP
+  backend.go       Backend 接口、Definition（类型描述）、依赖
+  registry.go      注册表：查找、校验、能力、并发、推理强度
+  catalog.go       模型级推理强度（ModelCatalog、CheckEffort）
+  stop.go          CLI 停止原因归一化与错误分类
+  cli.go           CLI 文本映射、健康探测、登录状态
+  request.go / emitter.go / errors.go   请求检查、输出分片、LMBP 错误
+  builtin/         唯一注册点（顺序即展示顺序）
+  httpapi/         HTTP 后端共用的 URL 校验、模型列表、探测
+  cliruntime/      CLI 路径、argv、环境白名单、工作目录、进程树
+  jsonrpc/         Codex app-server 与 Grok 模型目录共用的 JSON-RPC 帧
+  clitest/         所有 CLI 后端共用的一致性测试套件
+  codex/ grokbuild/ antigravity/ openai/ anthropic/ ollama/
 ```
 
-依赖方向：`connector → builtin → 具体后端 → backend`。`backend` 根包不导入实现；具体实现不导入 connector，也不互相调用。公共运行时只处理传输和资源生命周期，不解析厂商事件。
+依赖方向：`connector → builtin → 具体后端 → backend`。根包不导入实现；实现之间不互相调用，也不导入 connector。公共运行时只管传输和进程生命周期，不解析厂商事件。
 
-`Backend` 接口仅包含 `Models`、`Probe`、`Execute`。可选的 `ModelCatalog` 接口返回模型级思考档位、默认值，以及档位对应的模型变体；不提供元数据的 HTTP 后端仍只需实现原接口。`provider_catalog` 是新增的本机查询，原 `provider_models` / `codex_models` 字符串列表 API 保留。登录方式各提供方不同，Codex 现有登录 API 保留；Grok 和 Antigravity 由用户先在官方 CLI 登录。避免把某一家 CLI 的会话、审批、登录协议塞进公共接口。
+## 类型描述
 
-## 兼容性
+`Definition` 给出类型名、展示名、命令行名和别名、默认可执行文件、登录命令、是否上云、是否需要 API Key、默认地址、能力、并发上限和允许的推理强度。
 
-- `connector.AdapterConfig`、`AdapterHealth` 保留为公共类型别名；加密配置格式、方案 ID、发布模型 ID、授权和审计路径保持不变。
-- 原有四种 `type` 值保持不变，Codex 的 `codex_bin` 字段继续读写。新 CLI 使用 `executable`，新增类型为 `grok_build`、`antigravity_cli`。
-- 请求直接使用现有 LMBP 结构，保留 HTTP 后端对工具、图片、音频、采样参数和用量的原有映射；不另建一套重复 DTO。
-- 缺失可执行文件不会导致已保存方案消失；方案仍可编辑、禁用和删除，重新启用时校验运行时。
-- Flutter 的 `backend_catalog.dart` 只维护展示名称、路径默认值和登录提示，运行能力以 Go 注册表为准。
+- 命令行 `avora scheme add --type` 的类型、别名和帮助文本都取自注册表。
+- 原生 `backends` 动作输出这些描述，桌面端据此绘制服务列表和表单；不认识的类型只读显示，不能编辑。
+- 原生 `login_status` 动作对 Codex、Grok、Antigravity 返回 `ready` / `required` / `unknown` 和登录命令。凭据始终由官方 CLI 管理。
+- 推理强度按类型限制：OpenAI 兼容 `off|low|medium|high`；Anthropic、Ollama 只有默认；Codex `off|none|minimal|low|medium|high|xhigh|max|ultra`（`off` 存为 `none`）；Grok `none … max`；Antigravity `none … ultra`。`default` 存为空值，表示不覆盖。旧 Grok / Antigravity 的 `off` 也按原有含义存为空值，不作为新档位展示。订阅模型实际可选档位仍以模型目录为准。
 
-## CLI 执行边界
+## CLI 后端
 
-三个 CLI 后端都只声明纯文本能力和单方案并发 1；不支持 `tools`、图片、音频、`temperature`、`top_p`、`stop`、请求级 `max_tokens`。不支持的请求在启动进程前返回 `CAPABILITY_UNSUPPORTED`。消息合并为带角色标签的文本，不等同于提供方原生角色消息。
+三个 CLI 后端只做纯文本推理，单方案并发 1，不支持工具、图片、音频和采样参数，不支持的请求在启动进程前返回 `CAPABILITY_UNSUPPORTED`。消息合并为带角色标签的文本。每个任务一个进程、一个随后删除的私有空工作区；提示词经私有文件或 stdin 传递，不出现在 argv。环境变量只传白名单。
 
-Grok 和 Antigravity 每个任务启动独立进程、使用临时空仓库，不复用其他请求的会话。提示词通过私有文件或 stdin 传递，argv 不包含用户提示词。取消、超时、输出回调失败都会停止进程；临时目录随调用清理。输出使用有界逐行解析，只有明确的成功终态及成功退出才返回成功。
+进程树：Unix 下 CLI 自成进程组，只在回收前向进程组发信号（避免 PID 复用误杀）；Windows 下挂起启动、加入带 `KILL_ON_JOB_CLOSE` 的 Job Object 再恢复，结束作业即结束整棵树，包括已脱离父进程的孙进程。取消、超时、回调失败、工具调用都会结束整棵树。
 
-- Grok 使用临时 `GROK_HOME`，`GROK_AUTH_PATH` 指向官方 CLI 现有凭据文件；不读取或复制凭据内容。禁用自动更新、记忆、外部配置发现和托管 MCP，设置受限工具列表并显式排除 MCP 工具入口，同时验证流中公布的工具集合为空。
-- Antigravity 使用临时自定义 agent，仅保留内部 `finish` 操作，禁用命令、技能、插件和 MCP。当前 CLI 没有独立全局配置目录选项，因此启动前检查用户全局自定义项；发现 hooks、MCP、插件、规则等会拒绝启动并指出配置路径，不修改用户配置。空配置允许使用。
-- 这些限制依赖官方 CLI 的受限运行语义，不构成操作系统级隔离；CLI 升级后应重新验证。版本能力检查失败、未知协议事件、异常终态或输出冲突都返回错误。
+停止原因统一归一化（`EndTurn`、`end_turn`、`END-TURN` 等价）：`end_turn` → `stop`，`max_tokens` → `length`，`cancelled` → `CANCELLED`，其余为上游错误。CLI 报告的限流、配额、未登录错误分别映射为可重试的 `PROVIDER_RATE_LIMITED`、`QUOTA_EXHAUSTED` 及 `AUTH_REQUIRED`。
+
+### Codex
+
+`codex app-server`，关闭 shell、应用、hooks、多代理、远程插件、网页搜索和 MCP；线程只读、不审批。App Server 的请求一律拒绝。模型目录没有给出 `supportedReasoningEfforts` 时，所选强度原样透传；目录给出时只允许其中的值。
+
+### Grok Build
+
+采用 headless 模式：`grok -p` 等价的 `--prompt-file … --output-format streaming-json`，不走 ACP 会话。理由：headless 是官方面向脚本的稳定接口，一次一进程、无审批往返，便于限制工具。ACP（`grok agent stdio`）只用于读取模型目录，且加 `--sandbox read-only`，不发送提示词。
+
+- 临时 `GROK_HOME`，`GROK_AUTH_PATH` 指向官方凭据文件，不读取或复制凭据。禁用自动更新、hooks、记忆和外部配置发现。
+- 参数：私有 agent、`--tools read_file --disallowed-tools read_file,search_tool,use_tool`（得到空工具集，且排除 MCP 入口）、`--no-plan --no-subagents --disable-web-search --permission-mode dontAsk --sandbox read-only --max-turns 1 --verbatim`。
+- 流必须先出现 `available_commands` 且 `tools` 为空列表，之后的 `text` 与 `end` 才被接受；缺少清单或清单非空都返回 `POLICY_DENIED`。`tool_call`、`tool_call_update`、`plan` 一律中止任务。
+- 用量：`prompt = input_tokens + cache_read_input_tokens + cache_creation_input_tokens`。
+
+### Antigravity
+
+`agy --agent avora-inference --disable-slash-commands --sandbox --input-format stream-json --output-format stream-json`。私有 agent 只保留 `finish`。`init` 必须选中该 agent 且工作目录正确，之前的任何输出都是 `POLICY_DENIED`；写入一条请求后关闭 stdin。临时文件目录（`TMPDIR`，Windows 为 `TEMP`/`TMP`）指向私有工作区。
+
+隔离的限制：
+
+- `HOME` 不能替换。凭据、钥匙串和设置在 `~/.gemini` 下，替换后无法登录。agy 可能在那里保存会话历史，Avora 无法改变。
+- agy 没有独立配置目录选项。启动前检查全局 hooks、MCP、插件、规则、技能等，发现即 `POLICY_DENIED` 并给出路径；不修改用户配置。
+- 工具步骤在执行后才报告。私有 agent 不提供工具，`--sandbox` 再限制终端；若仍出现工具步骤，任务立即中止，但已执行的动作无法撤回。
+
+这些限制依赖官方 CLI 的语义，不是操作系统级隔离；CLI 升级后需重新验证。
 
 ## 添加后端
 
-1. 在 `internal/backend/<name>/` 实现协议转换及 `Definition()`。定义自己的配置校验、能力和并发上限。
-2. 在 `builtin/registry.go` 注册工厂。共性只在确有多个使用方时放入 `httpapi` 或 `cliruntime`。
-3. 补充真实协议格式的进程/HTTP 测试，覆盖流式文本、终态、用量、取消、失败以及输出回调错误；再补配置往返测试。
-4. 在 Flutter 展示目录、命令行类型别名和用户文档中加入入口。不要把厂商事件或认证细节泄漏到 connector。
+1. 在 `internal/backend/<name>/` 实现协议和 `Definition()`，在 `builtin` 注册。
+2. CLI 后端实现 `clitest.Wire` 并运行 `clitest.Run`：流式文本、停止原因、用量、取消/超时及进程树清理、回调失败、终态后数据、截断、未知事件、工具调用中止、环境泄漏、工作区删除。协议无法表达的场景在 `NotApplicable` 中写明原因（记录日志，不用 t.Skip，verify-all 视跳过为失败）。
+3. 有官方样例时放入 `testdata/` 并注明来源；非真实录制的样本要标明。
+4. 运行 `go test ./internal/native -run TestDesktopBackendsFixture` 更新桌面测试夹具（`AVORA_UPDATE_FIXTURES=1`）。
 
 ## 验证
 
 ```sh
-go test ./...
-go test -race ./internal/backend/... ./internal/connector ./internal/native
 go vet ./...
-cd desktop
-flutter analyze --no-pub
-flutter test --no-pub
+go test -short ./...
+go test -short -race ./internal/backend/... ./internal/connector
+cd desktop && flutter analyze && flutter test
 ```
 
-CLI 测试使用测试程序自身模拟子进程，不依赖用户账号、已安装的 CLI 或网络。真实模型验证应单独在已登录的本机执行，并检查模型发现、流式结果、终态以及工具限制。
-
-## 思考强度
-
-- 公共 `ModelInfo` / `EffortOption` 只描述能力，厂商协议解析留在各后端。Codex 读取 `model/list`（含分页）；Grok 读取 ACP `session/new` 的每模型元数据，不发送推理请求或修改用户设置。
-- Antigravity 只在实时目录中有多个同组、标签匹配的档位变体时提供选择。选择档位直接解析为现有变体 ID，不叠加冲突的 `--effort`；单个带档位后缀的模型不推断为可调。
-- 空值或 `default` 表示不覆盖。显式档位在连接测试和执行前校验；能力未知或不支持时返回 `CAPABILITY_UNSUPPORTED`，不静默降级。CLI 上报的档位仍可能被上游服务拒绝，这类错误原样返回。
-- 旧 `off` 保留原有语义：Grok/Antigravity 归一为空值；Codex 归一为 `none`，仅在模型支持时可执行。HTTP 后端保持原映射。
-- Flutter 只根据目录展示档位，`none` 才显示「关闭」。异步结果与方案、服务、可执行路径和查询序号绑定；模型变体变化不改变已经确定的方案名称。
+CLI 测试用测试程序自身充当 CLI，不需要账号、已安装的 CLI 或网络。`grokbuild/testdata`、`antigravity/testdata` 中的样本取自官方文档，并非真实录制；真实验证需在已登录的本机单独进行。

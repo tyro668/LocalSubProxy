@@ -23,7 +23,8 @@ type Adapter struct {
 
 func Definition() backend.Definition {
 	return backend.Definition{
-		Type: "grok_build", Name: "Grok Build", Executable: "grok", DefaultConcurrency: 1, MaxConcurrency: 1,
+		Type: "grok_build", Name: "Grok Build", Label: "Grok Build（CLI）", Short: "grok", Executable: "grok", LoginCommand: "grok login", Cloud: true,
+		Efforts: []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, EffortAliases: map[string]string{"off": ""}, DefaultConcurrency: 1, MaxConcurrency: 1,
 		Validate: func(a *backend.Config, required bool) error {
 			return cliruntime.Validate(a, required, "grok", "Grok Build")
 		},
@@ -131,7 +132,7 @@ func (a *Adapter) Probe(ctx context.Context) backend.Health {
 	return backend.ProbeCLI(ctx, a.config, a.Models)
 }
 func (a *Adapter) Execute(ctx context.Context, r lmbp.TaskRun, out *backend.Emitter) (*lmbp.TaskDone, error) {
-	effort := backend.NormalizeEffort("grok_build", a.config.ReasoningEffort)
+	effort := Definition().Effort(a.config.ReasoningEffort)
 	if effort != "" {
 		catalog, err := a.Catalog(ctx)
 		if err != nil {
@@ -177,19 +178,24 @@ func (a *Adapter) Execute(ctx context.Context, r lmbp.TaskRun, out *backend.Emit
 }
 
 type stream struct {
-	out   *backend.Emitter
-	done  *lmbp.TaskDone
-	usage *lmbp.Usage
+	out      *backend.Emitter
+	done     *lmbp.TaskDone
+	usage    *lmbp.Usage
+	manifest bool // an empty available_commands tool list was seen
 }
 
 func newStream(out *backend.Emitter) *stream { return &stream{out: out} }
+
+// consume handles one headless streaming-json line. Text and the terminal
+// event count only after Grok has announced an empty tool inventory; tool
+// activity of any kind aborts the task.
 func (s *stream) consume(line []byte) error {
 	var e struct {
-		Type    string   `json:"type"`
-		Data    string   `json:"data"`
-		Message string   `json:"message"`
-		Stop    string   `json:"stopReason"`
-		Tools   []string `json:"tools"`
+		Type    string    `json:"type"`
+		Data    string    `json:"data"`
+		Message string    `json:"message"`
+		Stop    string    `json:"stopReason"`
+		Tools   *[]string `json:"tools"`
 		Usage   *struct {
 			Input   int `json:"input_tokens"`
 			Output  int `json:"output_tokens"`
@@ -207,34 +213,40 @@ func (s *stream) consume(line []byte) error {
 		s.usage = &lmbp.Usage{PromptTokens: e.Usage.Input + e.Usage.Cached + e.Usage.Created, CompletionTokens: e.Usage.Output}
 	}
 	switch e.Type {
-	case "text":
-		return s.out.Text(e.Data)
-	case "thought", "usage":
+	case "thought", "usage", "auto_compact_started", "auto_compact_completed", "image_compressed":
 		return nil
 	case "available_commands":
-		if len(e.Tools) > 0 {
-			return backend.Failure("POLICY_DENIED: Grok exposed tools despite the inference-only policy: " + strings.Join(e.Tools, ", "))
+		if e.Tools == nil {
+			return backend.Failure("POLICY_DENIED: Grok sent a tool inventory without a tools list")
 		}
+		if len(*e.Tools) > 0 {
+			return backend.Failure("POLICY_DENIED: Grok exposed tools despite the inference-only policy: " + strings.Join(*e.Tools, ", "))
+		}
+		s.manifest = true
+		return nil
 	case "tool_call", "tool_call_update", "plan":
 		return backend.Failure("POLICY_DENIED: Grok attempted a local action")
 	case "error":
-		return backend.Failure("UPSTREAM_ERROR: " + e.Message)
+		return backend.CLIFailure("Grok", e.Message)
 	case "max_turns_reached":
 		return backend.Failure("PROTOCOL_MISMATCH: Grok reached the agent turn limit")
-	case "end":
-		reason := "stop"
-		switch e.Stop {
-		case "end_turn", "stop":
-		case "max_tokens":
-			reason = "length"
-		case "cancelled":
-			return context.Canceled
-		default:
-			return backend.Failure("UPSTREAM_ERROR: Grok stopped with " + e.Stop)
+	case "text", "end":
+		if !s.manifest {
+			return backend.Failure("POLICY_DENIED: Grok did not confirm an empty tool inventory before answering")
 		}
-		s.done = &lmbp.TaskDone{FinishReason: reason, Usage: s.usage}
-	default:
-		return errors.New("unrecognized Grok stream event: " + e.Type)
+		if e.Type == "text" {
+			return s.out.Text(e.Data)
+		}
+		done, err := backend.Finish("Grok", e.Stop, s.usage)
+		if err != nil {
+			return err
+		}
+		s.done = done
+		return nil
 	}
-	return nil
+	return errors.New("unrecognized Grok stream event: " + e.Type)
+}
+
+func (a *Adapter) LoginStatus(ctx context.Context) backend.LoginStatus {
+	return backend.LoginFromModels(ctx, Definition(), a.Models)
 }

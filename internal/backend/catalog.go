@@ -33,22 +33,56 @@ func ModelIDs(models []ModelInfo) []string {
 	return ids
 }
 
-// NormalizeEffort preserves the old wire meaning of off. Grok/Antigravity
-// omitted it; Codex sent none. HTTP providers retain their previous mapping.
-func NormalizeEffort(typ, effort string) string {
+// Effort is the wire value of a stored effort: "" for default, aliases
+// applied.
+func (d Definition) Effort(effort string) string {
 	if effort == "default" {
 		return ""
 	}
-	if effort == "off" {
-		if typ == "grok_build" || typ == "antigravity_cli" {
-			return ""
-		}
-		if typ == "codex_app_server" {
-			return "none"
-		}
-		return "off"
+	if v, ok := d.EffortAliases[effort]; ok {
+		return v
 	}
 	return effort
+}
+
+// AllowsEffort reports whether a scheme of type d may store effort.
+func (d Definition) AllowsEffort(effort string) bool {
+	if effort == "" || effort == "default" {
+		return true
+	}
+	// Accept stored legacy aliases without advertising them as new choices.
+	if _, ok := d.EffortAliases[effort]; ok {
+		return true
+	}
+	for _, e := range d.Efforts {
+		if e == effort {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckEffort refuses an effort the live catalog does not offer for model.
+// A catalog that says nothing about the model's efforts refuses too, unless
+// d passes efforts through.
+func CheckEffort(d Definition, models []ModelInfo, model, effort string) error {
+	effort = d.Effort(effort)
+	if effort == "" {
+		return nil
+	}
+	if d.EffortPassthrough {
+		known := false
+		for _, m := range models {
+			if m.ID == model {
+				known = m.ReasoningKnown
+			}
+		}
+		if !known {
+			return nil
+		}
+	}
+	_, err := ResolveEffort(models, model, effort)
+	return err
 }
 
 // ResolveEffort rejects unsupported overrides before inference. Default leaves

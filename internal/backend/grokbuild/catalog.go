@@ -8,6 +8,7 @@ import (
 
 	"github.com/tyro668/avora/internal/backend"
 	"github.com/tyro668/avora/internal/backend/cliruntime"
+	"github.com/tyro668/avora/internal/backend/jsonrpc"
 )
 
 // Catalog uses ACP's per-model metadata. No prompt or config mutation is sent.
@@ -23,43 +24,40 @@ func (a *Adapter) Catalog(ctx context.Context) ([]backend.ModelInfo, error) {
 		return nil, err
 	}
 	defer cleanup()
-	o.Args = append(o.Args, "agent", "stdio")
-	request := func(id int, method string, params any) []byte {
-		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-		return append(b, '\n')
+	// The read-only sandbox is a second fence: discovery never prompts, but
+	// the ACP agent must not be able to write even if it tried.
+	o.Args = append(o.Args, "--sandbox", "read-only", "agent", "stdio")
+	initial, err := jsonrpc.Request("2.0", 1, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}, "clientInfo": map[string]string{"name": "avora", "version": "0.1.0"}})
+	if err != nil {
+		return nil, err
 	}
-	initial := request(1, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}, "clientInfo": map[string]string{"name": "avora", "version": "0.1.0"}})
 	complete := errors.New("catalog complete")
 	var models []backend.ModelInfo
 	wantID := 1
 	err = cliruntime.Exchange(ctx, o, initial, func(line []byte, in io.WriteCloser) error {
-		var msg struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-			Result json.RawMessage `json:"result"`
-			Error  *struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(line, &msg); err != nil {
+		msg, err := jsonrpc.Parse(line)
+		if err != nil {
 			return err
 		}
-		if msg.Method != "" {
-			if len(msg.ID) > 0 {
-				return backend.Failure("POLICY_DENIED: unexpected Grok request during model discovery")
-			}
+		if msg.IsRequest() {
+			return backend.Failure("POLICY_DENIED: unexpected Grok request during model discovery")
+		}
+		if msg.IsNotification() {
 			return nil
 		}
-		var id int
-		if json.Unmarshal(msg.ID, &id) != nil || id != wantID {
+		if id, ok := msg.IntID(); !ok || id != wantID {
 			return backend.Failure("PROTOCOL_MISMATCH: unexpected Grok catalog response")
 		}
 		if msg.Error != nil {
-			return backend.Failure("Grok model discovery failed: " + msg.Error.Message)
+			return backend.CLIFailure("Grok model discovery", msg.Error.Message)
 		}
-		if id == 1 {
+		if wantID == 1 {
 			wantID = 2
-			_, err := in.Write(request(2, "session/new", map[string]any{"cwd": o.Dir, "mcpServers": []any{}}))
+			next, err := jsonrpc.Request("2.0", 2, "session/new", map[string]any{"cwd": o.Dir, "mcpServers": []any{}})
+			if err != nil {
+				return err
+			}
+			_, err = in.Write(next)
 			return err
 		}
 		models, err = parseCatalog(msg.Result)

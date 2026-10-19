@@ -3,6 +3,7 @@ package cliruntime
 import (
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -63,6 +64,11 @@ func Launch(goos, comspec, bin string, args []string) LaunchSpec {
 
 // windowsEnvKeys are needed by cmd.exe and by CLI runtimes on Windows.
 var windowsEnvKeys = []string{"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "HOMEDRIVE", "HOMEPATH", "PROGRAMDATA"}
+
+// EnvAllowed reports whether the base allowlist passes key on this OS.
+func EnvAllowed(key string) bool {
+	return len(EnvironmentFor(runtime.GOOS, []string{key + "="})) == 1
+}
 
 func EnvironmentFor(goos string, environ []string, extra ...string) []string {
 	allowed := map[string]bool{"HOME": true, "USER": true, "PATH": true, "TMPDIR": true, "LANG": true, "LC_ALL": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "HTTPS_PROXY": true, "HTTP_PROXY": true, "NO_PROXY": true, "https_proxy": true, "http_proxy": true, "no_proxy": true}

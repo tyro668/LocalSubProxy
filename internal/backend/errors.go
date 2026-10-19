@@ -8,7 +8,7 @@ import (
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
-// Failure preserves the existing upstream error messages and classifications.
+// Failure is a classified backend error; its prefix (POLICY_DENIED, QUOTA_EXHAUSTED, ...) picks the LMBP code.
 type Failure string
 
 func (e Failure) Error() string { return string(e) }

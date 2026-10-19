@@ -2,13 +2,16 @@ package backend
 
 import (
 	"fmt"
-	"sort"
+	"strings"
 
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // Registry is immutable after construction and safe for concurrent lookup.
-type Registry struct{ entries map[string]Definition }
+type Registry struct {
+	entries map[string]Definition
+	order   []string
+}
 
 func NewRegistry(defs ...Definition) *Registry {
 	r := &Registry{entries: make(map[string]Definition)}
@@ -19,9 +22,8 @@ func NewRegistry(defs ...Definition) *Registry {
 		if _, ok := r.entries[d.Type]; ok {
 			panic("duplicate backend: " + d.Type)
 		}
-		d.DefaultCapabilities = append([]string(nil), d.DefaultCapabilities...)
-		d.Parameters = append([]string(nil), d.Parameters...)
-		r.entries[d.Type] = d
+		r.entries[d.Type] = d.clone()
+		r.order = append(r.order, d.Type)
 	}
 	return r
 }
@@ -30,29 +32,45 @@ func (r *Registry) Lookup(typ string) (Definition, error) {
 	if !ok {
 		return Definition{}, fmt.Errorf("unsupported adapter type %q", typ)
 	}
-	d.DefaultCapabilities = append([]string(nil), d.DefaultCapabilities...)
-	d.Parameters = append([]string(nil), d.Parameters...)
-	return d, nil
+	return d.clone(), nil
 }
+
+// Definitions are in registration order.
 func (r *Registry) Definitions() []Definition {
-	out := make([]Definition, 0, len(r.entries))
-	for typ := range r.entries {
+	out := make([]Definition, 0, len(r.order))
+	for _, typ := range r.order {
 		d, _ := r.Lookup(typ)
 		out = append(out, d)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
 	return out
 }
 func (r *Registry) Validate(a *Config, requireRuntime bool) error {
-	a.ReasoningEffort = NormalizeEffort(a.Type, a.ReasoningEffort)
 	d, err := r.Lookup(a.Type)
 	if err != nil {
 		return err
 	}
+	if !d.AllowsEffort(a.ReasoningEffort) {
+		return fmt.Errorf("reasoning effort %q is not available for %s (allowed: default, %s)", a.ReasoningEffort, d.Label, strings.Join(d.Efforts, ", "))
+	}
+	a.ReasoningEffort = d.Effort(a.ReasoningEffort)
 	return d.Validate(a, requireRuntime)
 }
+
+// Find resolves a stored type or a CLI name.
+func (r *Registry) Find(name string) (Definition, bool) {
+	for _, d := range r.Definitions() {
+		if d.Type == name {
+			return d, true
+		}
+		for _, n := range d.Names() {
+			if n == name {
+				return d, true
+			}
+		}
+	}
+	return Definition{}, false
+}
 func (r *Registry) Open(a Config, deps Dependencies) (Backend, error) {
-	a.ReasoningEffort = NormalizeEffort(a.Type, a.ReasoningEffort)
 	d, err := r.Lookup(a.Type)
 	if err != nil {
 		return nil, err
@@ -86,4 +104,17 @@ func (r *Registry) Slots(a Config) int {
 		n = d.MaxConcurrency
 	}
 	return n
+}
+
+func (d Definition) clone() Definition {
+	d.DefaultCapabilities = append([]string(nil), d.DefaultCapabilities...)
+	d.Parameters = append([]string(nil), d.Parameters...)
+	d.Aliases = append([]string(nil), d.Aliases...)
+	d.Efforts = append([]string(nil), d.Efforts...)
+	aliases := make(map[string]string, len(d.EffortAliases))
+	for k, v := range d.EffortAliases {
+		aliases[k] = v
+	}
+	d.EffortAliases = aliases
+	return d
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/tyro668/avora/internal/backend"
@@ -31,6 +32,9 @@ plugins: []
 Answer the supplied conversation using text. No local actions are available.
 `
 
+// flags are the agy options Execute relies on; an older CLI is refused.
+var flags = []string{"--agent", "--disable-slash-commands", "--sandbox", "--input-format"}
+
 type Adapter struct {
 	config      backend.Config
 	userHomeDir func() (string, error)
@@ -38,7 +42,8 @@ type Adapter struct {
 
 func Definition() backend.Definition {
 	return backend.Definition{
-		Type: "antigravity_cli", Name: "Antigravity CLI", Executable: "agy", DefaultConcurrency: 1, MaxConcurrency: 1,
+		Type: "antigravity_cli", Name: "Antigravity", Label: "Antigravity CLI", Short: "antigravity", Aliases: []string{"agy"}, Executable: "agy", LoginCommand: "agy", Cloud: true,
+		Efforts: []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}, EffortAliases: map[string]string{"off": ""}, DefaultConcurrency: 1, MaxConcurrency: 1,
 		Validate: func(a *backend.Config, required bool) error {
 			return cliruntime.Validate(a, required, "agy", "Antigravity")
 		},
@@ -76,7 +81,23 @@ func (a *Adapter) prepare() (cliruntime.Options, func(), error) {
 		cleanup()
 		return cliruntime.Options{}, nil, err
 	}
-	return cliruntime.Options{Executable: bin, Dir: dir, Env: cliruntime.Environment()}, cleanup, nil
+	// agy keeps credentials and its keyring under the real HOME, so HOME
+	// stays; scratch files go to the private workspace instead of the shared
+	// temporary directory.
+	tmp := filepath.Join(dir, ".tmp")
+	if err = os.MkdirAll(tmp, 0700); err != nil {
+		cleanup()
+		return cliruntime.Options{}, nil, err
+	}
+	env := cliruntime.Environment()
+	keys := []string{"TMPDIR"}
+	if runtime.GOOS == "windows" {
+		keys = []string{"TEMP", "TMP"}
+	}
+	for _, k := range keys {
+		env = cliruntime.SetEnv(env, k, tmp)
+	}
+	return cliruntime.Options{Executable: bin, Dir: dir, Env: env}, cleanup, nil
 }
 func (a *Adapter) Models(ctx context.Context) ([]string, error) {
 	models, err := a.Catalog(ctx)
@@ -88,7 +109,7 @@ func (a *Adapter) modelOutput(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer close()
-	if err = cliruntime.CheckFlags(ctx, o, "--agent", "--disable-slash-commands", "--input-format"); err != nil {
+	if err = cliruntime.CheckFlags(ctx, o, flags...); err != nil {
 		return "", err
 	}
 	o.Args = []string{"models"}
@@ -117,7 +138,7 @@ func (a *Adapter) Probe(ctx context.Context) backend.Health {
 	return backend.ProbeCLI(ctx, a.config, a.Models)
 }
 func (a *Adapter) Execute(ctx context.Context, r lmbp.TaskRun, out *backend.Emitter) (*lmbp.TaskDone, error) {
-	effort := backend.NormalizeEffort("antigravity_cli", a.config.ReasoningEffort)
+	effort := Definition().Effort(a.config.ReasoningEffort)
 	model := r.Model
 	if effort != "" {
 		catalog, err := a.Catalog(ctx)
@@ -134,10 +155,10 @@ func (a *Adapter) Execute(ctx context.Context, r lmbp.TaskRun, out *backend.Emit
 		return nil, err
 	}
 	defer close()
-	if err = cliruntime.CheckFlags(ctx, o, "--agent", "--disable-slash-commands", "--input-format"); err != nil {
+	if err = cliruntime.CheckFlags(ctx, o, flags...); err != nil {
 		return nil, err
 	}
-	o.Args = []string{"--agent", agentName, "--disable-slash-commands", "--input-format", "stream-json", "--output-format", "stream-json", "--model", model, "--print-timeout", "10m"}
+	o.Args = []string{"--agent", agentName, "--disable-slash-commands", "--sandbox", "--input-format", "stream-json", "--output-format", "stream-json", "--model", model, "--print-timeout", "10m"}
 	prompt, err := json.Marshal(map[string]any{"event": "user", "message": map[string]string{"content": backend.TextInput(r.Messages)}})
 	if err != nil {
 		return nil, err
@@ -207,8 +228,11 @@ func (s *stream) consume(line []byte) error {
 	}
 	switch e.Event {
 	case "init":
-		if s.initialized || e.Session == "" || e.Init.Agent != agentName {
-			return backend.Failure("PROTOCOL_MISMATCH: Antigravity did not select the inference agent")
+		if s.initialized || e.Session == "" {
+			return backend.Failure("PROTOCOL_MISMATCH: unexpected Antigravity init")
+		}
+		if e.Init.Agent != agentName {
+			return backend.Failure("POLICY_DENIED: Antigravity did not select the inference agent")
 		}
 		cwd, err := filepath.EvalSymlinks(e.Init.Cwd)
 		if err != nil {
@@ -226,7 +250,10 @@ func (s *stream) consume(line []byte) error {
 		s.initialized = true
 		s.session = e.Session
 	case "step_update":
-		if !s.initialized || e.Step.Session != s.session {
+		if !s.initialized {
+			return backend.Failure("POLICY_DENIED: Antigravity answered before confirming the inference agent")
+		}
+		if e.Step.Session != s.session {
 			return backend.Failure("PROTOCOL_MISMATCH: unexpected Antigravity session")
 		}
 		switch e.Step.Type {
@@ -244,9 +271,12 @@ func (s *stream) consume(line []byte) error {
 			return backend.Failure("PROTOCOL_MISMATCH: unknown Antigravity step type")
 		}
 	case "result":
+		if !s.initialized {
+			return backend.Failure("POLICY_DENIED: Antigravity answered before confirming the inference agent")
+		}
 		switch e.Result.Status {
 		case "SUCCESS":
-			if !s.initialized || e.Result.Session != s.session {
+			if e.Result.Session != s.session {
 				return backend.Failure("PROTOCOL_MISMATCH: unexpected Antigravity result session")
 			}
 			if s.text.Len() == 0 {
@@ -264,10 +294,14 @@ func (s *stream) consume(line []byte) error {
 		case "CANCELED", "INTERRUPTED":
 			return context.Canceled
 		default:
-			return backend.Failure("UPSTREAM_ERROR: Antigravity " + e.Result.Status + ": " + e.Result.Error)
+			return backend.CLIFailure("Antigravity", e.Result.Status+": "+e.Result.Error)
 		}
 	default:
 		return backend.Failure("PROTOCOL_MISMATCH: unknown Antigravity event")
 	}
 	return nil
+}
+
+func (a *Adapter) LoginStatus(ctx context.Context) backend.LoginStatus {
+	return backend.LoginFromModels(ctx, Definition(), a.Models)
 }

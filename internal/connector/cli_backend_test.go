@@ -60,8 +60,14 @@ func TestCLIConfigurationRoundTrip(t *testing.T) {
 }
 
 func TestReasoningConfigurationRoundTrip(t *testing.T) {
-	for _, typ := range []string{"codex_app_server", "grok_build", "antigravity_cli", "openai_compatible"} {
-		for _, effort := range []string{"", "default", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"} {
+	allowed := map[string][]string{
+		"codex_app_server":  {"off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+		"grok_build":        {"off", "none", "minimal", "low", "medium", "high", "xhigh", "max"},
+		"antigravity_cli":   {"off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+		"openai_compatible": {"off", "low", "medium", "high"},
+	}
+	for typ, efforts := range allowed {
+		for _, effort := range []string{"", "default", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "bogus"} {
 			t.Run(typ+"/"+effort, func(t *testing.T) {
 				cfg := Config{DataKey: strings.Repeat("01", 32), AdapterFile: filepath.Join(t.TempDir(), "adapters.enc")}
 				x, err := New(cfg)
@@ -69,7 +75,18 @@ func TestReasoningConfigurationRoundTrip(t *testing.T) {
 					t.Fatal(err)
 				}
 				a := AdapterConfig{ID: "effort", Name: "effort", Type: typ, CodexBin: "/missing/codex", Executable: "/missing/cli", Models: []string{"m"}, ReasoningEffort: effort, BaseURL: "http://127.0.0.1:1234/v1", APIKey: "k", Enabled: false}
-				if _, err = x.CreateAdapter(a); err != nil {
+				ok := effort == "" || effort == "default"
+				for _, e := range efforts {
+					ok = ok || e == effort
+				}
+				_, err = x.CreateAdapter(a)
+				if !ok {
+					if err == nil || !strings.Contains(err.Error(), "not available") {
+						t.Fatalf("%s accepted for %s: %v", effort, typ, err)
+					}
+					return
+				}
+				if err != nil {
 					t.Fatal(err)
 				}
 				y, err := New(cfg)

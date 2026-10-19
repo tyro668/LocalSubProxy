@@ -29,7 +29,7 @@ Avora 是 macOS / Windows 桌面应用：让你授权的远端服务（SaaS）�
 - 每次请求写入本机审计日志 `audit.db`（不记录对话内容，默认保留 90 天），可在「用量统计」或命令行 `avora usage`、`avora audit` 查看。
 - Codex、Grok Build 和 Antigravity CLI 方案只接受纯文本，不支持 `temperature`、`top_p`、`stop`、`max_tokens`，见规范 §16.4。
 
-Grok Build 请先运行 `grok login`，Antigravity 请先运行 `agy` 完成登录，然后在方案中填写 CLI 路径并点「获取模型」。接入条件和限制见 [CLI 配置说明](docs/headless.md#配置-grok-build-和-antigravity-cli)。
+Grok Build 请先运行 `grok login`，Antigravity 请先运行 `agy` 完成登录，然后在方案中填写 CLI 路径并点「获取模型」。限制见 [本地后端架构](docs/backend-architecture.md#cli-后端)。
 
 ## SaaS 开发者：选一个 SDK
 

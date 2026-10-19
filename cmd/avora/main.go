@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/backend/codex"
 	"github.com/tyro668/avora/internal/connector"
 	"github.com/tyro668/avora/internal/lmbp/client"
 	"github.com/tyro668/avora/internal/lmbp/gateway"
@@ -38,7 +39,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		var models []string
-		models, err = connector.CodexModels(ctx, *bin)
+		models, err = codex.CodexModels(ctx, *bin)
 		if err == nil {
 			for _, model := range models {
 				fmt.Println(model)
@@ -70,7 +71,7 @@ func main() {
 		yes := f.Bool("yes", false, "approve the pairing consent without prompting (automation only)")
 		identity := f.String("identity", filepath.Join(localDir, "lmbp-identity.json"), "device identity file (0600; holds the device private keys)")
 		adapter := f.String("adapter-id", "", "optional initial adapter ID")
-		adapterType := f.String("adapter-type", "ollama_http", "ollama_http or codex_app_server")
+		adapterType := f.String("adapter-type", "ollama_http", "initial adapter type: "+typeNames())
 		ollama := f.String("ollama-url", "http://127.0.0.1:11434", "locally approved Ollama base URL")
 		codexBin := f.String("codex-bin", "codex", "locally installed official Codex CLI executable")
 		models := f.String("models", "", "comma separated allowed model IDs")
@@ -83,7 +84,12 @@ func main() {
 		cfg := connector.Config{DataKey: os.Getenv("AVORA_DATA_KEY"), AdapterFile: *adapterFile, MaxConcurrency: *conc}
 		if *adapter != "" {
 			a := connector.AdapterConfig{ID: *adapter, Type: *adapterType, CodexBin: *codexBin, Models: split(*models), Capabilities: split(*caps), Enabled: true}
-			if a.Type == "ollama_http" {
+			d, err := schemeType(a.Type)
+			if err != nil {
+				log.Fatal(err)
+			}
+			a.Type = d.Type
+			if d.DefaultBaseURL != "" {
 				a.BaseURL = *ollama
 			}
 			cfg.Adapters = []connector.AdapterConfig{a}

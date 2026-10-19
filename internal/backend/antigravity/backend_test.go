@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/clitest"
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
 func TestMain(m *testing.M) {
+	clitest.RunGrandchild()
 	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "models" || os.Args[1] == "--agent") {
 		fakeCLI()
 		os.Exit(0)
@@ -25,7 +27,7 @@ func TestMain(m *testing.M) {
 }
 func fakeCLI() {
 	if os.Args[1] == "--help" {
-		fmt.Fprintln(os.Stderr, "--agent --disable-slash-commands --input-format")
+		fmt.Fprintln(os.Stderr, "--agent --disable-slash-commands --sandbox --input-format")
 		return
 	}
 	if os.Args[1] == "models" {
@@ -33,6 +35,14 @@ func fakeCLI() {
 		return
 	}
 	args := os.Args[1:]
+	has := func(s string) bool {
+		for _, a := range args {
+			if a == s {
+				return true
+			}
+		}
+		return false
+	}
 	value := func(s string) string {
 		for i, a := range args {
 			if a == s && i+1 < len(args) {
@@ -46,7 +56,35 @@ func fakeCLI() {
 	if err != nil || string(data) != agentDefinition {
 		os.Exit(41)
 	}
+	tmp, _ := filepath.EvalSymlinks(os.TempDir())
+	real, _ := filepath.EvalSymlinks(dir)
+	if !has("--sandbox") || !strings.HasPrefix(tmp, real+string(os.PathSeparator)) {
+		os.Exit(47)
+	}
+	model := value("--model")
 	out := json.NewEncoder(os.Stdout)
+	if name, ok := strings.CutPrefix(model, "sample-"); ok {
+		data, err := samples.ReadFile("testdata/" + name + ".jsonl")
+		if err != nil {
+			os.Exit(48)
+		}
+		cwd, _ := json.Marshal(dir)
+		first, rest, _ := strings.Cut(strings.Replace(string(data), `"/home/user/project"`, string(cwd), 1), "\n")
+		fmt.Println(first)
+		if !bufio.NewScanner(os.Stdin).Scan() {
+			os.Exit(42)
+		}
+		fmt.Print(rest)
+		return
+	}
+	switch model {
+	case "early-step":
+		fmt.Println(`{"event":"step_update","step_update":{"conversation_id":"session","step_type":"agent_response","text_delta":"leaked"}}`)
+		return
+	case "wrong-agent":
+		out.Encode(map[string]any{"event": "init", "conversation_id": "session", "init": map[string]any{"agent": "default", "cwd": dir}})
+		return
+	}
 	out.Encode(map[string]any{"event": "init", "conversation_id": "session", "init": map[string]any{"agent": agentName, "cwd": dir, "tools": []string{"run_command", "finish"}}})
 	sc := bufio.NewScanner(os.Stdin)
 	if !sc.Scan() {
@@ -58,13 +96,17 @@ func fakeCLI() {
 			Content string `json:"content"`
 		} `json:"message"`
 	}
-	if json.Unmarshal(sc.Bytes(), &input) != nil || input.Event != "user" || !strings.HasPrefix(input.Message.Content, "[user]\nhello") {
+	if json.Unmarshal(sc.Bytes(), &input) == nil {
+		if d, ok := clitest.Find(input.Message.Content); ok {
+			os.Exit(clitest.Play(d, os.Stdout, &wire{}))
+		}
+	}
+	if input.Event != "user" || !strings.HasPrefix(input.Message.Content, "[user]\nhello") {
 		os.Exit(43)
 	}
 	if sc.Scan() {
 		os.Exit(44)
 	} // EOF is required after exactly one request
-	model := value("--model")
 	if value("--effort") != "" {
 		os.Exit(45)
 	} // pinned variants need no override
@@ -72,6 +114,11 @@ func fakeCLI() {
 		if model != strings.Fields(expected)[0] {
 			os.Exit(46)
 		}
+	}
+	if model == "rate-limited" || model == "quota" {
+		msg := map[string]string{"rate-limited": "429 Too Many Requests: rate limit reached", "quota": "RESOURCE_EXHAUSTED: You have exhausted your quota"}[model]
+		out.Encode(map[string]any{"event": "result", "result": map[string]any{"conversation_id": "session", "status": "ERROR", "error": msg}})
+		return
 	}
 	if model == "hang" {
 		time.Sleep(time.Hour)

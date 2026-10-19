@@ -11,6 +11,7 @@ import (
 	"github.com/tyro668/avora/internal/backend/openai"
 )
 
+// NewRegistry lists the backends in presentation order.
 func NewRegistry() *backend.Registry {
-	return backend.NewRegistry(codex.Definition(), openai.Definition(), anthropic.Definition(), ollama.Definition(), grokbuild.Definition(), antigravity.Definition())
+	return backend.NewRegistry(codex.Definition(), grokbuild.Definition(), antigravity.Definition(), openai.Definition(), anthropic.Definition(), ollama.Definition())
 }

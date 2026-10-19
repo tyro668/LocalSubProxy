@@ -745,7 +745,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 
 - Codex app-server 没有采样、停止序列和输出长度控制，也没有消息角色：连接器把对话合并成一段带角色标签的文本（`[system]`、`[user]`、`[assistant]` 各自成段），Codex 收到的是这一段文本，而不是分角色的消息。一轮正常完成即 `finish_reason: "stop"`（Codex 不会因长度截断）；中断、失败分别映射为 `CANCELLED`、上游错误。
 
-- Grok Build 与 Antigravity CLI 也将消息合并为带角色标签的文本，不向远端开放本地代理工具。Grok 的 `end_turn` 映射为 `stop`、`max_tokens` 映射为 `length`；Antigravity 的 `SUCCESS` 映射为 `stop`。仅在收到明确成功终态且进程成功退出后发送 `task.done`。
+- Grok Build 与 Antigravity CLI 也将消息合并为带角色标签的文本，不向远端开放本地代理工具。停止原因的映射见 [本地后端架构](backend-architecture.md#cli-后端)。仅在收到明确成功终态且进程成功退出后发送 `task.done`。
 
 ### 16.5 忽略与拒绝的请求字段
 本节把 §6.5、§6.7、§16.1–§16.4 分散的规则汇总成一张表，不新增要求。“忽略”指网关接受请求、照常执行，但该字段 MUST NOT 写入 `task.run`；“拒绝”指网关在存储、排队或签名之前返回错误，MUST NOT 下发任务。

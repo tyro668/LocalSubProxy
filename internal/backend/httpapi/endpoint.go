@@ -31,21 +31,21 @@ func SafeURL(raw string) error {
 	return nil
 }
 
-func Validate(a *backend.Config, _ bool) error {
-	switch a.Type {
-	case "ollama_http":
-		if err := SafeURL(a.BaseURL); err != nil {
-			return fmt.Errorf("adapter URL: %w", err)
-		}
-	case "openai_compatible", "anthropic_compatible":
-		if err := SafeProviderURL(a.BaseURL); err != nil {
-			return fmt.Errorf("adapter URL: %w", err)
-		}
-		if a.APIKey == "" || len(a.APIKey) > 4096 {
-			return errors.New("API key required (maximum 4096 characters)")
-		}
-	default:
-		return fmt.Errorf("unsupported adapter type %q", a.Type)
+// ValidateLocal checks a local HTTP backend (loopback or HTTPS URL).
+func ValidateLocal(a *backend.Config, _ bool) error {
+	if err := SafeURL(a.BaseURL); err != nil {
+		return fmt.Errorf("adapter URL: %w", err)
+	}
+	return nil
+}
+
+// ValidateCloud checks a provider backend: its URL and an API key.
+func ValidateCloud(a *backend.Config, _ bool) error {
+	if err := SafeProviderURL(a.BaseURL); err != nil {
+		return fmt.Errorf("adapter URL: %w", err)
+	}
+	if a.APIKey == "" || len(a.APIKey) > 4096 {
+		return errors.New("API key required (maximum 4096 characters)")
 	}
 	return nil
 }

@@ -62,7 +62,7 @@ func BeginCodexLogin(bin string) (*CodexLogin, error) {
 		cancel()
 		return nil, errors.New("invalid Codex login response")
 	}
-	return &CodexLogin{rpc: s, closeFn: closeFn, cancel: cancel, done: make(chan struct{}), probe: s.accountAndModels, LoginID: result.LoginID, AuthURL: result.AuthURL}, nil
+	return &CodexLogin{rpc: s, closeFn: closeFn, cancel: cancel, done: make(chan struct{}), probe: func() ([]string, error) { m, err := s.accountAndCatalog(); return backend.ModelIDs(m), err }, LoginID: result.LoginID, AuthURL: result.AuthURL}, nil
 }
 
 // codexCheckTimeout bounds one login status probe.
