@@ -94,7 +94,7 @@ func (a *Adapter) modelOutput(ctx context.Context) (string, error) {
 	o.Args = []string{"models"}
 	data, err := cliruntime.Output(ctx, o)
 	if err != nil {
-		return "", fmt.Errorf("Antigravity model discovery failed; sign in with agy first: %w", err)
+		return "", fmt.Errorf("Antigravity model discovery failed: %w", err)
 	}
 	return string(data), nil
 }

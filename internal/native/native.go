@@ -1002,9 +1002,7 @@ func unlockedCall(core *connector.Connector, action string, a connector.AdapterC
 		v, err := core.UpdateAdapter(a)
 		return result(v, err)
 	case "test_adapter":
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		health, err := core.TestAdapter(ctx, a)
+		health, err := core.TestAdapter(context.Background(), a)
 		return result(health, err)
 	case "provider_catalog":
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

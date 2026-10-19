@@ -19,6 +19,17 @@ import (
 
 // The test binary doubles as a small App Server. It never calls a model.
 func TestMain(m *testing.M) {
+	// Antigravity model listing can legitimately take longer than the former
+	// five-second background deadline. This CLI double never calls a provider.
+	if len(os.Args) > 1 && os.Args[1] == "--help" {
+		fmt.Println("--agent --disable-slash-commands --input-format")
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "models" {
+		time.Sleep(6 * time.Second)
+		fmt.Println("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println("codex-cli fake")
 		os.Exit(0)

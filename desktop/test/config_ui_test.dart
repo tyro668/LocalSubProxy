@@ -378,7 +378,7 @@ void main() {
       expect(discovery['adapter'], containsPair('api_key', ''));
       await chooseModel(tester, 'qwen3:8b');
       expect(find.widgetWithText(Select<String>, 'qwen3:8b'), findsOneWidget);
-      expect(find.textContaining('列表来自 Ollama /api/tags'), findsOneWidget);
+      expect(find.textContaining('列表来自 Ollama /api/tags'), findsNothing);
 
       await tester.tap(find.text('测试连接'));
       await tester.pumpAndSettle();
@@ -916,7 +916,7 @@ void main() {
     expect(state.body()['reasoning_effort'], 'high');
     await openAdvanced(tester);
     expect(find.byKey(const ValueKey('effort-high')), findsNothing);
-    expect(find.textContaining('保留已配置档位'), findsOneWidget);
+    expect(find.textContaining('保留已配置档位'), findsNothing);
     state.load({
       'id': 's',
       'name': '原配置',
@@ -926,5 +926,32 @@ void main() {
     });
     await tester.pumpAndSettle();
     expect(state.body()['reasoning_effort'], '');
+  });
+  testWidgets('后台不可用原因与手动测试记录分别显示', (tester) async {
+    const model = 'gemini-3.8-flash-high';
+    const failure =
+        'Antigravity model discovery failed: context deadline exceeded';
+    final adapter = <String, dynamic>{
+      'id': 'agy',
+      'name': model,
+      'type': 'antigravity_cli',
+      'models': [model],
+      'enabled': true,
+      'health': 'unavailable',
+      'health_error': failure,
+    };
+    NativeApi.debugTransport = (_) => {
+      'health': 'ready',
+      'models': [model],
+    };
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(tester, adapters: [adapter]);
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    await state.testSaved(adapter);
+    await tester.pumpAndSettle();
+    expect(find.text('不可用原因'), findsOneWidget);
+    expect(find.text(failure), findsOneWidget);
+    expect(find.textContaining('✓ 通过'), findsOneWidget);
+    expect(find.text('不可用'), findsWidgets);
   });
 }

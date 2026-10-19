@@ -487,6 +487,8 @@ func (x *Connector) DeleteAdapter(id string) error {
 
 // TestAdapter checks a draft profile without changing the encrypted model list.
 func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHealth, error) {
+	ctx, cancel := context.WithTimeout(ctx, adapterProbeTimeout)
+	defer cancel()
 	a = x.withSavedKey(a)
 	if err := validateAdapter(&a); err != nil {
 		return AdapterHealth{}, err
@@ -583,9 +585,7 @@ func sameCredentialEndpoint(a, old AdapterConfig) bool {
 }
 
 func (x *Connector) refreshHeartbeat() {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	x.probeAll(ctx)
-	cancel()
+	x.probeAll(context.Background())
 	x.notifyModels()
 }
 

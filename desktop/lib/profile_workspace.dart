@@ -1466,61 +1466,43 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     input.dispose();
   }
 
-  Widget _reasoningSelect() {
-    final info = currentModelCapabilities;
-    final hint =
-        effortIssue ??
-        (isCLI
-            ? (info?.known != true
-                  ? (reasoning.isEmpty
-                        ? '获取模型能力后可选择支持的档位；默认由模型决定。'
-                        : '保留已配置档位（${reasoningLabel(reasoning)}）；获取模型能力后可确认支持情况。')
-                  : info!.efforts.isEmpty
-                  ? '该模型未提供可调整的思考档位，使用模型默认行为。'
-                  : info.hasVariants
-                  ? '选择档位会同步切换模型变体；默认沿用当前变体。'
-                  : '默认由模型决定${info.defaultEffort.isEmpty ? '' : '（${reasoningLabel(info.defaultEffort)}）'}。')
-            : '默认不覆盖服务商设置；其他档位需服务商支持。');
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _reasoningSelect() => Container(
+    height: AppSize.button,
+    padding: const EdgeInsets.all(2),
+    decoration: BoxDecoration(
+      color: t.surface,
+      border: Border.all(color: t.border),
+      borderRadius: BorderRadius.circular(AppRadius.control),
+    ),
+    child: Row(
       children: [
-        Wrap(
-          spacing: 4,
-          runSpacing: 4,
-          children: [
-            for (final option in effortOptions)
-              GestureDetector(
-                key: ValueKey(
-                  'effort-${option.value.isEmpty ? 'default' : option.value}',
+        for (final option in effortOptions)
+          Expanded(
+            child: GestureDetector(
+              key: ValueKey(
+                'effort-${option.value.isEmpty ? 'default' : option.value}',
+              ),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => selectEffort(option.value),
+              child: Container(
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: reasoning == option.value ? t.brand : null,
+                  borderRadius: BorderRadius.circular(AppRadius.badge),
                 ),
-                behavior: HitTestBehavior.opaque,
-                onTap: () => selectEffort(option.value),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: reasoning == option.value ? t.brand : t.surface,
-                    border: Border.all(color: t.border),
-                    borderRadius: BorderRadius.circular(AppRadius.control),
-                  ),
-                  child: Text(
-                    reasoningLabel(option.value),
-                    style: AppText.xs.copyWith(
-                      color: reasoning == option.value ? t.brandFg : t.fg2,
-                      fontWeight: AppText.medium,
-                    ),
+                child: Text(
+                  reasoningLabel(option.value),
+                  style: AppText.xs.copyWith(
+                    color: reasoning == option.value ? t.brandFg : t.fg2,
+                    fontWeight: AppText.medium,
                   ),
                 ),
               ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(hint, style: AppText.xs.copyWith(color: t.fg2)),
+            ),
+          ),
       ],
-    );
-  }
+    ),
+  );
 
   String get _advancedSummary {
     String v(TextEditingController c) =>
@@ -1716,17 +1698,6 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                       ),
                     ],
                   ),
-                  hint: modelChoices.isNotEmpty
-                      ? (isCLI
-                            ? '列表来自本机 ${backend.short} CLI；最后一项可输入自定义模型 ID'
-                            : provider == 'ollama'
-                            ? '列表来自 Ollama /api/tags；请选择已下载的本地模型'
-                            : '列表来自 /v1/models；最后一项可输入自定义模型 ID')
-                      : (isCLI
-                            ? null
-                            : provider == 'ollama'
-                            ? '请先启动 Ollama 并下载模型，再点击“获取模型”或输入完整模型 ID（含标签）'
-                            : '点击“获取模型”可从服务商列表中选择，也可直接输入模型 ID'),
                 ),
                 Container(
                   decoration: BoxDecoration(
@@ -1822,21 +1793,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                           ),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '跳过模型列表探测',
-                                  style: AppText.sm.copyWith(
-                                    color: t.fg,
-                                    fontWeight: AppText.medium,
-                                  ),
-                                ),
-                                Text(
-                                  '服务能正常推理但没有 /models 接口时勾选：不再用模型列表判断是否可用，方案会直接上报给已连接的服务。',
-                                  style: AppText.xs.copyWith(color: t.fg3),
-                                ),
-                              ],
+                            child: Text(
+                              '跳过模型列表探测',
+                              style: AppText.sm.copyWith(
+                                color: t.fg,
+                                fontWeight: AppText.medium,
+                              ),
                             ),
                           ),
                         ],
@@ -1925,6 +1887,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               ),
             ),
             ('状态', StatusBadge(h.detail, tone: h.dot, dot: true)),
+            if (scheme['health'] == 'unavailable' &&
+                (scheme['health_error'] as String?)?.isNotEmpty == true)
+              ('不可用原因', val(scheme['health_error'] as String)),
             if (cli)
               (
                 '${profile.short} CLI 路径',

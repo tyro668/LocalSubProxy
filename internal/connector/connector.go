@@ -620,6 +620,10 @@ func (x *Connector) watchRemote(ctx context.Context, l *link) {
 
 // ---------- probes ----------
 
+// CLI model discovery includes process startup and a provider request. Use the
+// same budget for manual tests, post-save refreshes, and periodic health checks.
+const adapterProbeTimeout = 15 * time.Second
+
 func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHealth {
 	if a.ID == "" {
 		return AdapterHealth{}
@@ -661,6 +665,8 @@ func (x *Connector) withSlots(h AdapterHealth) AdapterHealth {
 }
 
 func (x *Connector) probeAll(ctx context.Context) []AdapterHealth {
+	ctx, cancel := context.WithTimeout(ctx, adapterProbeTimeout)
+	defer cancel()
 	x.mu.Lock()
 	list := make([]AdapterConfig, 0, len(x.adapters))
 	for _, a := range x.adapters {

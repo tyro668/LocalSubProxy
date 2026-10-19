@@ -245,9 +245,7 @@ func (x *Connector) Start(ctx context.Context) {
 			if before != nil {
 				before()
 			}
-			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			x.probeAll(pctx)
-			cancel()
+			x.probeAll(ctx)
 			if now := strings.Join(x.Models(), ","); first || now != last {
 				x.notifyModels() // a no-op re-announce before any session is live
 				first, last = false, now
