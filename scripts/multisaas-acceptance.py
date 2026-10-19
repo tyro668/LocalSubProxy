@@ -132,7 +132,7 @@ def wait_ev(tag, e, t=10):
     while e not in ev(tag) and time.time() < end: time.sleep(0.05)
     assert e in ev(tag), (tag, ev(tag))
 
-data = tempfile.mkdtemp(prefix='lsp-accept-')
+data = tempfile.mkdtemp(prefix='lmbp-accept-')
 k = Kernel(data)
 k.call(action='create_adapter', adapter={'id': 'slow', 'type': 'openai_compatible', 'name': 'Slow', 'base_url': model_url + '/v1', 'api_key': 'k',
     'models': ['slow-1'], 'enabled': True, 'skip_model_probe': True, 'concurrency': 8})

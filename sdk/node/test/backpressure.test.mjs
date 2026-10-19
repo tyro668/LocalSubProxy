@@ -8,16 +8,16 @@ import { pairAndConnect } from '../test-support/simdevice.mjs';
 
 const KEY = 'k'.repeat(40);
 test('slow in-process consumer: device output is bounded by the window', async () => {
-  const lsp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const stats = { sent: 0 };
   const N = 256, SIZE = 32 * 1024; // 8 MiB total, window 1 MiB
-  const { ws } = await pairAndConnect(lsp, base, 'acme', 'u1', { flood: { n: N, size: SIZE, stats } });
+  const { ws } = await pairAndConnect(lmbp, base, 'acme', 'u1', { flood: { n: N, size: SIZE, stats } });
   try {
-    const c = lsp.client('acme', 'u1');
+    const c = lmbp.client('acme', 'u1');
     const st = c.chat.completions.stream({ model: 'm1', messages: [{ role: 'user', content: 'go' }] });
     const first = await st.next(); // read one chunk, then stall
     await new Promise((ok) => setTimeout(ok, 1500));

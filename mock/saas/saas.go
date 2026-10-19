@@ -10,7 +10,6 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/tyro668/avora/internal/compat"
 	"html/template"
 	"io"
 	"net/http"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tyro668/avora/internal/lmbp"
 )
 
 type Config struct {
@@ -48,8 +49,7 @@ func New(cfg Config) *Server {
 
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
-	m.HandleFunc(compat.DiscoveryPath, s.discovery)
-	m.HandleFunc(compat.LegacyDiscoveryPath, s.discovery) // pre-rename devices (one release)
+	m.HandleFunc(lmbp.DiscoveryPath, s.discovery)
 	m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"status":"ok"}`)) })
 	m.HandleFunc("/login", s.login)
 	m.HandleFunc("/logout", s.logout)

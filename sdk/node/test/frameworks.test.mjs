@@ -12,15 +12,15 @@ const chat = (base, body, path = '/v1/chat/completions') => fetch(base + path, {
   headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 test('fastify plugin: protocol routes, WebSocket upgrade and chat next to app routes', async () => {
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
   const app = Fastify();
-  await app.register(lsp.fastifyPlugin);
+  await app.register(lmbp.fastifyPlugin);
   app.get('/app/hello', async () => ({ hi: true }));
   await app.listen({ port: 0, host: '127.0.0.1' });
   const base = `http://127.0.0.1:${app.server.address().port}`;
   try {
     assert.deepEqual(await (await fetch(base + '/app/hello')).json(), { hi: true });
-    const { ws } = await pairAndConnect(lsp, base, T, 'u1');
+    const { ws } = await pairAndConnect(lmbp, base, T, 'u1');
     const r = await (await chat(base, { model: 'm1', messages: [{ role: 'user', content: 'fast' }] })).json();
     assert.equal(r.choices[0].message.content, 'echo: fast');
     const m = await (await chat(base, { model: 'm1', max_tokens: 8, messages: [{ role: 'user', content: 'msg' }] }, '/v1/messages')).json();
@@ -31,18 +31,18 @@ test('fastify plugin: protocol routes, WebSocket upgrade and chat next to app ro
 
 test('express: middleware before and after express.json()', async () => {
   for (const order of ['before', 'after']) {
-    const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
+    const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
     const app = express();
     if (order === 'after') app.use(express.json());
-    app.use(lsp.middleware());
+    app.use(lmbp.middleware());
     if (order === 'before') app.use(express.json());
     app.post('/app/echo', (req, res) => res.json(req.body));
     const srv = http.createServer(app);
-    lsp.attach(srv);
+    lmbp.attach(srv);
     await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
     const base = `http://127.0.0.1:${srv.address().port}`;
     try {
-      const { ws } = await pairAndConnect(lsp, base, T, 'u1');
+      const { ws } = await pairAndConnect(lmbp, base, T, 'u1');
       const r = await (await chat(base, { model: 'm1', messages: [{ role: 'user', content: order }] })).json();
       assert.equal(r.choices[0].message.content, 'echo: ' + order, order);
       assert.deepEqual(await (await fetch(base + '/app/echo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"a":1}' })).json(), { a: 1 });

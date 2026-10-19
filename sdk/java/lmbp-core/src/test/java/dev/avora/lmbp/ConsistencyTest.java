@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
  */
 class ConsistencyTest {
   static final String KEY = "k".repeat(40);
-  LMBPServer lsp;
+  LMBPServer lmbp;
   StandaloneServer srv;
   FakeDevice dev;
   final HttpClient http = HttpClient.newHttpClient();
@@ -35,17 +35,17 @@ class ConsistencyTest {
   @AfterEach void stop() throws Exception {
     if (dev != null) dev.close();
     if (srv != null) srv.close();
-    if (lsp != null) lsp.close();
+    if (lmbp != null) lmbp.close();
   }
 
   void start(Store store, long retentionMs) throws Exception {
     LMBPServer.Builder b = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(store).logger(s -> { });
     if (retentionMs != 0) b.retentionMillis(retentionMs);
-    lsp = b.build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = b.build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     dev = new FakeDevice("http://127.0.0.1:" + srv.port(), "acme");
     String code = dev.authorize();
-    lsp.pairing().approve("acme", "alice", code);
+    lmbp.pairing().approve("acme", "alice", code);
     dev.token();
     dev.connect("tiny");
   }
@@ -69,9 +69,9 @@ class ConsistencyTest {
     assertEquals(1, runs(), "the immediate replay re-attached");
     assertEquals(Json.get(Json.parse(a.body()), "id"), Json.get(Json.parse(b.body()), "id"));
     String taskId = a.headers().firstValue("X-Task-Id").orElse(null);
-    assertEquals(0, lsp.g.purge(System.currentTimeMillis()), "nothing is older than the retention yet");
+    assertEquals(0, lmbp.g.purge(System.currentTimeMillis()), "nothing is older than the retention yet");
     assertNotNull(store.getIdempotency("acme", "alice", "ret-1"));
-    assertEquals(1, lsp.g.purge(System.currentTimeMillis() + 61_000), "the finished task is purged after the retention");
+    assertEquals(1, lmbp.g.purge(System.currentTimeMillis() + 61_000), "the finished task is purged after the retention");
     assertNull(store.getIdempotency("acme", "alice", "ret-1"), "idempotency record survived its task");
     if (taskId != null) assertNull(store.getTask(taskId), "task survived the purge");
     HttpResponse<String> c = call("POST", "/v1/chat/completions", body, "Idempotency-Key", "ret-1");
@@ -119,7 +119,7 @@ class ConsistencyTest {
     for (var e : got.entrySet()) assertEquals("no-store", e.getValue(), e.getKey() + ": " + got);
     dev.close();
     dev.ws = null;
-    FakeDevice.waitFor(() -> lsp.g.online(dev.deviceId) == null, 5000);
+    FakeDevice.waitFor(() -> lmbp.g.online(dev.deviceId) == null, 5000);
     r = call("POST", "/v1/chat/completions", EngineTest.req(dev.deviceId + "/nope"));
     assertEquals(503, r.statusCode(), r.body());
   }

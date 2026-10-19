@@ -461,15 +461,4 @@ void main() {
     await shot(t, '16_data_dir_in_use');
     await unmount(t);
   }, variant: desktop);
-
-  // 改名兼容：旧版 LocalSubProxy 仍占用旧数据目录时，迁移推迟并给出专门提示
-  testWidgets('17 old app still running (rename migration)', (t) async {
-    kernel.startError =
-        'data directory in use: the old LocalSubProxy app (or "localsubproxy serve") is still running; quit it and start Avora again so its connections can be moved over';
-    await pumpApp(t);
-    expect(find.text('旧版 LocalSubProxy 仍在运行'), findsOneWidget);
-    expect(find.textContaining('不需要重新配对'), findsOneWidget);
-    await shot(t, '17_legacy_app_running');
-    await unmount(t);
-  }, variant: desktop);
 }

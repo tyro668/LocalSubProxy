@@ -32,12 +32,12 @@ class DisconnectTest {
   static class App { }
 
   @LocalServerPort int port;
-  @Autowired LMBPServer lsp;
+  @Autowired LMBPServer lmbp;
 
   @Test void nonStreamingDisconnectCancelsTheTask() throws Exception {
     try (FakeDevice dev = new FakeDevice("http://127.0.0.1:" + port, "acme")) {
       String code = dev.authorize();
-      lsp.pairing().approve("acme", "alice", code);
+      lmbp.pairing().approve("acme", "alice", code);
       dev.token();
       dev.connect("tiny");
       dev.mode = FakeDevice.Mode.HANG;
@@ -74,7 +74,7 @@ class DisconnectTest {
   void pipelined(boolean stream) throws Exception {
     try (FakeDevice dev = new FakeDevice("http://127.0.0.1:" + port, "acme")) {
       String code = dev.authorize();
-      lsp.pairing().approve("acme", "alice", code);
+      lmbp.pairing().approve("acme", "alice", code);
       dev.token();
       dev.connect("tiny");
       dev.mode = FakeDevice.Mode.HANG;

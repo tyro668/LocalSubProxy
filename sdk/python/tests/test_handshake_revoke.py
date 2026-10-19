@@ -12,14 +12,14 @@ T = "acme"
 @pytest.mark.parametrize("kind", ["memory", "sqlite"])
 async def test_revoke_during_handshake_cannot_resurrect(serve_app, tmp_path, kind):
     st = MemoryStore() if kind == "memory" else SQLiteStore(str(tmp_path / "g.db"))
-    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: None)
-    async with serve_app(lsp.asgi()) as base:
+    lmbp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: None)
+    async with serve_app(lmbp.asgi()) as base:
         key, a = await start_pairing(base, T)
-        ok = lsp.pairing.approve(T, "u1", a["user_code"])
+        ok = lmbp.pairing.approve(T, "u1", a["user_code"])
         tok = await finish_pairing(base, key, a)
 
         async def revoke():
-            assert lsp.pairing.revoke_device(T, "u1", ok.device_id) is True
+            assert lmbp.pairing.revoke_device(T, "u1", ok.device_id) is True
 
         with pytest.raises(AssertionError) as e:
             await connect(base, key, tok, e2ee=True, before_hello=revoke)
@@ -33,16 +33,16 @@ async def test_e2ee_replay_after_restart_stays_sealed(serve_app, tmp_path):
     from lmbp_server import seal_e2ee_request
     from simdevice import pair_and_connect
     st = SQLiteStore(str(tmp_path / "g.db"))
-    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: None)
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1", e2ee=True)
-        dev = lsp.pairing.list_devices(T, "u1")[0]
+    lmbp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: None)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1", e2ee=True)
+        dev = lmbp.pairing.list_devices(T, "u1")[0]
         sealed = seal_e2ee_request(dev, dev.jkt, {"model": "m1", "messages": [{"role": "user", "content": "secret"}]})
         hs = {"Authorization": "Bearer " + KEY, "X-End-User": "u1", "Idempotency-Key": "e2r-1"}
         async with httpx.AsyncClient(base_url=base, headers=hs, timeout=30) as h:
             r1 = await h.post("/v1/chat/completions", json={"model": "m1", "lmbp_e2ee": sealed.jwe})
             assert r1.status_code == 200 and r1.json().get("lmbp_e2ee"), r1.text
-            lsp.engine.tasks.clear()  # restart: only storage is left
+            lmbp.engine.tasks.clear()  # restart: only storage is left
             r2 = await h.post("/v1/chat/completions", json={"model": "m1", "lmbp_e2ee": sealed.jwe})
         assert r2.status_code == 200
         assert r2.json().get("lmbp_e2ee") == r1.json()["lmbp_e2ee"], r2.text
@@ -58,10 +58,10 @@ async def test_queued_disconnect_records_cancelled(serve_app):
     import httpx
     from simdevice import pair_and_connect
     st = MemoryStore()
-    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: None)
-    async with serve_app(lsp.asgi()) as base:
-        ws, dtask, _ = await pair_and_connect(lsp, base, T, "u1", max_concurrency=1, delay=2.0)
-        model = lsp.pairing.list_devices(T, "u1")[0].device_id + "/m1"
+    lmbp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=st, log=lambda *a: None)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, dtask, _ = await pair_and_connect(lmbp, base, T, "u1", max_concurrency=1, delay=2.0)
+        model = lmbp.pairing.list_devices(T, "u1")[0].device_id + "/m1"
         body = {"model": model, "messages": [{"role": "user", "content": "hi"}]}
         hs = {"Authorization": "Bearer " + KEY, "X-End-User": "u1"}
         async with httpx.AsyncClient(base_url=base, headers=hs, timeout=30) as h:

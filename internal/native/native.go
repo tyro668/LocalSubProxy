@@ -143,8 +143,6 @@ var runtime struct {
 	lastPair string
 	// lock is the data directory lock held while the kernel runs
 	lock *dirLock
-	// migration is set when this process moved the pre-rename data directory
-	migration Migration
 }
 
 func result(data any, err error) string {
@@ -382,9 +380,6 @@ func statusLocked() map[string]any {
 	if w := runtime.core.AdapterStorageWarning(); w != "" {
 		s["adapter_storage_warning"] = w
 	}
-	if runtime.migration.From != "" {
-		s["data_dir_migration"] = runtime.migration
-	}
 	s["cleanup_pending"] = append([]string{}, runtime.local.PendingCleanup...)
 	if len(runtime.local.PendingCleanup) > 0 || len(runtime.leftovers) > 0 {
 		s["warning"] = "some private key files of removed connections could not be deleted yet (retried at every start): " +
@@ -399,8 +394,7 @@ func statusLocked() map[string]any {
 
 // Start is AVORA_Start of the native library: it opens the data directory
 // ({"data_dir": ...}, default os.UserConfigDir()/avora) and starts
-// the kernel. With the default directory, a pre-rename data directory
-// (os.UserConfigDir()/localsubproxy) is migrated first (legacy_dir.go). The reply is the JSON envelope {"ok", "data"|"error"}.
+// the kernel. The reply is the JSON envelope {"ok", "data"|"error"}.
 func Start(raw string) string { return start(raw) }
 
 func start(raw string) string {
@@ -424,11 +418,6 @@ func start(raw string) string {
 	defer runtime.Unlock()
 	if runtime.core != nil {
 		return result(statusLocked(), nil)
-	}
-	if m, err := MigrateDefaultDataDir(dir); err != nil {
-		return result(nil, err)
-	} else if m.From != "" {
-		runtime.migration = m
 	}
 	runtime.pairs, runtime.lastPair = map[string]*pairSession{}, ""
 	lock, err := lockDir(dir)

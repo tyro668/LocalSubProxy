@@ -25,7 +25,7 @@ async def until(cond, what, t=5.0):
 
 async def test_local_cancel_late_frames_acked(serve_app):
     store = MemoryStore()
-    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=store, log=lambda *a: None)
+    lmbp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=store, log=lambda *a: None)
     runs = {}
 
     def manual(run, ws, listeners):
@@ -58,8 +58,8 @@ async def test_local_cancel_late_frames_acked(serve_app):
             await send("task.delta", {"text": "world"})
         asyncio.ensure_future(first())
 
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1", manual=manual)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1", manual=manual)
         try:
             n = 5
             hs = {"Authorization": "Bearer " + KEY, "X-End-User": "u1"}
@@ -75,7 +75,7 @@ async def test_local_cancel_late_frames_acked(serve_app):
                         lambda: "device frames ACKed: " + json.dumps(runs))
             for tid, r in runs.items():
                 assert "unknown_task" not in r["cancels"], f"task {tid} late frames got unknown_task: {r['cancels']}"
-            ds = next(iter(lsp.engine.devs.values()))
+            ds = next(iter(lmbp.engine.devs.values()))
             assert len(ds.reclaimed) == 0, "late-frame records left behind"
             for tid in runs:
                 rec = store.get_task(tid)

@@ -18,6 +18,8 @@ const (
 	// MetadataPath is the gateway metadata document (RFC 8615 well-known URI,
 	// modelled on RFC 8414 authorization server metadata).
 	MetadataPath = "/.well-known/lmbp"
+	// DiscoveryPath is the SaaS discovery document (§6.1).
+	DiscoveryPath = "/.well-known/avora"
 	// TypMetadata is the JWS typ of signed_metadata.
 	TypMetadata = "lmbp-metadata+jwt"
 	// ErrConsentDenied: the local user declined (or never confirmed) pairing

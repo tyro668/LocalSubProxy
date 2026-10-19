@@ -15,9 +15,7 @@ class NativeApi {
   static final NativeApi instance = NativeApi._();
 
   static String libraryPath() {
-    // LSP_NATIVE_LIB: pre-2.1 name, kept for one release.
-    final override = Platform.environment['AVORA_NATIVE_LIB'] ??
-        Platform.environment['LSP_NATIVE_LIB'];
+    final override = Platform.environment['AVORA_NATIVE_LIB'];
     if (override != null && override.isNotEmpty) return override;
     final executableDir = File(Platform.resolvedExecutable).parent.path;
     if (Platform.isWindows) return '$executableDir\\avora.dll';

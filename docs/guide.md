@@ -150,10 +150,6 @@ Avora 让你授权的 SaaS 调用你自己的模型（Codex 订阅、Ollama 本�
 
 ![数据目录被占用](images/guide/14-data-dir-in-use.png)
 
-**旧版 LocalSubProxy 仍在运行。** Avora 原名 LocalSubProxy。新版首次启动时会把旧版的连接和配置迁移过来（旧目录保留为 `localsubproxy.backup-<时间>` 备份），不需要重新配对；但旧版还开着时无法迁移。从菜单栏或托盘退出旧版后点「重试」。迁移完成后，macOS 上请把「应用程序」里的旧版 `LocalSubProxy.app` 移到废纸篓（Windows 安装包会自动删除旧版的安装目录和快捷方式）；不要再打开旧版，它会以未配对的状态重新开始。
-
-![旧版仍在运行](images/guide/17-legacy-app-running.png)
-
 **窗口顶部出现红色提示条。** 例如「有 1 个已撤销连接的本机私钥未能删除，将在下次启动时重试。」通常是文件暂时被占用，应用会自动重试；点「查看详情」看具体文件，点 × 关闭提示。
 
 ![警告提示条](images/guide/15-warning-bar.png)

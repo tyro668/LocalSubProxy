@@ -22,23 +22,23 @@ import org.junit.jupiter.api.Test;
  */
 class DoneBodyTest {
   static final String KEY = "k".repeat(40);
-  LMBPServer lsp;
+  LMBPServer lmbp;
   StandaloneServer srv;
   FakeDevice dev;
 
   @AfterEach void stop() throws Exception {
     if (dev != null) dev.close();
     if (srv != null) srv.close();
-    if (lsp != null) lsp.close();
+    if (lmbp != null) lmbp.close();
   }
 
   @Test void invalidTerminalBodyIsNotAccepted() throws Exception {
     MemoryStore store = new MemoryStore();
-    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(store).logger(s -> { }).build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(store).logger(s -> { }).build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     dev = new FakeDevice("http://127.0.0.1:" + srv.port(), "acme");
     String code = dev.authorize();
-    lsp.pairing().approve("acme", "alice", code);
+    lmbp.pairing().approve("acme", "alice", code);
     dev.token();
     dev.connect("tiny");
     dev.mode = FakeDevice.Mode.BAD;

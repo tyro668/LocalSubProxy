@@ -245,13 +245,6 @@ String cleanError(Object e) {
 /// Plain-language hint for well-known kernel start failures, or null.
 ({String title, String message})? kernelErrorHint(String error) {
   final e = error.toLowerCase();
-  // 改名兼容（保留一个版本）：旧版应用仍占用旧数据目录，迁移被推迟
-  if (e.contains('old localsubproxy app')) {
-    return (
-      title: '旧版 LocalSubProxy 仍在运行',
-      message: '请先在菜单栏或托盘中退出旧版 LocalSubProxy，然后重试。Avora 会自动迁移已有的连接和配置，不需要重新配对。',
-    );
-  }
   if (e.contains('data directory in use')) {
     return (
       title: '数据目录正被另一个 Avora 使用',

@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tyro668/avora/internal/compat"
 	"net/http"
 	"net/url"
 	"os"
@@ -132,28 +131,17 @@ func Discover(ctx context.Context, hc *http.Client, remoteURL string) (Discovery
 	if hc == nil {
 		hc = defaultHTTP()
 	}
-	status := 0
-	for _, path := range compat.DiscoveryPaths {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+path, nil)
-		if err != nil {
-			return d, err
-		}
-		resp, err := hc.Do(req)
-		if err != nil {
-			return d, err
-		}
-		status = resp.StatusCode
-		if status == http.StatusNotFound {
-			_ = resp.Body.Close()
-			continue // pre-rename SaaS: try the legacy path
-		}
-		d = Discovery{}
-		ok := status == 200 && json.NewDecoder(resp.Body).Decode(&d) == nil && d.GatewayURL != "" && d.Tenant != ""
-		_ = resp.Body.Close()
-		if ok {
-			return d, nil
-		}
-		break
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remoteURL, "/")+lmbp.DiscoveryPath, nil)
+	if err != nil {
+		return d, err
 	}
-	return d, fmt.Errorf("remote service does not support lmbp discovery (HTTP %d)", status)
+	resp, err := hc.Do(req)
+	if err != nil {
+		return d, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 && json.NewDecoder(resp.Body).Decode(&d) == nil && d.GatewayURL != "" && d.Tenant != "" {
+		return d, nil
+	}
+	return Discovery{}, fmt.Errorf("remote service does not support lmbp discovery (HTTP %d)", resp.StatusCode)
 }

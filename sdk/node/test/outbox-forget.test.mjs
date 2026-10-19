@@ -20,9 +20,9 @@ const WIN = L.MAX_FRAME_BYTES; // smallest legal windows: one blob chunk at a ti
 const image = () => 'data:image/png;base64,' + crypto.randomBytes(300 * 1024).toString('base64'); // 4 chunks
 
 test('cancel while chunks wait for credit, then resume: no connection credit leaks', async () => {
-  const lsp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
   let token = '';
@@ -38,13 +38,13 @@ test('cancel while chunks wait for credit, then resume: no connection credit lea
   });
   const opts = { manual: () => {}, extraCaps: ['flow', 'resume', 'multimodal'],
     helloPatch: { flow: { task_window: WIN, conn_window: WIN }, model_capabilities: { m1: ['tools', 'vision'] } }, onWelcome: (w) => { token = w.data.resume_token; } };
-  const d = await pairAndConnect(lsp, base, 'acme', 'u1', opts);
+  const d = await pairAndConnect(lmbp, base, 'acme', 'u1', opts);
   wire(d.ws);
-  const ds = [...lsp.engine.devs.values()][0];
+  const ds = [...lmbp.engine.devs.values()][0];
   const msgs = () => [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: image() } }] }];
   try {
     const ac = new AbortController();
-    const c = lsp.client('acme', 'u1');
+    const c = lmbp.client('acme', 'u1');
     const st = c.chat.completions.stream({ model: 'm1', messages: msgs() }, { signal: ac.signal });
     const first = st.next().catch(() => {});
     await until(() => ds.out.waiters.length === 1, 5000, 'a blob.chunk send waiting for credit');
@@ -62,14 +62,14 @@ test('cancel while chunks wait for credit, then resume: no connection credit lea
     answer = true;
     const ws2 = await connect(base, d.pairing, d.tok, ['m1'], { ...opts, helloPatch: { ...opts.helloPatch, resume: { token, tasks: [] } } });
     wire(ws2);
-    const st2 = lsp.client('acme', 'u1').chat.completions.stream({ model: 'm1', messages: msgs() });
+    const st2 = lmbp.client('acme', 'u1').chat.completions.stream({ model: 'm1', messages: msgs() });
     let text = '';
     const done = (async () => { for await (const ch of st2) text += ch.choices.map((x) => x.delta.content || '').join(''); })();
     await Promise.race([done, new Promise((_, bad) => setTimeout(() => bad(new Error(`new chunked task blocked (connUsed ${ds.out.connUsed}, waiters ${ds.out.waiters.length})`)), 5000))]);
     assert.equal(text, 'seen');
     ws2.close();
   } finally {
-    for (const x of lsp.engine.devs.values()) x.ws?.terminate();
+    for (const x of lmbp.engine.devs.values()) x.ws?.terminate();
     srv.closeAllConnections(); await new Promise((ok) => srv.close(ok));
   }
 });

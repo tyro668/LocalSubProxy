@@ -21,15 +21,15 @@ def server():
     return LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=MemoryStore(), log=lambda *a: None)
 
 
-async def paired(lsp, base):
+async def paired(lmbp, base):
     key, a = await start_pairing(base, T)
-    lsp.pairing.approve(T, "u1", a["user_code"])
+    lmbp.pairing.approve(T, "u1", a["user_code"])
     return key, await finish_pairing(base, key, a)
 
 
 async def test_metadata_advertises_2_0_and_profiles(serve_app):
-    lsp = server()
-    async with serve_app(lsp.asgi()) as base, httpx.AsyncClient() as c:
+    lmbp = server()
+    async with serve_app(lmbp.asgi()) as base, httpx.AsyncClient() as c:
         m = (await c.get(base + "/.well-known/lmbp")).json()
         assert m["protocol_versions"] == ["2.0"]
         assert "core" in m["profiles"] and len(m["profiles"]) == 7
@@ -37,9 +37,9 @@ async def test_metadata_advertises_2_0_and_profiles(serve_app):
 
 
 async def test_1x_peers_are_refused(serve_app):
-    lsp = server()
-    async with serve_app(lsp.asgi()) as base:
-        key, tok = await paired(lsp, base)
+    lmbp = server()
+    async with serve_app(lmbp.asgi()) as base:
+        key, tok = await paired(lmbp, base)
         with pytest.raises(websockets.exceptions.InvalidStatus) as e:
             await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=["lmbp.2"],
                                      additional_headers={"Authorization": "Bearer " + tok["access_token"]})
@@ -52,9 +52,9 @@ async def test_1x_peers_are_refused(serve_app):
 @pytest.mark.parametrize("patch", [{"max_concurrency": 0}, {"max_concurrency": 17}, {"max_concurrency": None},
                                    {"max_concurrency": "2"}, {"model_names": {"m1": "😀" * 129}}])
 async def test_hello_out_of_range_is_rejected_not_clamped(serve_app, patch):
-    lsp = server()
-    async with serve_app(lsp.asgi()) as base:
-        key, tok = await paired(lsp, base)
+    lmbp = server()
+    async with serve_app(lmbp.asgi()) as base:
+        key, tok = await paired(lmbp, base)
         with pytest.raises(AssertionError) as e:
             await connect(base, key, tok, hello_patch=patch)
         assert "BAD_REQUEST" in str(e.value)
@@ -64,9 +64,9 @@ async def test_hello_out_of_range_is_rejected_not_clamped(serve_app, patch):
 
 
 async def test_models_update_rejected_whole(serve_app):
-    lsp = server()
-    async with serve_app(lsp.asgi()) as base, httpx.AsyncClient() as c:
-        key, tok = await paired(lsp, base)
+    lmbp = server()
+    async with serve_app(lmbp.asgi()) as base, httpx.AsyncClient() as c:
+        key, tok = await paired(lmbp, base)
         ws = await websockets.connect(base.replace("http", "ws", 1) + "/lmbp/v1/connect", subprotocols=[L.SUBPROTOCOL],
                                       additional_headers={"Authorization": "Bearer " + tok["access_token"]})
         await ws.send(json.dumps({"v": 2, "type": "hello", "id": "h1", "data": {
@@ -84,8 +84,8 @@ async def test_models_update_rejected_whole(serve_app):
 
 
 async def test_lengths_in_code_points_and_ascii_headers(serve_app):
-    lsp = server()
-    async with serve_app(lsp.asgi()) as base, httpx.AsyncClient() as c:
+    lmbp = server()
+    async with serve_app(lmbp.asgi()) as base, httpx.AsyncClient() as c:
         def auth(name):
             return c.post(base + "/lmbp/v1/device/authorize", data={"tenant": T, "public_key": L.b64(bytes([7]) * 32), "device_name": name})
         assert (await auth("😀" * 100)).status_code == 200
@@ -97,4 +97,4 @@ async def test_lengths_in_code_points_and_ascii_headers(serve_app):
         assert (await c.post(base + "/v1/chat/completions", json=chat, headers={**H, "Idempotency-Key": "k" * 256})).status_code == 400
         assert (await c.post(base + "/v1/chat/completions", json=chat, headers={**H, "Idempotency-Key": "键".encode()})).status_code == 400
         with pytest.raises(PairingError):
-            lsp.pairing.approve(T, "张三", "BCDF-GHJK")
+            lmbp.pairing.approve(T, "张三", "BCDF-GHJK")

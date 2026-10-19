@@ -15,12 +15,12 @@ const KEY = 'k'.repeat(40);
 const T = 'acme';
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 async function setup(store) {
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store, log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store, log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
-  return { lsp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
+  return { lmbp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
 }
 async function chat(base, key, content = 'hello') {
   const r = await fetch(base + '/v1/chat/completions', { method: 'POST', body: JSON.stringify({ model: 'm1', messages: [{ role: 'user', content }] }),
@@ -41,7 +41,7 @@ for (const [name, code] of [['timeout', 'TIMEOUT'], ['client cancel', 'CANCELLED
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lmbp-race-'));
     const st = new SqliteStore(path.join(dir, 'g.db'));
     const s = await setup(st);
-    const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     let fired = false;
     raceHooks.hook = (t, point) => {
       if (point === 'device-terminal-committed' && !fired) { fired = true; t.failLocal(code, 'injected ' + name); }
@@ -51,7 +51,7 @@ for (const [name, code] of [['timeout', 'TIMEOUT'], ['client cancel', 'CANCELLED
       assert.ok(fired, 'hook fired');
       await sleep(150);
       assert.equal(success(first), stored(st, first.task), `caller ${first.status} ${first.body} vs storage`);
-      s.lsp.engine.tasks.delete(first.task); // drop the hub: replay from storage
+      s.lmbp.engine.tasks.delete(first.task); // drop the hub: replay from storage
       const again = await chat(s.base, 'k-' + code);
       assert.equal(success(again), success(first), `replay ${again.status} ${again.body} vs caller ${first.body}`);
     } finally { raceHooks.hook = null; ws.close(); await s.close(); st.close(); }
@@ -61,7 +61,7 @@ for (const [name, code] of [['timeout', 'TIMEOUT'], ['client cancel', 'CANCELLED
 test('decide-once: a local timeout decides first; late device frames are dropped', async () => {
   const st = new MemoryStore();
   const s = await setup(st);
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
   let fired = false;
   raceHooks.hook = (t, point) => { if (point === 'device-frame' && !fired) { fired = true; t.failLocal('TIMEOUT', 'injected timeout'); } };
   try {
@@ -84,7 +84,7 @@ test('idempotency record and task row are one atomic write', async () => {
     st[m] = (...a) => { if (armed && a[0]?.state === 'QUEUED') { armed = false; if (m === 'createTask') throw new Error('injected crash'); orig({ ...a[0], id: '__never' }); st.db.exec("DELETE FROM lmbp_tasks WHERE id='__never'"); throw new Error('injected crash'); } return orig(...a); };
   }
   const s = await setup(st);
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
   try {
     const first = await chat(s.base, 'k-atomic');
     assert.equal(first.status, 500, first.body);

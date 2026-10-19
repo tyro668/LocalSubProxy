@@ -42,17 +42,6 @@ if [ ! -f "$dir/env" ]; then
   } >"$dir/env"
   umask 022
 fi
-# 改名兼容（保留一个版本）：改名前生成的 .mock/env 里是 LOCALSUBPROXY_DATA_KEY
-if ! grep -q '^AVORA_DATA_KEY=' "$dir/env" && grep -q '^LOCALSUBPROXY_DATA_KEY=' "$dir/env"; then
-  (umask 077; sed -n 's/^LOCALSUBPROXY_DATA_KEY=/AVORA_DATA_KEY=/p' "$dir/env" >>"$dir/env")
-fi
-# 2.1 改名兼容：之前生成的 .mock/env 里是 LSP_TENANT_KEY_*、LSP_SIGNING_SEED，补上 LMBP_* 同值副本
-for v in LMBP_TENANT_KEY_ACME LMBP_TENANT_KEY_BETA LMBP_SIGNING_SEED; do
-  old="LSP_${v#LMBP_}"
-  if ! grep -q "^$v=" "$dir/env" && grep -q "^$old=" "$dir/env"; then
-    (umask 077; sed -n "s/^$old=/$v=/p" "$dir/env" >>"$dir/env")
-  fi
-done
 if ! grep -q '^LMBP_TENANT_KEY_BETA=' "$dir/env"; then
   (umask 077; echo "LMBP_TENANT_KEY_BETA=$(openssl rand -hex 24)" >>"$dir/env")
 fi

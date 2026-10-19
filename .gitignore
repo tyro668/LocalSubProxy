@@ -10,3 +10,4 @@
 /sdk/java/*/target/
 /examples/spring-boot-demo/target/
 /dist/
+__pycache__/

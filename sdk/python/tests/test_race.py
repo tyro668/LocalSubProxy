@@ -47,7 +47,7 @@ def hook():
 @pytest.mark.parametrize("code", ["TIMEOUT", "CANCELLED", "SLOW_CONSUMER"])
 async def test_decide_once_local_path_after_device_commit(serve_app, tmp_path, hook, code):
     st = SQLiteStore(str(tmp_path / "g.db"))
-    lsp = new(st)
+    lmbp = new(st)
     fired = []
 
     def h(t, point):
@@ -55,13 +55,13 @@ async def test_decide_once_local_path_after_device_commit(serve_app, tmp_path, h
             fired.append(1)
             t.fail_local(code, "injected " + code)
     engine.race_hook = h
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1")
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1")
         c1, tid, b1 = await chat(base, "k-" + code)
         assert fired
         await asyncio.sleep(0.15)
         assert success(c1, b1) == stored_success(st, tid), f"caller {c1} {b1} vs storage"
-        lsp.engine.tasks.pop(tid, None)  # drop the hub: replay from storage
+        lmbp.engine.tasks.pop(tid, None)  # drop the hub: replay from storage
         c2, _, b2 = await chat(base, "k-" + code)
         assert success(c2, b2) == success(c1, b1), f"replay {c2} {b2} vs caller {b1}"
         await ws.close()
@@ -71,7 +71,7 @@ async def test_decide_once_local_path_after_device_commit(serve_app, tmp_path, h
 
 async def test_local_decides_first_late_device_frames_dropped(serve_app, hook):
     st = MemoryStore()
-    lsp = new(st)
+    lmbp = new(st)
     fired = []
 
     def h(t, point):
@@ -79,8 +79,8 @@ async def test_local_decides_first_late_device_frames_dropped(serve_app, hook):
             fired.append(1)
             t.fail_local("TIMEOUT", "injected timeout")
     engine.race_hook = h
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1")
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1")
         c1, tid, b1 = await chat(base, "k-local-first", "a b c d")
         assert fired and not success(c1, b1) and "TIMEOUT" in b1, b1
         await asyncio.sleep(0.2)
@@ -104,9 +104,9 @@ async def test_idempotency_and_task_atomic(serve_app, tmp_path):
                 raise RuntimeError("injected crash while creating the task")
             return _orig(*a, **kw)
         setattr(st, m, wrap)
-    lsp = new(st)
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1")
+    lmbp = new(st)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1")
         c1, _, b1 = await chat(base, "k-atomic")
         assert c1 == 500, b1
         rec = st.get_idempotency(T, "u1", "k-atomic")

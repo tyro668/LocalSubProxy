@@ -17,9 +17,9 @@ const CASES = [
 ];
 
 test('an invalid task.done / task.error body never becomes a stored success and is not ACKed', async () => {
-  const lsp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const acks = new Map(); // task_id -> highest acked seq
@@ -31,7 +31,7 @@ test('an invalid task.done / task.error body never becomes a stored success and 
     send('task.delta', 1, { text: 'almost' });
     send(bad[0], 2, bad[1]);
   };
-  const d = await pairAndConnect(lsp, base, 'acme', 'u1', { manual });
+  const d = await pairAndConnect(lmbp, base, 'acme', 'u1', { manual });
   d.ws.on('message', (raw) => {
     const e = JSON.parse(raw);
     if (e.type === 'task.ack') acks.set(e.task_id, Math.max(acks.get(e.task_id) ?? 0, e.data.seq));
@@ -49,13 +49,13 @@ test('an invalid task.done / task.error body never becomes a stored success and 
       assert.ok(id, `${label}: never dispatched`);
       await new Promise((r) => setTimeout(r, 100));
       {
-        const t = lsp.engine.store.getTask(id);
+        const t = lmbp.engine.store.getTask(id);
         assert.notEqual(t?.state, 'SUCCEEDED', `${label}: stored as SUCCEEDED`);
         assert.ok(!(acks.get(id) >= 2), `${label}: invalid terminal frame was ACKed`);
         assert.equal(t?.events.at(-1)?.type, 'task.error', `${label}: last event ${JSON.stringify(t?.events.at(-1))}`);
       }
     }
   } finally {
-    d.ws.terminate(); srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); await lsp.close();
+    d.ws.terminate(); srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); await lmbp.close();
   }
 });

@@ -14,7 +14,7 @@ const KEY = 'k'.repeat(40);
 
 async function hostApp(withPlugin, order) {
   const app = Fastify();
-  const lsp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY }], log: () => {} });
+  const lmbp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY }], log: () => {} });
   const routes = () => {
     app.post('/app/generate', {
       schema: { body: { type: 'object', required: ['prompt'], properties: { prompt: { type: 'string' }, n: { type: 'integer' } } } },
@@ -22,11 +22,11 @@ async function hostApp(withPlugin, order) {
     app.post('/app/text', async (req) => ({ type: typeof req.body, isBuffer: Buffer.isBuffer(req.body), body: String(req.body) }));
     app.post('/app/device', async (req) => ({ user_code: req.body?.user_code ?? null }));
   };
-  if (withPlugin && order === 'before') await app.register(lsp.fastifyPlugin);
+  if (withPlugin && order === 'before') await app.register(lmbp.fastifyPlugin);
   routes();
-  if (withPlugin && order === 'after') await app.register(lsp.fastifyPlugin);
+  if (withPlugin && order === 'after') await app.register(lmbp.fastifyPlugin);
   await app.listen({ port: 0, host: '127.0.0.1' });
-  return { app, lsp, base: `http://127.0.0.1:${app.server.address().port}` };
+  return { app, lmbp, base: `http://127.0.0.1:${app.server.address().port}` };
 }
 
 async function probe(base) {
@@ -46,11 +46,11 @@ test('fastify plugin: host JSON / text POST routes behave the same with and with
   assert.deepEqual(want.ok, [200, { isBuffer: false, prompt: 'hi', n: 2 }]);
   assert.equal(want.invalid, 400);
   for (const order of ['before', 'after']) {
-    const { app, lsp, base } = await hostApp(true, order);
+    const { app, lmbp, base } = await hostApp(true, order);
     try {
       assert.deepEqual(await probe(base), want, `plugin registered ${order} the host routes changed host body parsing`);
       // the protocol routes still get the raw body and work end to end
-      const { ws } = await pairAndConnect(lsp, base, 'acme', 'u1');
+      const { ws } = await pairAndConnect(lmbp, base, 'acme', 'u1');
       const r = await (await fetch(base + '/v1/chat/completions', { method: 'POST',
         headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'm1', messages: [{ role: 'user', content: 'scoped' }] }) })).json();

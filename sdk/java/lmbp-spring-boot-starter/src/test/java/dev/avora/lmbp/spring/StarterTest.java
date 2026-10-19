@@ -37,7 +37,7 @@ class StarterTest {
 
   @LocalServerPort int port;
   @Autowired LmbpClient lmbp;
-  @Autowired LMBPServer lsp;
+  @Autowired LMBPServer server;
   final HttpClient http = HttpClient.newHttpClient();
 
   HttpResponse<String> get(String path, String... headers) throws Exception {
@@ -75,6 +75,6 @@ class StarterTest {
     LmbpApiException e = assertThrows(LmbpApiException.class, () -> lmbp.chat("alice", Map.of("model", "dev_x/m", "messages", List.of(Map.of("role", "user", "content", "hi")))));
     assertEquals("MODEL_NOT_FOUND", e.code());
     assertThrows(IllegalArgumentException.class, () -> lmbp.chat("", Map.of()));
-    assertEquals(lsp.kid(), lmbp.server().kid());
+    assertEquals(server.kid(), lmbp.server().kid());
   }
 }
