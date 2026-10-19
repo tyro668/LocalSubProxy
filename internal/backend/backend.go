@@ -56,8 +56,10 @@ type Definition struct {
 	Efforts           []string
 	EffortAliases     map[string]string
 	EffortPassthrough bool
-	Validate          func(*Config, bool) error
-	New               func(Config, Dependencies) Backend
+	// Limits are the scheme token limits this backend enforces.
+	Limits   Limits
+	Validate func(*Config, bool) error
+	New      func(Config, Dependencies) Backend
 }
 
 // HTTPEfforts are the efforts the OpenAI-compatible backend maps onto

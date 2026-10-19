@@ -36,4 +36,7 @@ type Health struct {
 	// Error says why the scheme is unavailable when that is known locally
 	// (e.g. the Codex CLI is missing). Display only.
 	Error string `json:"error,omitempty"`
+	// Limits are the token-limit states (test_adapter only), keyed
+	// context_window / max_output_tokens.
+	Limits map[string]LimitState `json:"limits,omitempty"`
 }

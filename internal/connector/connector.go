@@ -531,6 +531,9 @@ func (x *Connector) execute(ctx context.Context, l *link, run lmbp.TaskRun, emit
 	if err != nil {
 		return nil, backend.ErrorBody(err)
 	}
+	if fail := detectedBudget(ctx, b, a, run, modelID); fail != nil {
+		return nil, fail
+	}
 	run.Model = modelID
 	done, err := b.Execute(ctx, run, &backend.Emitter{Emit: emit})
 	if err != nil {
@@ -839,4 +842,34 @@ func (x *Connector) AcknowledgeAdapterRecovery() error {
 		return err
 	}
 	return durable.Write(f, b)
+}
+
+// detectedBudget applies the context budget check with a detected window
+// when the scheme sets none (a scheme window is checked in checkCaps).
+func detectedBudget(ctx context.Context, b backend.Backend, a AdapterConfig, run lmbp.TaskRun, model string) *lmbp.ErrorBody {
+	d, err := backendRegistry.Lookup(a.Type)
+	if err != nil || !d.Limits.ContextWindow || a.ContextWindow > 0 {
+		return nil
+	}
+	w, src := backend.DetectedWindow(ctx, b, a, model)
+	return backend.CheckContextBudget(w, "detected via "+src, run, a)
+}
+
+// adapterLimits are the limit states of a, with the context window of its
+// first model detected when the scheme sets none.
+func (x *Connector) adapterLimits(ctx context.Context, a AdapterConfig) map[string]backend.LimitState {
+	d, err := backendRegistry.Lookup(a.Type)
+	if err != nil {
+		return nil
+	}
+	out := backend.ConfigLimits(d.Limits, a)
+	if cw := out["context_window"]; cw.State == backend.LimitUnknown && d.Limits.ContextDetect != "" && len(a.Models) > 0 {
+		b, err := backendRegistry.Open(a, backend.Dependencies{ProbeClient: x.client, ModelClient: x.modelClient})
+		if err == nil {
+			if w, src := backend.DetectedWindow(ctx, b, a, a.Models[0]); w > 0 {
+				out["context_window"] = backend.LimitState{State: backend.LimitDetected, Value: w, Source: src, Estimate: true}
+			}
+		}
+	}
+	return out
 }

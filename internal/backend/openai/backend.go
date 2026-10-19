@@ -17,6 +17,7 @@ type Adapter struct {
 func Definition() backend.Definition {
 	return backend.Definition{
 		Type: "openai_compatible", Name: "OpenAI 兼容", Label: "OpenAI 兼容协议", Short: "openai", Cloud: true, NeedsAPIKey: true, Efforts: backend.HTTPEfforts, DefaultCapabilities: []string{"tools", "vision"}, Parameters: lmbp.ParamCaps,
+		Limits:             backend.Limits{MaxOutput: true, MaxOutputVia: "max_tokens", ContextWindow: true},
 		DefaultConcurrency: 4, Audio: true, Validate: httpapi.ValidateCloud,
 		New: func(a backend.Config, d backend.Dependencies) backend.Backend {
 			n := a.Concurrency

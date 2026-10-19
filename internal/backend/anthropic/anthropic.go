@@ -26,6 +26,10 @@ import (
 //   - stream: tool_use blocks → tool_call deltas; stop_reason end_turn/tool_use/max_tokens →
 //     stop/tool_calls/length.
 
+// anthropicDefaultMaxTokens is sent when nothing sets max_tokens, which the
+// Messages API requires.
+const anthropicDefaultMaxTokens = 1024
+
 func anthropicContent(c lmbp.Content) ([]map[string]any, error) {
 	if c.Parts == nil {
 		if c.Text == "" {
@@ -89,7 +93,7 @@ func anthropicRequest(model string, run lmbp.TaskRun, a backend.Config) (map[str
 	}
 	mt := httpapi.MaxTokens(run, a)
 	if mt == 0 {
-		mt = 1024 // Messages requires max_tokens.
+		mt = anthropicDefaultMaxTokens
 	}
 	payload := map[string]any{"model": model, "messages": messages, "max_tokens": mt, "stream": true}
 	if len(system) > 0 {

@@ -25,6 +25,11 @@ func Definition() backend.Definition {
 	return backend.Definition{
 		Type: "grok_build", Name: "Grok Build", Label: "Grok Build（CLI）", Short: "grok", Executable: "grok", LoginCommand: "grok login", Cloud: true,
 		Efforts: []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, EffortAliases: map[string]string{"off": ""}, DefaultConcurrency: 1, MaxConcurrency: 1,
+		// Grok Build reads max_completion_tokens per model from config.toml
+		// (user guide, configuration: [model.<id>]); Avora writes it into the
+		// isolated GROK_HOME. It has no context-window cap: context_window
+		// there only drives auto-compaction.
+		Limits: backend.Limits{MaxOutput: true, MaxOutputVia: "config.toml [model.<id>] max_completion_tokens"},
 		Validate: func(a *backend.Config, required bool) error {
 			return cliruntime.Validate(a, required, "grok", "Grok Build")
 		},
@@ -154,6 +159,11 @@ func (a *Adapter) Execute(ctx context.Context, r lmbp.TaskRun, out *backend.Emit
 	if err = os.WriteFile(agent, []byte("---\nname: avora-inference\ndescription: Text inference without local actions\nagentsMd: false\ndiscoverSkills: false\ninheritSkills: false\n---\nRespond to the supplied conversation using text only.\n"), 0600); err != nil {
 		return nil, err
 	}
+	if a.config.MaxOutputTokens > 0 {
+		if err = appendModelLimit(o, r.Model, a.config.MaxOutputTokens); err != nil {
+			return nil, err
+		}
+	}
 	prompt := filepath.Join(o.Dir, "prompt.txt")
 	if err = os.WriteFile(prompt, []byte(backend.TextInput(r.Messages)), 0600); err != nil {
 		return nil, err
@@ -249,4 +259,28 @@ func (s *stream) consume(line []byte) error {
 
 func (a *Adapter) LoginStatus(ctx context.Context) backend.LoginStatus {
 	return backend.LoginFromModels(ctx, Definition(), a.Models)
+}
+
+// appendModelLimit overrides the model's max_completion_tokens in the
+// isolated config.toml (the section key is the model name, quoted).
+func appendModelLimit(o cliruntime.Options, model string, max int) error {
+	home := ""
+	for _, kv := range o.Env {
+		if v, ok := strings.CutPrefix(kv, "GROK_HOME="); ok {
+			home = v
+		}
+	}
+	if home == "" {
+		return backend.Failure("INTERNAL: isolated GROK_HOME missing")
+	}
+	f, err := os.OpenFile(filepath.Join(home, "config.toml"), os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	key, _ := json.Marshal(model) // a TOML basic string
+	_, err = fmt.Fprintf(f, "[model.%s]\nmax_completion_tokens = %d\n", key, max)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

@@ -12,6 +12,7 @@ class BackendProfile {
     this.cloud = false,
     this.defaultBaseURL = '',
     this.efforts = const [],
+    this.limits = const BackendLimits(),
     this.known = true,
   });
 
@@ -35,6 +36,9 @@ class BackendProfile {
         for (final e in (j['efforts'] as List? ?? const []))
           if (e != 'default') e as String,
       ],
+      limits: BackendLimits.fromJson(
+        (j['limits'] as Map?)?.cast<String, dynamic>() ?? const {},
+      ),
     );
   }
 
@@ -59,6 +63,9 @@ class BackendProfile {
 
   /// Reasoning efforts a scheme may store, besides default.
   final List<String> efforts;
+
+  /// Which scheme token limits this backend type enforces.
+  final BackendLimits limits;
   final bool known;
   bool get isCLI => executable != null;
 }
@@ -82,3 +89,63 @@ BackendProfile backendForType(String? type) => backendProfiles.firstWhere(
   (p) => p.type == type,
   orElse: () => BackendProfile.unknown(type),
 );
+
+/// The kernel's backend.Limits: a limit the backend cannot enforce is not
+/// offered (and the kernel refuses to store it).
+class BackendLimits {
+  const BackendLimits({
+    this.maxOutput = false,
+    this.maxOutputVia = '',
+    this.defaultMaxOutput = 0,
+    this.contextWindow = false,
+    this.contextVia = '',
+    this.contextDetect = '',
+  });
+
+  factory BackendLimits.fromJson(Map<String, dynamic> j) => BackendLimits(
+    maxOutput: j['max_output'] == true,
+    maxOutputVia: j['max_output_via'] as String? ?? '',
+    defaultMaxOutput: j['default_max_output'] as int? ?? 0,
+    contextWindow: j['context_window'] == true,
+    contextVia: j['context_via'] as String? ?? '',
+    contextDetect: j['context_detect'] as String? ?? '',
+  );
+
+  final bool maxOutput;
+  final String maxOutputVia;
+  final int defaultMaxOutput;
+  final bool contextWindow;
+  final String contextVia;
+  final String contextDetect;
+  bool get any => maxOutput || contextWindow;
+
+  /// Placeholder of an empty field: what applies when the user sets nothing.
+  String get maxOutputPlaceholder =>
+      defaultMaxOutput > 0 ? 'Avora 默认 $defaultMaxOutput' : '厂商默认';
+  String get contextPlaceholder =>
+      contextDetect.isNotEmpty ? '自动检测（$contextDetect）' : '未知，不预检';
+}
+
+/// Display text of one kernel limit state ({state, value, source, estimate}),
+/// keeping unknown, vendor default, detected and user-set apart.
+String limitStateLabel(Map<String, dynamic>? s) {
+  if (s == null) return '未知';
+  final v = s['value'] as int? ?? 0;
+  final src = s['source'] as String? ?? '';
+  final est = s['estimate'] == true ? ' · 按估算预检' : '';
+  switch (s['state']) {
+    case 'user':
+      return '$v（已设置$est）';
+    case 'detected':
+      return '$v（自动检测，来源 $src$est）';
+    case 'vendor_default':
+      return '厂商默认（未设置）';
+    case 'avora_default':
+      return 'Avora 默认 $v（未设置）';
+    case 'unsupported':
+      return '此方案不支持';
+    case 'unknown':
+      return src.isEmpty ? '未知（未设置，不预检）' : '未设置 · 执行时从 $src 自动检测';
+  }
+  return '未知';
+}

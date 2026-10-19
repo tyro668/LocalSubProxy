@@ -48,10 +48,12 @@ type AdapterView struct {
 	// the computed effective values for display only.
 	ConfiguredCapabilities []string `json:"configured_capabilities"`
 	ConfiguredConcurrency  int      `json:"configured_concurrency"`
+	// Limits are the stored token-limit states (no runtime detection).
+	Limits map[string]backend.LimitState `json:"limits,omitempty"`
 }
 
 func viewAdapter(a AdapterConfig) AdapterView {
-	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Executable: a.Executable, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a), ConfiguredCapabilities: append([]string(nil), a.Capabilities...), ConfiguredConcurrency: a.Concurrency}
+	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Executable: a.Executable, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a), ConfiguredCapabilities: append([]string(nil), a.Capabilities...), ConfiguredConcurrency: a.Concurrency, Limits: configLimits(a)}
 }
 
 // Status is the device-wide status. connections[] lists every paired SaaS;
@@ -513,7 +515,9 @@ func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHe
 	}
 	a.Enabled = true
 	a.SkipModelProbe = false
-	return x.probeConfig(ctx, a), nil // a validated draft: a stored invalid flag does not apply
+	h := x.probeConfig(ctx, a) // a validated draft: a stored invalid flag does not apply
+	h.Limits = x.adapterLimits(ctx, a)
+	return h, nil //: a stored invalid flag does not apply
 }
 
 // ProviderModels lists the models a draft profile's provider offers, for the
@@ -606,4 +610,12 @@ func (x *Connector) UsageStats(ctx context.Context, f audit.Filter, groupBy []st
 		return nil, errNoAudit
 	}
 	return x.cfg.Audit.Stats(ctx, f, groupBy, local)
+}
+
+func configLimits(a AdapterConfig) map[string]backend.LimitState {
+	d, err := backendRegistry.Lookup(a.Type)
+	if err != nil {
+		return nil
+	}
+	return backend.ConfigLimits(d.Limits, a)
 }

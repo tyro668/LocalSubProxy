@@ -17,6 +17,7 @@ type Adapter struct {
 func Definition() backend.Definition {
 	return backend.Definition{
 		Type: "anthropic_compatible", Name: "Anthropic 兼容", Label: "Anthropic 兼容协议", Short: "anthropic", Cloud: true, NeedsAPIKey: true, DefaultCapabilities: []string{"tools", "vision"}, Parameters: lmbp.ParamCaps,
+		Limits:             backend.Limits{MaxOutput: true, MaxOutputVia: "max_tokens", DefaultMaxOutput: anthropicDefaultMaxTokens, ContextWindow: true},
 		DefaultConcurrency: 4, Audio: false, Validate: httpapi.ValidateCloud,
 		New: func(a backend.Config, d backend.Dependencies) backend.Backend {
 			n := a.Concurrency

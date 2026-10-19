@@ -79,3 +79,20 @@ cd desktop && flutter analyze && flutter test
 ```
 
 CLI 测试用测试程序自身充当 CLI，不需要账号、已安装的 CLI 或网络。`grokbuild/testdata`、`antigravity/testdata` 中的样本取自官方文档，并非真实录制；真实验证需在已登录的本机单独进行。
+
+## Token 限制
+
+`Definition.Limits` 声明一种后端真正能执行哪些方案限制。不能执行的限制不提供设置：内核保存或加载时直接报错，桌面端不显示该输入框，而不是保存后静默忽略。
+
+| 后端 | 最大输出 | 上下文窗口 | 依据 |
+|---|---|---|---|
+| OpenAI 兼容 | `max_tokens` | 执行前估算预检 | 请求字段 |
+| Anthropic 兼容 | `max_tokens`（未设置时 Avora 发送 1024，Messages API 必填） | 执行前估算预检 | 请求字段 |
+| Ollama | `options.num_predict` | `options.num_ctx` + 执行前估算预检；未设置时从 `/api/show` 的 `<架构>.context_length` 自动检测 | `/api/chat`、`/api/show` |
+| Grok Build | 在隔离的 `GROK_HOME/config.toml` 写入 `[model."<模型>"] max_completion_tokens` | 不支持（`context_window` 只用于自动压缩） | Grok Build 用户指南「Configuration」 |
+| Codex | 不支持（app-server 与 config.toml 都没有输出上限项） | 不支持（`model_context_window` 只是压缩用的元数据） | Codex 配置参考、`ThreadStartParams` |
+| Antigravity | 不支持（headless 无相关参数） | 不支持 | Antigravity CLI headless 参数表 |
+
+**上下文预检。** 没有对应模型的分词器，所以只做估算：ASCII 每 6 字节、其他字符每 2 个算 1 个 token，不计图片和音频。这个估算有意偏低，被它判定超出的请求对常见分词器都必然超出；接近上限的请求仍会交给厂商，由厂商拒绝。超出时返回 `BAD_REQUEST`（不可重试），消息以 `CONTEXT_BUDGET_EXCEEDED` 开头并写明估算值、预留输出、窗口和来源。预留输出取请求 `max_tokens` 和方案最大输出中较小的一个。
+
+**状态。** 每个限制显示为以下之一：`user`（已设置）、`detected`（自动检测成功，附来源）、`vendor_default`（未设置，用厂商默认）、`avora_default`（未设置，Avora 发送固定默认值）、`unknown`（未设置也未检测到，不预检）、`unsupported`（此方案不支持）。`list_adapters` 只给出配置推出的状态；`test_adapter` 还会做自动检测。检测失败时 10 分钟内不重试。

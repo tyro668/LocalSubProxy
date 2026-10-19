@@ -25,7 +25,11 @@
       "xhigh",
       "max",
       "ultra"
-    ]
+    ],
+    "limits": {
+      "max_output": false,
+      "context_window": false
+    }
   },
   {
     "type": "grok_build",
@@ -51,7 +55,12 @@
       "high",
       "xhigh",
       "max"
-    ]
+    ],
+    "limits": {
+      "max_output": true,
+      "max_output_via": "config.toml [model.\u003cid\u003e] max_completion_tokens",
+      "context_window": false
+    }
   },
   {
     "type": "antigravity_cli",
@@ -80,7 +89,11 @@
       "xhigh",
       "max",
       "ultra"
-    ]
+    ],
+    "limits": {
+      "max_output": false,
+      "context_window": false
+    }
   },
   {
     "type": "openai_compatible",
@@ -108,7 +121,12 @@
       "low",
       "medium",
       "high"
-    ]
+    ],
+    "limits": {
+      "max_output": true,
+      "max_output_via": "max_tokens",
+      "context_window": true
+    }
   },
   {
     "type": "anthropic_compatible",
@@ -132,7 +150,13 @@
     "default_concurrency": 4,
     "efforts": [
       "default"
-    ]
+    ],
+    "limits": {
+      "max_output": true,
+      "max_output_via": "max_tokens",
+      "default_max_output": 1024,
+      "context_window": true
+    }
   },
   {
     "type": "ollama_http",
@@ -156,6 +180,13 @@
     "default_concurrency": 4,
     "efforts": [
       "default"
-    ]
+    ],
+    "limits": {
+      "max_output": true,
+      "max_output_via": "options.num_predict",
+      "context_window": true,
+      "context_via": "options.num_ctx",
+      "context_detect": "Ollama /api/show"
+    }
   }
 ]

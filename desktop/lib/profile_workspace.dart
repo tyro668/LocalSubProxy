@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:shadcn_flutter/shadcn_flutter.dart';
+
 import 'app_dialog.dart';
 import 'backend_catalog.dart';
 import 'model_capabilities.dart';
@@ -14,12 +15,22 @@ import 'ui_kit.dart';
 
 /// Result of the last connection test of a scheme (this session only).
 class SchemeTest {
-  const SchemeTest(this.ok, this.ms, this.at, this.message, this.models);
+  const SchemeTest(
+    this.ok,
+    this.ms,
+    this.at,
+    this.message,
+    this.models, {
+    this.limits = const {},
+  });
   final bool ok;
   final int ms;
   final DateTime at;
   final String message;
   final List<String> models;
+
+  /// Token-limit states from test_adapter (context_window, max_output_tokens).
+  final Map<String, dynamic> limits;
 }
 
 class ProfileWorkspace extends StatefulWidget {
@@ -527,6 +538,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 ? '需要登录'
                 : '请检查连接配置、登录状态和模型 ID'),
       models,
+      limits: (r['limits'] as Map?)?.cast<String, dynamic>() ?? const {},
     );
   }
 
@@ -867,8 +879,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       'api_key': apiKey.text.trim(),
       if (provider == 'codex') 'codex_bin': executable,
       if (isCLI && provider != 'codex') 'executable': executable,
-      'context_window': int.tryParse(contextWindow.text.trim()) ?? 0,
-      'max_output_tokens': int.tryParse(maxTokens.text.trim()) ?? 0,
+      // A limit the backend cannot enforce is never sent (the kernel refuses it).
+      'context_window': backend.limits.contextWindow
+          ? int.tryParse(contextWindow.text.trim()) ?? 0
+          : 0,
+      'max_output_tokens': backend.limits.maxOutput
+          ? int.tryParse(maxTokens.text.trim()) ?? 0
+          : 0,
       'reasoning_effort': reasoning,
       'is_default': isDefault,
       'enabled': creating ? true : (selected?['enabled'] ?? true),
@@ -882,10 +899,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (name.text.trim().isEmpty) return '请输入方案名称。';
     final dup = nameError;
     if (dup != null) return dup;
-    if (contextWindow.text.trim().isNotEmpty &&
+    if (backend.limits.contextWindow &&
+        contextWindow.text.trim().isNotEmpty &&
         (int.tryParse(contextWindow.text.trim()) ?? -1) < 1)
       return '上下文窗口必须是正整数。';
-    if (maxTokens.text.trim().isNotEmpty &&
+    if (backend.limits.maxOutput &&
+        maxTokens.text.trim().isNotEmpty &&
         (int.tryParse(maxTokens.text.trim()) ?? -1) < 1)
       return '最大输出 Token 必须是正整数。';
     if (effortIssue != null) return effortIssue;
@@ -1492,10 +1511,80 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     ),
   );
 
+  /// Context window / max output: only the limits this backend enforces
+  /// are editable; the rest is stated as unsupported instead of offered.
+  Widget _limitFields() {
+    final l = backend.limits;
+    final detected = editorTest?.limits['context_window'];
+    String? cwHint;
+    if (l.contextWindow) {
+      cwHint = detected is Map && detected['state'] == 'detected'
+          ? '已检测：${limitStateLabel(detected.cast<String, dynamic>())}'
+          : '执行前按估算的输入 Token 预检（估算偏低，只拒绝明显超出的请求）';
+    }
+    final missing = [
+      if (!l.contextWindow) '上下文窗口',
+      if (!l.maxOutput) '最大输出 Token',
+    ];
+    return Column(
+      key: const Key('limitFields'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (l.any)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (l.contextWindow)
+                Expanded(
+                  child: _field(
+                    '上下文窗口',
+                    appTextField(
+                      context,
+                      controller: contextWindow,
+                      placeholder: l.contextPlaceholder,
+                    ),
+                    hint: cwHint,
+                  ),
+                ),
+              if (l.contextWindow && l.maxOutput) const SizedBox(width: 16),
+              if (l.maxOutput)
+                Expanded(
+                  child: _field(
+                    '最大输出 Token',
+                    appTextField(
+                      context,
+                      controller: maxTokens,
+                      placeholder: l.maxOutputPlaceholder,
+                    ),
+                    hint: l.maxOutputVia.isEmpty
+                        ? null
+                        : '通过 ${l.maxOutputVia} 传给模型',
+                  ),
+                ),
+            ],
+          ),
+        if (missing.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Text(
+              '${backend.short} 不支持限制${missing.join('和')}，这里不提供设置，用量不受 Avora 限制。',
+              key: const Key('limitsUnsupported'),
+              style: AppText.xs.copyWith(color: t.fg3),
+            ),
+          ),
+      ],
+    );
+  }
+
   String get _advancedSummary {
-    String v(TextEditingController c) =>
-        c.text.trim().isEmpty ? '自动' : c.text.trim();
-    final parts = ['上下文窗口 ${v(contextWindow)}', '最大输出 ${v(maxTokens)}'];
+    final l = backend.limits;
+    String v(TextEditingController c, String empty) =>
+        c.text.trim().isEmpty ? empty : c.text.trim();
+    final parts = [
+      if (l.contextWindow)
+        '上下文窗口 ${v(contextWindow, l.contextDetect.isNotEmpty ? '自动检测' : '未知')}',
+      if (l.maxOutput) '最大输出 ${v(maxTokens, l.maxOutputPlaceholder)}',
+    ];
     if (provider != 'anthropic' && provider != 'ollama') {
       parts.add('思考强度 ${_reasoningLabel(reasoning)}');
     }
@@ -1733,32 +1822,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 ),
                 if (advancedOpen) ...[
                   const SizedBox(height: 12),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: _field(
-                          '上下文窗口',
-                          appTextField(
-                            context,
-                            controller: contextWindow,
-                            placeholder: '自动检测',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: _field(
-                          '最大输出 Token',
-                          appTextField(
-                            context,
-                            controller: maxTokens,
-                            placeholder: '自动检测',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  _limitFields(),
                   if (isCLI || backend.efforts.isNotEmpty)
                     _field('思考强度', _reasoningSelect()),
                   if (backend.needsApiKey)
@@ -1845,8 +1909,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     final models = (scheme['models'] as List?)?.cast<String>() ?? [];
     Widget auto(String v) => Text(v, style: AppText.sm.copyWith(color: t.fg3));
     Widget val(String v) => Text(v.isEmpty ? '—' : v);
-    final cw = (scheme['context_window'] as int? ?? 0);
-    final mt = (scheme['max_output_tokens'] as int? ?? 0);
+    final limits = (scheme['limits'] as Map?)?.cast<String, dynamic>() ?? {};
+    Widget limitCell(String key) {
+      final s = (limits[key] as Map?)?.cast<String, dynamic>();
+      final text = limitStateLabel(s);
+      return s?['state'] == 'user' ? val(text) : auto(text);
+    }
+
     final profile = backendForType(scheme['type'] as String?);
     final cli = profile.isCLI;
     final h = schemeHealth(scheme);
@@ -1908,8 +1977,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           ]),
           const SectionLabel('高级'),
           KvTable([
-            ('上下文窗口', cw == 0 ? auto('自动检测') : val('$cw')),
-            ('最大输出 Token', mt == 0 ? auto('自动检测') : val('$mt')),
+            ('上下文窗口', limitCell('context_window')),
+            ('最大输出 Token', limitCell('max_output_tokens')),
           ]),
           const SectionLabel('运行情况'),
           KvTable([

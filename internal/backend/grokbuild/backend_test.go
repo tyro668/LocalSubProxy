@@ -97,6 +97,13 @@ func fakeCLI() {
 			os.Exit(46)
 		}
 	}
+	if _, expected, ok := strings.Cut(string(prompt), "expect-max-out="); ok {
+		cfg, _ := os.ReadFile(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
+		want := "[model.\"" + value("--model") + "\"]\nmax_completion_tokens = " + strings.Fields(expected)[0] + "\n"
+		if !strings.Contains(string(cfg), want) || !strings.Contains(string(cfg), "[memory]\nenabled = false") {
+			os.Exit(49)
+		}
+	}
 	if !insideWorkdir(os.Getenv("GROK_HOME")) || os.Getenv("GROK_AUTH_PATH") == "" || os.Getenv("GROK_CLAUDE_HOOKS_ENABLED") != "0" {
 		os.Exit(43)
 	}
@@ -256,4 +263,16 @@ func insideWorkdir(path string) bool {
 	path, _ = filepath.EvalSymlinks(path)
 	prefix := dir + string(os.PathSeparator)
 	return len(path) > len(prefix) && strings.EqualFold(path[:len(prefix)], prefix)
+}
+
+// The scheme's max output reaches Grok Build as max_completion_tokens for the
+// run's model in the isolated config.toml (it used to be ignored).
+func TestMaxOutputReachesGrokConfig(t *testing.T) {
+	a := fixture(t).(*Adapter)
+	a.config.MaxOutputTokens = 3000
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	if _, err := a.Execute(ctx, lmbp.TaskRun{Model: "m", Messages: []lmbp.Message{{Role: "user", Content: lmbp.Text("hello\nexpect-max-out=3000")}}}, &backend.Emitter{Emit: func(lmbp.TaskDelta) error { return nil }}); err != nil {
+		t.Fatal(err)
+	}
 }

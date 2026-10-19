@@ -53,6 +53,9 @@ func (r *Registry) Validate(a *Config, requireRuntime bool) error {
 		return fmt.Errorf("reasoning effort %q is not available for %s (allowed: default, %s)", a.ReasoningEffort, d.Label, strings.Join(d.Efforts, ", "))
 	}
 	a.ReasoningEffort = d.Effort(a.ReasoningEffort)
+	if err := checkLimits(d, a); err != nil {
+		return err
+	}
 	return d.Validate(a, requireRuntime)
 }
 

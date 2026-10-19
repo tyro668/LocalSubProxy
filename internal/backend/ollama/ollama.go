@@ -104,6 +104,9 @@ func (x *Adapter) callOllama(ctx context.Context, model string, run lmbp.TaskRun
 	if mt := httpapi.MaxTokens(run, a); mt > 0 {
 		opts["num_predict"] = mt
 	}
+	if a.ContextWindow > 0 {
+		opts["num_ctx"] = a.ContextWindow
+	}
 	if run.Temperature != nil {
 		opts["temperature"] = *run.Temperature
 	}

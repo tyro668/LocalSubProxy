@@ -65,6 +65,10 @@ func TestProviderModelsSharedAPI(t *testing.T) {
 func TestOllamaSchemeSharedAPI(t *testing.T) {
 	startKernel(t, t.TempDir())
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/show" { // context window detection: this server offers none
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/tags" || r.Header.Get("Authorization") != "" {
 			t.Errorf("unexpected Ollama model request: %s %s, auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 			http.Error(w, "bad request", http.StatusBadRequest)

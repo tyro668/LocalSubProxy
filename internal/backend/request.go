@@ -39,6 +39,9 @@ func (r *Registry) CheckRequest(a Config, run lmbp.TaskRun) *lmbp.ErrorBody {
 			}
 		}
 	}
+	if d.Limits.ContextWindow && a.ContextWindow > 0 {
+		return CheckContextBudget(a.ContextWindow, "scheme setting", run, a)
+	}
 	return nil
 }
 

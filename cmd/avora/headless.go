@@ -626,8 +626,8 @@ func addSchemeFlags(f *flag.FlagSet, add bool) schemeFlags {
 		provider:   f.String("provider", "", "provider label (optional)"),
 		effort:     f.String("reasoning-effort", "", "reasoning effort, model-dependent: "+effortHelp()),
 		conc:       f.Int("concurrency", 0, "parallel tasks on this scheme"),
-		ctxWin:     f.Int("context-window", 0, "context window tokens"),
-		maxOut:     f.Int("max-output-tokens", 0, "maximum output tokens"),
+		ctxWin:     f.Int("context-window", 0, "context window tokens (HTTP backends; checked before execution by estimate)"),
+		maxOut:     f.Int("max-output-tokens", 0, "maximum output tokens (HTTP backends and grok)"),
 		def:        f.Bool("default", false, "make this the default scheme"),
 	}
 	if add {
