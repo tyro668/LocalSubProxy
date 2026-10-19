@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'backend_catalog.dart';
+
 import 'package:flutter/services.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:window_manager/window_manager.dart';
@@ -1716,7 +1718,9 @@ class _TypeMark extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final icon = switch (type) {
-      'codex_app_server' => LucideIcons.terminal,
+      'codex_app_server' ||
+      'grok_build' ||
+      'antigravity_cli' => LucideIcons.terminal,
       'ollama_http' => LucideIcons.monitor,
       _ => LucideIcons.cloud,
     };
@@ -1750,19 +1754,8 @@ class _HealthBadge extends StatelessWidget {
   }
 }
 
-String adapterTypeShort(String? type) => switch (type) {
-  'codex_app_server' => 'Codex',
-  'anthropic_compatible' => 'Anthropic 兼容',
-  'ollama_http' => 'Ollama',
-  _ => 'OpenAI 兼容',
-};
-
-String adapterTypeLabel(String type) => switch (type) {
-  'codex_app_server' => 'OpenAI Codex（订阅）',
-  'anthropic_compatible' => 'Anthropic 兼容协议',
-  'ollama_http' => 'Ollama 协议（本地模型）',
-  _ => 'OpenAI 兼容协议',
-};
+String adapterTypeShort(String? type) => backendForType(type).short;
+String adapterTypeLabel(String type) => backendForType(type).label;
 
 class AdapterDialog extends StatefulWidget {
   const AdapterDialog({super.key, required this.api, this.existing});
@@ -1781,7 +1774,13 @@ class _AdapterDialogState extends State<AdapterDialog> {
     text: widget.existing?['base_url'] ?? '',
   );
   late final codex = TextEditingController(
-    text: widget.existing?['codex_bin'] ?? 'codex',
+    text:
+        widget.existing?['executable'] ??
+        widget.existing?['codex_bin'] ??
+        backendForType(
+          widget.existing?['type'] ?? 'codex_app_server',
+        ).executable ??
+        '',
   );
   late final models = TextEditingController(
     text: (widget.existing?['models'] as List?)?.join(', ') ?? '',
@@ -1823,6 +1822,8 @@ class _AdapterDialogState extends State<AdapterDialog> {
       };
       if (type == 'codex_app_server') {
         body['codex_bin'] = codex.text.trim();
+      } else if (backendForType(type).isCLI) {
+        body['executable'] = codex.text.trim();
       } else {
         body['base_url'] = url.text.trim();
       }
@@ -1878,24 +1879,21 @@ class _AdapterDialogState extends State<AdapterDialog> {
                       onChanged: creating
                           ? (value) {
                               if (value == null) return;
-                              setState(() => type = value);
+                              setState(() {
+                                type = value;
+                                codex.text =
+                                    backendForType(value).executable ?? '';
+                              });
                             }
                           : null,
-                      popup: (context) => const SelectPopup(
+                      popup: (context) => SelectPopup(
                         items: SelectItemList(
                           children: [
-                            SelectItemButton(
-                              value: 'codex_app_server',
-                              child: Text('OpenAI Codex（订阅）'),
-                            ),
-                            SelectItemButton(
-                              value: 'openai_compatible',
-                              child: Text('OpenAI 兼容协议'),
-                            ),
-                            SelectItemButton(
-                              value: 'anthropic_compatible',
-                              child: Text('Anthropic 兼容协议'),
-                            ),
+                            for (final profile in backendProfiles)
+                              SelectItemButton(
+                                value: profile.type,
+                                child: Text(profile.label),
+                              ),
                           ],
                         ),
                       ),
@@ -1919,12 +1917,14 @@ class _AdapterDialogState extends State<AdapterDialog> {
                     ),
                   ),
                   const Gap(14),
-                  if (type == 'codex_app_server')
+                  if (backendForType(type).isCLI)
                     LabeledField(
-                      label: '官方 Codex CLI 路径',
+                      label: '${backendForType(type).short} CLI 路径',
                       child: TextField(
                         controller: codex,
-                        placeholder: const Text('codex'),
+                        placeholder: Text(
+                          backendForType(type).executable ?? '',
+                        ),
                       ),
                     )
                   else

@@ -39,9 +39,12 @@ func TestStatusPromptWhileSlowCallsRun(t *testing.T) {
 	b, _ := json.Marshal(request)
 	request["action"] = "provider_models"
 	models, _ := json.Marshal(request)
-	wg.Add(3)
+	request["action"] = "provider_catalog"
+	catalog, _ := json.Marshal(request)
+	wg.Add(4)
 	go func() { defer wg.Done(); call(string(b)) }()
 	go func() { defer wg.Done(); call(string(models)) }()
+	go func() { defer wg.Done(); call(string(catalog)) }()
 	go func() { defer wg.Done(); call(`{"action":"codex_models","path":"/bin/false"}`) }()
 	time.Sleep(200 * time.Millisecond) // the slow calls are now waiting
 	start := time.Now()

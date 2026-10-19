@@ -40,7 +40,7 @@ func TestAPIKeyNeverOnArgv(t *testing.T) {
 }
 
 func TestSchemeTypesAndNames(t *testing.T) {
-	for short, full := range map[string]string{"ollama": "ollama_http", "openai": "openai_compatible", "anthropic": "anthropic_compatible", "codex": "codex_app_server", "codex_app_server": "codex_app_server"} {
+	for short, full := range map[string]string{"ollama": "ollama_http", "openai": "openai_compatible", "anthropic": "anthropic_compatible", "codex": "codex_app_server", "codex_app_server": "codex_app_server", "grok": "grok_build", "antigravity": "antigravity_cli", "agy": "antigravity_cli", "grok_build": "grok_build", "antigravity_cli": "antigravity_cli"} {
 		if got, err := schemeType(short); err != nil || got != full {
 			t.Errorf("%s: %q %v", short, got, err)
 		}

@@ -1,4 +1,4 @@
-package connector
+package cliruntime
 
 import (
 	"strings"
@@ -69,7 +69,7 @@ var codexArgs = []string{"app-server", "--stdio", "-c", `web_search="disabled"`,
 // via cmd.exe with every argument surviving cmd's and the CRT's parsing.
 func TestCodexLaunchWindowsBatch(t *testing.T) {
 	for _, bin := range []string{`C:\Program Files\nodejs\codex.cmd`, `C:\x\CODEX.BAT`} {
-		spec := codexLaunch("windows", `C:\Windows\system32\cmd.exe`, bin, codexArgs)
+		spec := Launch("windows", `C:\Windows\system32\cmd.exe`, bin, codexArgs)
 		if spec.Path != `C:\Windows\system32\cmd.exe` || spec.CmdLine == "" {
 			t.Fatalf("%s: not launched via ComSpec: %+v", bin, spec)
 		}
@@ -85,14 +85,14 @@ func TestCodexLaunchWindowsBatch(t *testing.T) {
 			t.Fatalf("args did not round-trip:\n got  %q\n want %q", got, want)
 		}
 	}
-	if s := codexLaunch("windows", "", `C:\x\codex.cmd`, nil); !strings.Contains(s.CmdLine, `cmd.exe`) {
+	if s := Launch("windows", "", `C:\x\codex.cmd`, nil); !strings.Contains(s.CmdLine, `cmd.exe`) {
 		t.Fatalf("default comspec: %+v", s)
 	}
 }
 
 func TestCodexLaunchDirect(t *testing.T) {
 	for _, c := range []struct{ goos, bin string }{{"windows", `C:\x\codex.exe`}, {"linux", "/usr/bin/codex.cmd"}, {"darwin", "/opt/codex"}} {
-		s := codexLaunch(c.goos, "", c.bin, codexArgs)
+		s := Launch(c.goos, "", c.bin, codexArgs)
 		if s.CmdLine != "" || s.Path != c.bin || len(s.Args) != len(codexArgs)+1 || s.Args[0] != c.bin {
 			t.Fatalf("%v: %+v", c, s)
 		}
@@ -101,7 +101,7 @@ func TestCodexLaunchDirect(t *testing.T) {
 
 func TestLimitedEnvironmentWindowsKeepsSystemVars(t *testing.T) {
 	env := []string{"SystemRoot=C:\\Windows", "ComSpec=C:\\Windows\\system32\\cmd.exe", "Path=C:\\bin", "USERPROFILE=C:\\Users\\a", "SECRET=x", "PATHEXT=.EXE;.CMD"}
-	got := strings.Join(limitedEnvironmentFor("windows", env), ";")
+	got := strings.Join(EnvironmentFor("windows", env), ";")
 	for _, k := range []string{"SystemRoot=", "ComSpec=", "Path=", "USERPROFILE=", "PATHEXT="} {
 		if !strings.Contains(got, k) {
 			t.Fatalf("windows env lost %s: %s", k, got)
@@ -110,7 +110,7 @@ func TestLimitedEnvironmentWindowsKeepsSystemVars(t *testing.T) {
 	if strings.Contains(got, "SECRET") {
 		t.Fatal("leaked unrelated env")
 	}
-	if l := strings.Join(limitedEnvironmentFor("linux", env), ";"); strings.Contains(l, "SystemRoot") || strings.Contains(l, "SECRET") {
+	if l := strings.Join(EnvironmentFor("linux", env), ";"); strings.Contains(l, "SystemRoot") || strings.Contains(l, "SECRET") {
 		t.Fatalf("linux env: %s", l)
 	}
 }

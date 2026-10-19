@@ -22,10 +22,14 @@ import (
 	"unicode"
 
 	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/builtin"
 	"github.com/tyro668/avora/internal/durable"
 	"github.com/tyro668/avora/internal/lmbp"
 	"github.com/tyro668/avora/internal/lmbp/client"
 )
+
+var backendRegistry = builtin.NewRegistry()
 
 type Config struct {
 	// RemoteURL is the paired remote service (health is shown in the UI).
@@ -48,42 +52,9 @@ type Config struct {
 	Audit *audit.Log
 }
 
-type AdapterConfig struct {
-	ID              string   `json:"id"`
-	Type            string   `json:"type"`
-	Name            string   `json:"name"`
-	Provider        string   `json:"provider,omitempty"`
-	BaseURL         string   `json:"base_url,omitempty"`
-	APIKey          string   `json:"api_key,omitempty"`
-	CodexBin        string   `json:"codex_bin,omitempty"`
-	Models          []string `json:"models"`
-	ContextWindow   int      `json:"context_window,omitempty"`
-	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	IsDefault       bool     `json:"is_default,omitempty"`
-	Enabled         bool     `json:"enabled"`
-	SkipModelProbe  bool     `json:"skip_model_probe,omitempty"`
-	// Capabilities are the per-model flags advertised for this adapter's
-	// models (tools, vision, audio). Empty means the adapter type default.
-	Capabilities []string `json:"capabilities,omitempty"`
-	// Concurrency limits parallel tasks on this adapter (Codex is always 1).
-	Concurrency int `json:"concurrency,omitempty"`
-}
-
-// AdapterHealth is the result of probing one adapter.
-type AdapterHealth struct {
-	AdapterID         string   `json:"adapter_id"`
-	AdapterType       string   `json:"adapter_type"`
-	RuntimeVersion    string   `json:"runtime_version,omitempty"`
-	Models            []string `json:"models"`
-	Health            string   `json:"health"` // ready | unavailable | disabled
-	AuthState         string   `json:"auth_state"`
-	InferenceLocation string   `json:"inference_location"` // local | provider_cloud
-	FreeSlots         int      `json:"free_slots"`
-	// Error says why the scheme is unavailable when that is known locally
-	// (e.g. the Codex CLI is missing). Display only.
-	Error string `json:"error,omitempty"`
-}
+// AdapterConfig and AdapterHealth retain the existing management API schema.
+type AdapterConfig = backend.Config
+type AdapterHealth = backend.Health
 
 type Connector struct {
 	cfgVer          uint64            // bumped by every adapter-list change
@@ -184,21 +155,21 @@ func safeURL(raw string) error {
 }
 
 // validateAdapter is the full check for a scheme being saved or tested: an
-// enabled Codex scheme needs a runnable CLI.
+// enabled CLI scheme needs a runnable CLI.
 func validateAdapter(a *AdapterConfig) error { return validateAdapterOpt(a, true) }
 
 // validateSavedAdapter checks a scheme being saved by an edit: a disabled
-// Codex scheme may keep a CLI path that does not resolve right now, so it
+// CLI scheme may keep a CLI path that does not resolve right now, so it
 // can be renamed or disabled; enabling it again needs a runnable CLI.
 func validateSavedAdapter(a *AdapterConfig) error { return validateAdapterOpt(a, a.Enabled) }
 
-// validateLoadedAdapter checks a scheme read from configuration. A Codex CLI
+// validateLoadedAdapter checks a scheme read from configuration. A CLI
 // that was removed, moved or lost its exec permission does not fail the
 // load: the scheme stays, editable and deletable, and its health reports
-// the missing CLI (probeCodexAdapter).
+// the missing CLI.
 func validateLoadedAdapter(a *AdapterConfig) error { return validateAdapterOpt(a, false) }
 
-func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
+func validateAdapterOpt(a *AdapterConfig, requireRuntime bool) error {
 	if a.ID == "" || len(a.ID) > 64 || strings.Contains(a.ID, "/") || len(a.Models) == 0 || len(a.Models) > 100 {
 		return errors.New("adapter ID (no '/') and 1-100 models required")
 	}
@@ -209,7 +180,7 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 		return errors.New("invalid profile settings")
 	}
 	switch a.ReasoningEffort {
-	case "", "off", "low", "medium", "high":
+	case "", "default", "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 	default:
 		return errors.New("invalid reasoning effort")
 	}
@@ -221,26 +192,7 @@ func validateAdapterOpt(a *AdapterConfig, needCodex bool) error {
 	if _, dups := lmbp.Unique(a.Capabilities); len(dups) > 0 {
 		return fmt.Errorf("duplicate capability %q (each capability may be listed once)", dups[0])
 	}
-	switch a.Type {
-	case "codex_app_server":
-		if len(a.Capabilities) > 0 {
-			return errors.New("the Codex adapter is text-only")
-		}
-		if a.CodexBin == "" {
-			a.CodexBin = "codex"
-		}
-		path, err := resolveCodex(a.CodexBin)
-		if err != nil {
-			if needCodex {
-				return err
-			}
-			break // kept as configured; reported as the scheme's health
-		}
-		a.CodexBin = path
-	default:
-		return checkEndpoint(*a)
-	}
-	return nil
+	return backendRegistry.Validate(a, requireRuntime)
 }
 
 // checkPublishedIDs applies the hello constraints (spec §7.4, defs.json
@@ -404,106 +356,8 @@ func (x *Connector) sortedAdapterIDsLocked() []string {
 	return ids
 }
 
-// checkEndpoint validates where an HTTP adapter sends requests and its key.
-func checkEndpoint(a AdapterConfig) error {
-	switch a.Type {
-	case "ollama_http":
-		if err := safeURL(a.BaseURL); err != nil {
-			return fmt.Errorf("adapter URL: %w", err)
-		}
-	case "openai_compatible", "anthropic_compatible":
-		if err := safeProviderURL(a.BaseURL); err != nil {
-			return fmt.Errorf("adapter URL: %w", err)
-		}
-		if a.APIKey == "" || len(a.APIKey) > 4096 {
-			return errors.New("API key required (maximum 4096 characters)")
-		}
-	default:
-		return fmt.Errorf("unsupported adapter type %q", a.Type)
-	}
-	return nil
-}
-
-func safeProviderURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	if u.User != nil || u.Hostname() == "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || strings.Contains(u.Path, "..") {
-		return errors.New("invalid provider URL")
-	}
-	u.Path = ""
-	u.RawPath = ""
-	return safeURL(u.String())
-}
-
-func providerEndpoint(base, endpoint string) string {
-	base = strings.TrimRight(base, "/")
-	if strings.HasSuffix(base, "/v1") {
-		return base + endpoint
-	}
-	return base + "/v1" + endpoint
-}
-
-func adapterEndpoint(a AdapterConfig, endpoint string) string {
-	if a.Provider == "deepseek" {
-		base := strings.TrimRight(a.BaseURL, "/")
-		if base == "https://api.deepseek.com" || base == "https://api.deepseek.com/v1" {
-			return "https://api.deepseek.com" + endpoint
-		}
-	}
-	return providerEndpoint(a.BaseURL, endpoint)
-}
-
-// paramCaps is the per-adapter request-parameter table (§16.4): the
-// parameters each adapter type maps to its upstream API. Everything else is
-// rejected with CAPABILITY_UNSUPPORTED (checkCaps), never silently ignored.
-//
-//	adapter               temperature  top_p  stop                 max_tokens
-//	openai_compatible     yes          yes    stop                 max_tokens
-//	anthropic_compatible  yes          yes    stop_sequences       max_tokens
-//	ollama_http           options.temperature / top_p / stop / num_predict
-//	codex_app_server      no           no     no                   no
-//
-// The Codex app-server has no sampling, stop or output-length controls; it
-// also has no message roles, so codexInput merges the conversation into one
-// role-tagged text ("[system]\n...\n\n[user]\n..."). Its finish_reason is
-// "stop" because a completed turn is the only success it can report (it
-// cannot be cut by length).
-func paramCaps(typ string) []string {
-	switch typ {
-	case "openai_compatible", "anthropic_compatible", "ollama_http":
-		return append([]string{lmbp.ModelCapParams}, lmbp.ParamCaps...)
-	}
-	return []string{lmbp.ModelCapParams}
-}
-
-// capsOf returns the per-model capability flags of an adapter: the
-// configured (or type default) tools/vision/audio flags plus the adapter
-// type's parameter table.
-func capsOf(a AdapterConfig) []string {
-	var caps []string
-	switch {
-	case len(a.Capabilities) > 0:
-		caps = append(caps, a.Capabilities...)
-	case a.Type == "openai_compatible", a.Type == "anthropic_compatible":
-		caps = []string{lmbp.ModelCapTools, lmbp.ModelCapVision}
-	case a.Type == "ollama_http":
-		caps = []string{lmbp.ModelCapTools}
-	}
-	caps, _ = lmbp.Unique(append(caps, paramCaps(a.Type)...)) // published as model_capabilities: unique items
-	return caps
-}
-
-func adapterSlots(a AdapterConfig) int {
-	if a.Type == "codex_app_server" {
-		return 1
-	}
-	if a.Concurrency > 0 {
-		return a.Concurrency
-	}
-	return 4
-}
+func capsOf(a AdapterConfig) []string  { return backendRegistry.Capabilities(a) }
+func adapterSlots(a AdapterConfig) int { return backendRegistry.Slots(a) }
 
 func has(xs []string, x string) bool {
 	for _, v := range xs {
@@ -513,10 +367,6 @@ func has(xs []string, x string) bool {
 	}
 	return false
 }
-
-type knownFailure string
-
-func (e knownFailure) Error() string { return string(e) }
 
 // ---------- lmbp Executor ----------
 
@@ -682,109 +532,21 @@ func (x *Connector) execute(ctx context.Context, l *link, run lmbp.TaskRun, emit
 	}
 	ctx, cancel := context.WithTimeout(ctx, 600*time.Second)
 	defer cancel()
-	out := &limitedEmitter{emit: emit}
-	var done *lmbp.TaskDone
-	var err error
-	switch a.Type {
-	case "codex_app_server":
-		var usage *lmbp.Usage
-		usage, err = x.callCodex(ctx, modelID, run.Messages, a, out.text)
-		done = &lmbp.TaskDone{FinishReason: "stop", Usage: usage}
-	case "openai_compatible":
-		done, err = x.callOpenAI(ctx, modelID, run, a, out)
-	case "anthropic_compatible":
-		done, err = x.callAnthropic(ctx, modelID, run, a, out)
-	default:
-		done, err = x.callOllama(ctx, modelID, run, a, out)
+	b, err := backendRegistry.Open(a, backend.Dependencies{ProbeClient: x.client, ModelClient: x.modelClient})
+	if err != nil {
+		return nil, backend.ErrorBody(err)
 	}
-	switch {
-	case err == nil:
-		return done, nil
-	case errors.Is(err, errCodexInterrupted), errors.Is(err, context.Canceled):
-		return nil, &lmbp.ErrorBody{Code: lmbp.ErrCancelled, Message: "cancelled"}
-	case errors.Is(err, context.DeadlineExceeded):
-		return nil, &lmbp.ErrorBody{Code: lmbp.ErrTimeout, Message: "runtime deadline elapsed"}
+	run.Model = modelID
+	done, err := b.Execute(ctx, run, &backend.Emitter{Emit: emit})
+	if err != nil {
+		return nil, backend.ErrorBody(err)
 	}
-	var known knownFailure
-	if errors.As(err, &known) {
-		switch {
-		case strings.HasPrefix(err.Error(), "POLICY_DENIED"):
-			return nil, &lmbp.ErrorBody{Code: lmbp.ErrForbidden, Message: err.Error()}
-		case strings.HasPrefix(err.Error(), "CAPABILITY_UNSUPPORTED"):
-			return nil, &lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: err.Error()}
-		}
-	}
-	retry := errors.As(err, &known) && (strings.HasPrefix(err.Error(), "PROVIDER_RATE_LIMITED") || strings.HasPrefix(err.Error(), "QUOTA_EXHAUSTED"))
-	return nil, &lmbp.ErrorBody{Code: lmbp.ErrUpstream, Message: err.Error(), Retryable: retry}
+	return done, nil
 }
 
-// checkCaps rejects inputs the adapter cannot represent (the gateway checks
-// the advertised flags first; this is the device's own enforcement).
 func checkCaps(a AdapterConfig, run lmbp.TaskRun) *lmbp.ErrorBody {
-	caps := capsOf(a)
-	unsupported := func(msg string) *lmbp.ErrorBody {
-		return &lmbp.ErrorBody{Code: lmbp.ErrUnsupported, Message: msg}
-	}
-	for flag, set := range map[string]bool{lmbp.ModelCapTemperature: run.Temperature != nil, lmbp.ModelCapTopP: run.TopP != nil,
-		lmbp.ModelCapStop: len(run.Stop) > 0, lmbp.ModelCapMaxTokens: run.MaxTokens > 0} {
-		if set && !has(caps, flag) {
-			return unsupported("model does not support the " + flag + " parameter")
-		}
-	}
-	if (len(run.Tools) > 0 || len(run.ToolChoice) > 0) && !has(caps, lmbp.ModelCapTools) {
-		return unsupported("model does not support tools")
-	}
-	for _, m := range run.Messages {
-		if (m.Role == "tool" || len(m.ToolCalls) > 0) && !has(caps, lmbp.ModelCapTools) {
-			return unsupported("model does not support tool messages")
-		}
-		for _, p := range m.Content.Parts {
-			switch {
-			case p.ImageURL != nil && !has(caps, lmbp.ModelCapVision):
-				return unsupported("model does not accept images")
-			case p.ImageURL != nil && a.Type == "ollama_http" && !strings.HasPrefix(p.ImageURL.URL, "data:"):
-				return unsupported("Ollama accepts inline (data:) images only")
-			case p.InputAudio != nil && (!has(caps, lmbp.ModelCapAudio) || a.Type != "openai_compatible"):
-				return unsupported("model does not accept audio")
-			}
-		}
-	}
-	return nil
+	return backendRegistry.CheckRequest(a, run)
 }
-
-// limitedEmitter caps total output and splits large text deltas.
-type limitedEmitter struct {
-	emit  func(lmbp.TaskDelta) error
-	total int
-}
-
-const maxOutputBytes = 10 << 20
-
-func (l *limitedEmitter) delta(d lmbp.TaskDelta) error {
-	l.total += len(d.Text)
-	for _, tc := range d.ToolCalls {
-		l.total += len(tc.Function.Arguments) + len(tc.Function.Name)
-	}
-	if l.total > maxOutputBytes {
-		return knownFailure("OUTPUT_LIMIT_EXCEEDED")
-	}
-	for len(d.Text) > 32<<10 {
-		n := 32 << 10
-		for n > 0 && (d.Text[n]&0xC0) == 0x80 {
-			n--
-		}
-		if err := l.emit(lmbp.TaskDelta{Text: d.Text[:n]}); err != nil {
-			return err
-		}
-		d.Text = d.Text[n:]
-	}
-	if d.Text == "" && len(d.ToolCalls) == 0 {
-		return nil
-	}
-	return l.emit(d)
-}
-
-func (l *limitedEmitter) text(s string) error { return l.delta(lmbp.TaskDelta{Text: s}) }
 
 // ---------- session ----------
 
@@ -873,103 +635,18 @@ func (x *Connector) probeAdapter(ctx context.Context, a AdapterConfig) AdapterHe
 
 // probeConfig probes a configuration (a stored scheme or a draft under test).
 func (x *Connector) probeConfig(ctx context.Context, a AdapterConfig) AdapterHealth {
-	if a.Type == "codex_app_server" {
-		return x.withSlots(x.probeCodexAdapter(ctx, a))
-	}
-	h := AdapterHealth{AdapterID: a.ID, AdapterType: a.Type, Models: a.Models, Health: "unavailable", AuthState: "ready", InferenceLocation: "local", FreeSlots: adapterSlots(a)}
-	cloud := a.Type == "openai_compatible" || a.Type == "anthropic_compatible"
-	if cloud {
-		h.InferenceLocation, h.AuthState = "provider_cloud", "configured"
-	}
-	if !a.Enabled {
-		h.Health, h.FreeSlots = "disabled", 0
-		return h
-	}
-	if cloud && a.SkipModelProbe {
-		h.Health = "ready"
-		return x.withSlots(h)
-	}
-	ids, err := x.listProviderModels(ctx, a)
+	b, err := backendRegistry.Open(a, backend.Dependencies{ProbeClient: x.client, ModelClient: x.modelClient})
 	if err != nil {
-		h.Error = err.Error()
-		return h
+		return AdapterHealth{AdapterID: a.ID, AdapterType: a.Type, Health: "unavailable", Error: err.Error()}
 	}
-	available := map[string]bool{}
-	for _, m := range ids {
-		available[m] = true
-	}
-	h.Models = nil
-	for _, m := range a.Models {
-		if available[m] {
-			h.Models = append(h.Models, m)
-		}
-	}
-	if len(h.Models) > 0 {
-		h.Health = "ready"
-	}
-	return x.withSlots(h)
+	return x.withSlots(b.Probe(ctx))
 }
-
-// listProviderModels returns the model IDs an HTTP adapter's provider
-// reports: GET /models for cloud providers, /api/tags (name and model) for
-// Ollama.
 func (x *Connector) listProviderModels(ctx context.Context, a AdapterConfig) ([]string, error) {
-	cloud := a.Type == "openai_compatible" || a.Type == "anthropic_compatible"
-	probeURL := strings.TrimRight(a.BaseURL, "/") + "/api/tags"
-	if cloud {
-		probeURL = adapterEndpoint(a, "/models")
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+	b, err := backendRegistry.Open(a, backend.Dependencies{ProbeClient: x.client, ModelClient: x.modelClient})
 	if err != nil {
 		return nil, err
 	}
-	if a.Type == "openai_compatible" {
-		req.Header.Set("Authorization", "Bearer "+a.APIKey)
-	} else if a.Type == "anthropic_compatible" {
-		req.Header.Set("x-api-key", a.APIKey)
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-	probeClient := *x.client
-	probeClient.Timeout = 5 * time.Second
-	resp, err := probeClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		if cloud && (resp.StatusCode == 404 || resp.StatusCode == 405 || resp.StatusCode == 501) {
-			return nil, fmt.Errorf("model list endpoint unavailable (HTTP %d); if the service has no /models, enable \"skip model list probe\" for this scheme", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("model list: HTTP %d", resp.StatusCode)
-	}
-	ids := []string{}
-	if cloud {
-		var v struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil {
-			return nil, fmt.Errorf("model list: %w", err)
-		}
-		for _, m := range v.Data {
-			ids = append(ids, m.ID)
-		}
-	} else {
-		var v struct {
-			Models []struct {
-				Name  string `json:"name"`
-				Model string `json:"model"`
-			} `json:"models"`
-		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&v); err != nil {
-			return nil, fmt.Errorf("model list: %w", err)
-		}
-		for _, m := range v.Models {
-			ids = append(ids, m.Name, m.Model)
-		}
-	}
-	return ids, nil
+	return b.Models(ctx)
 }
 
 func (x *Connector) withSlots(h AdapterHealth) AdapterHealth {

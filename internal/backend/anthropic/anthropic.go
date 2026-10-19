@@ -1,4 +1,4 @@
-package connector
+package anthropic
 
 import (
 	"bufio"
@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/httpapi"
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
@@ -37,19 +39,19 @@ func anthropicContent(c lmbp.Content) ([]map[string]any, error) {
 		case p.Type == "text":
 			out = append(out, map[string]any{"type": "text", "text": p.Text})
 		case p.ImageURL != nil:
-			if mt, data, ok := parseDataURI(p.ImageURL.URL); ok {
+			if mt, data, ok := httpapi.ParseDataURI(p.ImageURL.URL); ok {
 				out = append(out, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mt, "data": data}})
 			} else {
 				out = append(out, map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": p.ImageURL.URL}})
 			}
 		default:
-			return nil, knownFailure("CAPABILITY_UNSUPPORTED: Anthropic adapter does not accept " + p.Type)
+			return nil, backend.Failure("CAPABILITY_UNSUPPORTED: Anthropic adapter does not accept " + p.Type)
 		}
 	}
 	return out, nil
 }
 
-func anthropicRequest(model string, run lmbp.TaskRun, a AdapterConfig) (map[string]any, error) {
+func anthropicRequest(model string, run lmbp.TaskRun, a backend.Config) (map[string]any, error) {
 	var system []string
 	var messages []map[string]any
 	add := func(role string, blocks []map[string]any) {
@@ -83,9 +85,9 @@ func anthropicRequest(model string, run lmbp.TaskRun, a AdapterConfig) (map[stri
 		}
 	}
 	if len(messages) == 0 {
-		return nil, knownFailure("POLICY_DENIED: Anthropic Messages requires a user or assistant message")
+		return nil, backend.Failure("POLICY_DENIED: Anthropic Messages requires a user or assistant message")
 	}
-	mt := maxTokens(run, a)
+	mt := httpapi.MaxTokens(run, a)
 	if mt == 0 {
 		mt = 1024 // Messages requires max_tokens.
 	}
@@ -130,13 +132,13 @@ func anthropicRequest(model string, run lmbp.TaskRun, a AdapterConfig) (map[stri
 	return payload, nil
 }
 
-func (x *Connector) callAnthropic(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
+func (x *Adapter) callAnthropic(ctx context.Context, model string, run lmbp.TaskRun, a backend.Config, out *backend.Emitter) (*lmbp.TaskDone, error) {
 	payload, err := anthropicRequest(model, run, a)
 	if err != nil {
 		return nil, err
 	}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, adapterEndpoint(a, "/messages"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, httpapi.Endpoint(a, "/messages"), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +151,7 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lmbp.Ta
 		return nil, err
 	}
 	defer res.Body.Close()
-	if err := providerStatus(res.StatusCode); err != nil {
+	if err := httpapi.Status(res.StatusCode); err != nil {
 		return nil, err
 	}
 	finish := func(stop string) string {
@@ -176,18 +178,18 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lmbp.Ta
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
 		}
-		if err := json.NewDecoder(io.LimitReader(res.Body, maxOutputBytes+1)).Decode(&msg); err != nil {
+		if err := json.NewDecoder(io.LimitReader(res.Body, backend.MaxOutputBytes+1)).Decode(&msg); err != nil {
 			return nil, err
 		}
 		idx := 0
 		for _, b := range msg.Content {
 			switch b.Type {
 			case "text":
-				err = out.text(b.Text)
+				err = out.Text(b.Text)
 			case "tool_use":
 				i := idx
 				idx++
-				err = out.delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, ID: b.ID, Type: "function", Function: lmbp.FunctionCall{Name: b.Name, Arguments: string(b.Input)}}}})
+				err = out.Delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, ID: b.ID, Type: "function", Function: lmbp.FunctionCall{Name: b.Name, Arguments: string(b.Input)}}}})
 			}
 			if err != nil {
 				return nil, err
@@ -239,15 +241,15 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lmbp.Ta
 			if ev.ContentBlock.Type == "tool_use" {
 				i := len(toolIndex)
 				toolIndex[ev.Index] = i
-				return out.delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, ID: ev.ContentBlock.ID, Type: "function", Function: lmbp.FunctionCall{Name: ev.ContentBlock.Name}}}})
+				return out.Delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, ID: ev.ContentBlock.ID, Type: "function", Function: lmbp.FunctionCall{Name: ev.ContentBlock.Name}}}})
 			}
 		case "content_block_delta":
 			switch ev.Delta.Type {
 			case "text_delta":
-				return out.text(ev.Delta.Text)
+				return out.Text(ev.Delta.Text)
 			case "input_json_delta":
 				if i, ok := toolIndex[ev.Index]; ok && ev.Delta.PartialJSON != "" {
-					return out.delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, Function: lmbp.FunctionCall{Arguments: ev.Delta.PartialJSON}}}})
+					return out.Delta(lmbp.TaskDelta{ToolCalls: []lmbp.ToolCall{{Index: &i, Function: lmbp.FunctionCall{Arguments: ev.Delta.PartialJSON}}}})
 				}
 			}
 		case "message_delta":
@@ -258,7 +260,7 @@ func (x *Connector) callAnthropic(ctx context.Context, model string, run lmbp.Ta
 		case "message_stop":
 			stopped = true
 		case "error":
-			return knownFailure("UPSTREAM_ERROR: provider stream error")
+			return backend.Failure("UPSTREAM_ERROR: provider stream error")
 		}
 		return nil
 	}

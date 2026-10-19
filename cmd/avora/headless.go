@@ -564,10 +564,13 @@ func confirmFrom(in *bufio.Reader, prompt string) bool {
 // ---- scheme ----
 
 var schemeTypes = map[string]string{
-	"ollama":    "ollama_http",
-	"openai":    "openai_compatible",
-	"anthropic": "anthropic_compatible",
-	"codex":     "codex_app_server",
+	"ollama":      "ollama_http",
+	"openai":      "openai_compatible",
+	"anthropic":   "anthropic_compatible",
+	"codex":       "codex_app_server",
+	"grok":        "grok_build",
+	"antigravity": "antigravity_cli",
+	"agy":         "antigravity_cli",
 }
 
 func schemeType(t string) (string, error) {
@@ -579,7 +582,7 @@ func schemeType(t string) (string, error) {
 			return full, nil
 		}
 	}
-	return "", fmt.Errorf("unsupported scheme type %q (ollama, openai, anthropic or codex)", t)
+	return "", fmt.Errorf("unsupported scheme type %q (ollama, openai, anthropic, codex, grok or antigravity)", t)
 }
 
 // rejectKeyArgs refuses an API key on the command line (visible in ps and
@@ -595,30 +598,31 @@ func rejectKeyArgs(args []string) error {
 }
 
 type schemeFlags struct {
-	typ, id, name, baseURL, models, codexBin, caps, keyEnv, provider, effort *string
-	keyStdin, enable, disable, def                                           *bool
-	conc, ctxWin, maxOut                                                     *int
+	typ, id, name, baseURL, models, codexBin, executable, caps, keyEnv, provider, effort *string
+	keyStdin, enable, disable, def                                                       *bool
+	conc, ctxWin, maxOut                                                                 *int
 }
 
 func addSchemeFlags(f *flag.FlagSet, add bool) schemeFlags {
 	s := schemeFlags{
-		id:       f.String("id", "", "scheme ID (letters, digits, - or _; default derived from --type)"),
-		name:     f.String("name", "", fmt.Sprintf("display name (at most %d bytes; default from the first model)", connector.MaxSchemeNameBytes)),
-		baseURL:  f.String("base-url", "", "API base URL (ollama, openai, anthropic)"),
-		models:   f.String("models", "", "comma separated model IDs"),
-		codexBin: f.String("codex-bin", "", "Codex CLI executable (codex)"),
-		caps:     f.String("capabilities", "", "comma separated capability flags: tools,vision,audio"),
-		keyEnv:   f.String("api-key-env", "", "read the API key from this environment variable"),
-		keyStdin: f.Bool("api-key-stdin", false, "read the API key from the first line of stdin"),
-		provider: f.String("provider", "", "provider label (optional)"),
-		effort:   f.String("reasoning-effort", "", "off, low, medium or high"),
-		conc:     f.Int("concurrency", 0, "parallel tasks on this scheme"),
-		ctxWin:   f.Int("context-window", 0, "context window tokens"),
-		maxOut:   f.Int("max-output-tokens", 0, "maximum output tokens"),
-		def:      f.Bool("default", false, "make this the default scheme"),
+		id:         f.String("id", "", "scheme ID (letters, digits, - or _; default derived from --type)"),
+		name:       f.String("name", "", fmt.Sprintf("display name (at most %d bytes; default from the first model)", connector.MaxSchemeNameBytes)),
+		baseURL:    f.String("base-url", "", "API base URL (ollama, openai, anthropic)"),
+		models:     f.String("models", "", "comma separated model IDs"),
+		executable: f.String("executable", "", "CLI executable path (grok or agy)"),
+		codexBin:   f.String("codex-bin", "", "Codex CLI executable (codex)"),
+		caps:       f.String("capabilities", "", "comma separated capability flags: tools,vision,audio"),
+		keyEnv:     f.String("api-key-env", "", "read the API key from this environment variable"),
+		keyStdin:   f.Bool("api-key-stdin", false, "read the API key from the first line of stdin"),
+		provider:   f.String("provider", "", "provider label (optional)"),
+		effort:     f.String("reasoning-effort", "", "default, none, minimal, low, medium, high, xhigh, max or ultra (model-dependent)"),
+		conc:       f.Int("concurrency", 0, "parallel tasks on this scheme"),
+		ctxWin:     f.Int("context-window", 0, "context window tokens"),
+		maxOut:     f.Int("max-output-tokens", 0, "maximum output tokens"),
+		def:        f.Bool("default", false, "make this the default scheme"),
 	}
 	if add {
-		s.typ = f.String("type", "", "ollama, openai, anthropic or codex (required)")
+		s.typ = f.String("type", "", "ollama, openai, anthropic, codex, grok or antigravity (required)")
 	} else {
 		s.enable = f.Bool("enable", false, "enable the scheme")
 		s.disable = f.Bool("disable", false, "disable the scheme")
@@ -708,7 +712,7 @@ func schemeAdd(args []string) error {
 		return err
 	}
 	a := connector.AdapterConfig{Type: typ, ID: *s.id, Name: strings.TrimSpace(*s.name), BaseURL: *s.baseURL, Models: split(*s.models),
-		CodexBin: *s.codexBin, Capabilities: split(*s.caps), Provider: *s.provider, ReasoningEffort: *s.effort,
+		CodexBin: *s.codexBin, Executable: *s.executable, Capabilities: split(*s.caps), Provider: *s.provider, ReasoningEffort: *s.effort,
 		Concurrency: *s.conc, ContextWindow: *s.ctxWin, MaxOutputTokens: *s.maxOut, IsDefault: *s.def, Enabled: true}
 	key, hasKey, err := s.apiKey()
 	if err != nil {
@@ -827,8 +831,8 @@ func schemeUpdate(args []string) error {
 		}
 		patch["name"] = strings.TrimSpace(*s.name)
 	}
-	str := map[string]*string{"base-url": s.baseURL, "codex-bin": s.codexBin, "provider": s.provider, "reasoning-effort": s.effort}
-	keys := map[string]string{"base-url": "base_url", "codex-bin": "codex_bin", "provider": "provider", "reasoning-effort": "reasoning_effort"}
+	str := map[string]*string{"base-url": s.baseURL, "codex-bin": s.codexBin, "executable": s.executable, "provider": s.provider, "reasoning-effort": s.effort}
+	keys := map[string]string{"base-url": "base_url", "codex-bin": "codex_bin", "executable": "executable", "provider": "provider", "reasoning-effort": "reasoning_effort"}
 	for fl, p := range str {
 		if set[fl] {
 			patch[keys[fl]] = *p
@@ -922,7 +926,7 @@ func schemeTest(args []string) error {
 	if a.HealthError != "" && a.Health == "unavailable" && strings.HasPrefix(a.HealthError, "invalid configuration") {
 		return fmt.Errorf("scheme %s cannot be tested: %s (fix it with scheme update)", a.ID, a.HealthError)
 	}
-	cfg := connector.AdapterConfig{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin,
+	cfg := connector.AdapterConfig{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Executable: a.Executable,
 		Models: a.Models, ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort,
 		Capabilities: a.ConfiguredCapabilities, Concurrency: a.ConfiguredConcurrency, Enabled: true} // the stored key is reused
 	raw, err := call(c, map[string]any{"action": "test_adapter", "adapter": cfg})

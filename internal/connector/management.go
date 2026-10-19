@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/backend"
 	"github.com/tyro668/avora/internal/durable"
 	"github.com/tyro668/avora/internal/lmbp"
 )
@@ -23,6 +24,7 @@ type AdapterView struct {
 	Name            string   `json:"name"`
 	Provider        string   `json:"provider,omitempty"`
 	BaseURL         string   `json:"base_url,omitempty"`
+	Executable      string   `json:"executable,omitempty"`
 	CodexBin        string   `json:"codex_bin,omitempty"`
 	Models          []string `json:"models"`
 	ContextWindow   int      `json:"context_window,omitempty"`
@@ -49,7 +51,7 @@ type AdapterView struct {
 }
 
 func viewAdapter(a AdapterConfig) AdapterView {
-	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a), ConfiguredCapabilities: append([]string(nil), a.Capabilities...), ConfiguredConcurrency: a.Concurrency}
+	return AdapterView{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Executable: a.Executable, Models: append([]string(nil), a.Models...), ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort, IsDefault: a.IsDefault, Enabled: a.Enabled, HasAPIKey: a.APIKey != "", SkipModelProbe: a.SkipModelProbe, Capabilities: capsOf(a), Concurrency: adapterSlots(a), ConfiguredCapabilities: append([]string(nil), a.Capabilities...), ConfiguredConcurrency: a.Concurrency}
 }
 
 // Status is the device-wide status. connections[] lists every paired SaaS;
@@ -489,6 +491,23 @@ func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHe
 	if err := validateAdapter(&a); err != nil {
 		return AdapterHealth{}, err
 	}
+	if a.ReasoningEffort != "" {
+		b, err := backendRegistry.Open(a, backend.Dependencies{ProbeClient: x.client, ModelClient: x.modelClient})
+		if err != nil {
+			return AdapterHealth{}, err
+		}
+		if catalog, ok := b.(backend.ModelCatalog); ok {
+			models, err := catalog.Catalog(ctx)
+			if err != nil {
+				return AdapterHealth{}, err
+			}
+			for _, model := range a.Models {
+				if _, err = backend.ResolveEffort(models, model, a.ReasoningEffort); err != nil {
+					return AdapterHealth{}, err
+				}
+			}
+		}
+	}
 	a.Enabled = true
 	a.SkipModelProbe = false
 	return x.probeConfig(ctx, a), nil // a validated draft: a stored invalid flag does not apply
@@ -498,7 +517,7 @@ func (x *Connector) TestAdapter(ctx context.Context, a AdapterConfig) (AdapterHe
 // model picker. Nothing is stored.
 func (x *Connector) ProviderModels(ctx context.Context, a AdapterConfig) ([]string, error) {
 	a = x.withSavedKey(a)
-	if err := checkEndpoint(a); err != nil {
+	if err := backendRegistry.Validate(&a, true); err != nil {
 		return nil, err
 	}
 	ids, err := x.listProviderModels(ctx, a)
@@ -509,6 +528,39 @@ func (x *Connector) ProviderModels(ctx context.Context, a AdapterConfig) ([]stri
 	out := []string{}
 	for i, m := range ids {
 		if m != "" && (i == 0 || m != ids[i-1]) {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
+// ProviderCatalog returns model capabilities without changing the saved scheme.
+func (x *Connector) ProviderCatalog(ctx context.Context, a AdapterConfig) ([]backend.ModelInfo, error) {
+	a = x.withSavedKey(a)
+	if err := backendRegistry.Validate(&a, true); err != nil {
+		return nil, err
+	}
+	b, err := backendRegistry.Open(a, backend.Dependencies{ProbeClient: x.client, ModelClient: x.modelClient})
+	if err != nil {
+		return nil, err
+	}
+	var models []backend.ModelInfo
+	if catalog, ok := b.(backend.ModelCatalog); ok {
+		models, err = catalog.Catalog(ctx)
+	} else {
+		var ids []string
+		ids, err = b.Models(ctx)
+		for _, id := range ids {
+			models = append(models, backend.ModelInfo{ID: id, ReasoningEfforts: []backend.EffortOption{}})
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	out := []backend.ModelInfo{}
+	for _, m := range models {
+		if m.ID != "" && (len(out) == 0 || out[len(out)-1].ID != m.ID) {
 			out = append(out, m)
 		}
 	}

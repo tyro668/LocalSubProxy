@@ -715,7 +715,7 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 - 请求带 `tools` 而目标模型未声明 `tools`、或设备未协商 `tools` 能力时，网关 MUST 返回 400 `CAPABILITY_UNSUPPORTED`，MUST NOT 下发任务。
 - `tools`、`tool_choice` 原样放入签名的 `task.run`。设备在 `task.delta.tool_calls` 中按 OpenAI 流式格式回报（`index` 区分调用，`arguments` 可分片），以 `finish_reason: "tool_calls"` 结束。网关 MUST 透传为 SSE `delta.tool_calls`；非流式响应 MUST 按 `index` 合并成 `message.tool_calls`。
 - 后续请求中的 `role: "assistant"`+`tool_calls` 和 `role: "tool"`+`tool_call_id` 消息 MUST 原样转给设备。
-- 适配器映射（参考实现）：OpenAI 兼容直通；Anthropic 映射为 `tool_use`/`tool_result` 内容块与 `input_schema`；Ollama 映射为 `tools` 与 `message.tool_calls`（arguments 为对象）；Codex 订阅不支持（不声明能力）。
+- 适配器映射（参考实现）：OpenAI 兼容直通；Anthropic 映射为 `tool_use`/`tool_result` 内容块与 `input_schema`；Ollama 映射为 `tools` 与 `message.tool_calls`（arguments 为对象）；Codex、Grok Build、Antigravity CLI 不支持（不声明能力）。
 
 ### 16.2 内容片段
 `content` 可为片段数组：`{type:"text",text}`、`{type:"image_url",image_url:{url,detail?}}`（需 `vision`）、`{type:"input_audio",input_audio:{data,format}}`（需 `audio`）。缺少能力时 400 `CAPABILITY_UNSUPPORTED`。`image_url.url` 允许 `https://`（原样转发，由设备自行获取）与 `data:`；`http://` MUST 拒绝。
@@ -740,8 +740,12 @@ LMBP_TENANT_KEY=<租户 key> go run ./cmd/lmbp-conformance \
 | Anthropic 兼容 | `temperature` | `top_p` | `stop_sequences` | `max_tokens` | 同上 |
 | Ollama | `options.temperature` | `options.top_p` | `options.stop` | `options.num_predict` | 同上 |
 | Codex（app-server） | 不支持 | 不支持 | 不支持 | 不支持 | `params` |
+| Grok Build（CLI） | 不支持 | 不支持 | 不支持 | 不支持 | `params` |
+| Antigravity CLI | 不支持 | 不支持 | 不支持 | 不支持 | `params` |
 
 - Codex app-server 没有采样、停止序列和输出长度控制，也没有消息角色：连接器把对话合并成一段带角色标签的文本（`[system]`、`[user]`、`[assistant]` 各自成段），Codex 收到的是这一段文本，而不是分角色的消息。一轮正常完成即 `finish_reason: "stop"`（Codex 不会因长度截断）；中断、失败分别映射为 `CANCELLED`、上游错误。
+
+- Grok Build 与 Antigravity CLI 也将消息合并为带角色标签的文本，不向远端开放本地代理工具。Grok 的 `end_turn` 映射为 `stop`、`max_tokens` 映射为 `length`；Antigravity 的 `SUCCESS` 映射为 `stop`。仅在收到明确成功终态且进程成功退出后发送 `task.done`。
 
 ### 16.5 忽略与拒绝的请求字段
 本节把 §6.5、§6.7、§16.1–§16.4 分散的规则汇总成一张表，不新增要求。“忽略”指网关接受请求、照常执行，但该字段 MUST NOT 写入 `task.run`；“拒绝”指网关在存储、排队或签名之前返回错误，MUST NOT 下发任务。

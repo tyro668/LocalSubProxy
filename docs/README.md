@@ -9,6 +9,7 @@
 | 读协议规范（LMBP 2.0 正式版） | [lmbp-spec.md](lmbp-spec.md) |
 | 用其他语言自己实现网关 | [implementers-guide.md](implementers-guide.md)，机器可读契约和测试向量在 [spec/](../spec) |
 | 本机联调、模拟网关、聊天页 | [mock/README.md](../mock/README.md) |
+| 扩展本地模型后端、了解适配层边界 | [backend-architecture.md](backend-architecture.md) |
 | 桌面端 UI 与内核的接口 | [desktop-status-contract.md](desktop-status-contract.md) |
 | 构建和发布安装包 | [release.md](release.md) |
 

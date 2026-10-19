@@ -1,4 +1,4 @@
-package connector
+package cliruntime
 
 import (
 	"os"
@@ -42,7 +42,7 @@ func TestExecutableForWindows(t *testing.T) {
 		{"codex.cmd", " .Cmd ;", true},
 	} {
 		p, info := writeFile(t, dir, c.name, 0o644) // no exec bits, like Windows
-		if got := executableFor("windows", c.pathext, p, info); got != c.want {
+		if got := ExecutableFor("windows", c.pathext, p, info); got != c.want {
 			t.Errorf("windows %s (PATHEXT %q) = %v, want %v", c.name, c.pathext, got, c.want)
 		}
 	}
@@ -51,8 +51,8 @@ func TestExecutableForWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(sub)
-	if executableFor("windows", pathext, sub, info) {
-		t.Error("a directory named *.exe must not count as executable")
+	if ExecutableFor("windows", pathext, sub, info) {
+		t.Error("a directory named *.exe must not count as Executable")
 	}
 }
 
@@ -62,15 +62,15 @@ func TestExecutableForUnix(t *testing.T) {
 	}
 	dir := t.TempDir()
 	p, info := writeFile(t, dir, "codex", 0o755)
-	if !executableFor("linux", "", p, info) {
-		t.Error("0755 file must be executable on unix")
+	if !ExecutableFor("linux", "", p, info) {
+		t.Error("0755 file must be Executable on unix")
 	}
 	p, info = writeFile(t, dir, "codex.exe", 0o644)
-	if executableFor("darwin", ".EXE", p, info) {
-		t.Error("unix ignores extensions: 0644 codex.exe is not executable")
+	if ExecutableFor("darwin", ".EXE", p, info) {
+		t.Error("unix ignores extensions: 0644 codex.exe is not Executable")
 	}
-	if executableFor("linux", "", dir, mustStat(t, dir)) {
-		t.Error("directory must not be executable")
+	if ExecutableFor("linux", "", dir, mustStat(t, dir)) {
+		t.Error("directory must not be Executable")
 	}
 }
 

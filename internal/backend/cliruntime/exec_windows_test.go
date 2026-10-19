@@ -1,6 +1,6 @@
 //go:build windows
 
-package connector
+package cliruntime
 
 import (
 	"path/filepath"
@@ -8,14 +8,14 @@ import (
 )
 
 // On a real Windows host: a codex.cmd shim on PATH resolves.
-func TestResolveCodexWindowsShim(t *testing.T) {
+func TestResolveWindowsShim(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "codex.cmd", 0o644)
 	t.Setenv("PATH", dir)
 	t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-	got, err := resolveCodex("codex")
+	got, err := Resolve("codex", "Codex")
 	if err != nil {
-		t.Fatalf("resolveCodex: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if filepath.Base(got) != "codex.cmd" {
 		t.Fatalf("resolved %s", got)

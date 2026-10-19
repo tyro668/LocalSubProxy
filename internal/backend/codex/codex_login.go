@@ -1,4 +1,4 @@
-package connector
+package codex
 
 import (
 	"context"
@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tyro668/avora/internal/backend"
 )
 
 // CodexLogin keeps the official App Server alive for its browser callback.
@@ -110,7 +112,7 @@ func (l *CodexLogin) Check() ([]string, bool, error) {
 		return nil, false, errors.New("login session closed")
 	}
 	if r.err != nil {
-		var known knownFailure
+		var known backend.Failure
 		if errors.As(r.err, &known) && strings.HasPrefix(string(known), "AUTH_REQUIRED") {
 			return nil, false, nil
 		}

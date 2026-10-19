@@ -1,4 +1,4 @@
-package connector
+package ollama
 
 import (
 	"bufio"
@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/httpapi"
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
@@ -30,14 +32,14 @@ func ollamaMessages(msgs []lmbp.Message) ([]map[string]any, error) {
 		var images []string
 		for _, p := range m.Content.Parts {
 			if p.ImageURL != nil {
-				_, data, ok := parseDataURI(p.ImageURL.URL)
+				_, data, ok := httpapi.ParseDataURI(p.ImageURL.URL)
 				if !ok {
-					return nil, knownFailure("CAPABILITY_UNSUPPORTED: Ollama accepts inline (data:) images only")
+					return nil, backend.Failure("CAPABILITY_UNSUPPORTED: Ollama accepts inline (data:) images only")
 				}
 				images = append(images, data)
 			}
 			if p.InputAudio != nil {
-				return nil, knownFailure("CAPABILITY_UNSUPPORTED: Ollama does not accept audio")
+				return nil, backend.Failure("CAPABILITY_UNSUPPORTED: Ollama does not accept audio")
 			}
 		}
 		if len(images) > 0 {
@@ -82,10 +84,10 @@ func ollamaTools(run lmbp.TaskRun) (any, error) {
 			return nil, nil
 		}
 	}
-	return nil, knownFailure("CAPABILITY_UNSUPPORTED: Ollama cannot enforce tool_choice " + string(run.ToolChoice) + " (only \"auto\" and \"none\")")
+	return nil, backend.Failure("CAPABILITY_UNSUPPORTED: Ollama cannot enforce tool_choice " + string(run.ToolChoice) + " (only \"auto\" and \"none\")")
 }
 
-func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskRun, a AdapterConfig, out *limitedEmitter) (*lmbp.TaskDone, error) {
+func (x *Adapter) callOllama(ctx context.Context, model string, run lmbp.TaskRun, a backend.Config, out *backend.Emitter) (*lmbp.TaskDone, error) {
 	msgs, err := ollamaMessages(run.Messages)
 	if err != nil {
 		return nil, err
@@ -99,7 +101,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskR
 		body["tools"] = tools
 	}
 	opts := map[string]any{}
-	if mt := maxTokens(run, a); mt > 0 {
+	if mt := httpapi.MaxTokens(run, a); mt > 0 {
 		opts["num_predict"] = mt
 	}
 	if run.Temperature != nil {
@@ -127,7 +129,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskR
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return nil, knownFailure(fmt.Sprintf("UPSTREAM_ERROR: ollama returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))))
+		return nil, backend.Failure(fmt.Sprintf("UPSTREAM_ERROR: ollama returned %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))))
 	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
@@ -153,7 +155,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskR
 			return nil, fmt.Errorf("invalid Ollama stream: %w", err)
 		}
 		if part.Error != "" {
-			return nil, knownFailure("UPSTREAM_ERROR: " + part.Error)
+			return nil, backend.Failure("UPSTREAM_ERROR: " + part.Error)
 		}
 		d := lmbp.TaskDelta{Text: part.Message.Content}
 		for _, tc := range part.Message.ToolCalls {
@@ -165,7 +167,7 @@ func (x *Connector) callOllama(ctx context.Context, model string, run lmbp.TaskR
 			}
 			d.ToolCalls = append(d.ToolCalls, lmbp.ToolCall{Index: &i, ID: fmt.Sprintf("call_%d", i), Type: "function", Function: lmbp.FunctionCall{Name: tc.Function.Name, Arguments: args}})
 		}
-		if err := out.delta(d); err != nil {
+		if err := out.Delta(d); err != nil {
 			return nil, err
 		}
 		if part.Done {

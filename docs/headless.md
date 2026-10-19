@@ -1,6 +1,6 @@
 # 无界面模式（headless）
 
-`avora` 命令行可以不打开桌面应用，单独运行和桌面端**同一个内核**：多个 SaaS 连接、四种模型方案、模型授权、撤销、用量与审计。支持 Linux、macOS、Windows（amd64 / arm64）。
+`avora` 命令行可以不打开桌面应用，单独运行和桌面端**同一个内核**：多个 SaaS 连接、六种模型方案、模型授权、撤销、用量与审计。支持 Linux、macOS、Windows（amd64 / arm64）。
 
 下载：Releases 中的 `avora-cli-<版本>-<系统>-<架构>.tar.gz`（Windows 为 `.zip`）。从源码构建：`go build ./cmd/avora`，或 `scripts/build-cli.sh` 一次构建全部六个平台。
 
@@ -17,9 +17,10 @@
 ```text
 avora serve [--data-dir DIR] [--quiet]
 avora pair <https://SaaS 地址 | lmbp://pair?...> [--allow 方案/模型,...|*] [--yes] [--max-concurrency N]
-avora scheme add --type ollama|openai|anthropic|codex [--id ID] [--name 名称] [--base-url URL]
+avora scheme add --type ollama|openai|anthropic|codex|grok|antigravity [--id ID] [--name 名称] [--base-url URL]
                          [--models m1,m2] [--capabilities tools,vision,audio]
                          [--api-key-env 变量名 | --api-key-stdin] [--codex-bin codex]
+                         [--executable CLI路径]
 avora scheme list | update <id> [同上的选项, --enable, --disable] | rm <id> | test <id>
 avora status | connections
 avora revoke <连接 ID>
@@ -57,6 +58,29 @@ schemes:      2 (2 healthy)
 ID              SAAS       STATUS  TASKS  MODELS           URL
 b_816403ff4440  Acme Chat  online  0      ollama/qwen3-8b  https://chat.example.com
 ```
+
+## 配置 Grok Build 和 Antigravity CLI
+
+先在运行 Avora 的同一系统用户下安装官方 CLI 并登录：Grok 使用 `grok login`；Antigravity 使用 `agy` 并完成交互登录。Avora 使用官方 CLI 的登录状态，不接收这两种方案的 API Key。
+
+先用 `grok --no-auto-update models` 或 `agy models` 查出账号当前可用的模型 ID，再添加方案：
+
+```sh
+avora scheme add --type grok --id grok --models YOUR_GROK_MODEL --executable /path/to/grok
+avora scheme add --type antigravity --id agy --models YOUR_AGY_MODEL --executable /path/to/agy
+avora scheme test grok
+avora scheme test agy
+```
+
+`--executable` 可省略，分别从 PATH 查找 `grok`、`agy`；包含空格的路径按所在 shell 的规则加引号。类型也支持完整名称 `grok_build`、`antigravity_cli`，`agy` 是 `antigravity` 的别名。Codex 继续使用原有 `--codex-bin`。
+
+`--reasoning-effort default`（或省略此选项）不覆盖模型设置；显式档位只允许当前模型目录支持的值。`none` 是显式关闭，不能代替默认。Antigravity 会将档位映射到目录中的同组模型变体，不支持调整的模型只能使用默认。旧 `off` 在 Grok / Antigravity 中兼容为默认，在 Codex 中按 `none` 校验；不支持的档位在测试或执行时明确报错。
+
+这两种适配器只提供文本推理，每个方案并发为 1，不向远端开放 CLI 的文件、终端、MCP 或代理工具。CLI 必须支持当前适配器需要的 headless 参数及结构化输出，缺少选项会明确报错。当前已在本机验证 Grok Build 1.0.52 和已安装的 Antigravity CLI；不同平台的 CLI 安装与账号可用性仍取决于厂商。
+
+Antigravity 的全局 hooks、MCP、插件、规则或技能配置可能影响独立任务。目前发现这些配置会返回 `POLICY_DENIED` 并指出路径；请用无这些自定义项的系统用户运行，或自行禁用/移走对应配置。Avora 不会自动修改官方 CLI 配置。模型目录探测成功代表当前账号可见该模型，实际配额/服务可用性仍由推理请求确认。
+
+完整边界和扩展方式见 [本地后端架构](backend-architecture.md)。
 
 ## 作为系统服务运行
 

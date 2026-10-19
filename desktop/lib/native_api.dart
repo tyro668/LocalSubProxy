@@ -226,6 +226,13 @@ class NativeApi {
               const [])
           .cast<String>();
 
+  List<Map<String, dynamic>> providerCatalog(Map<String, dynamic> adapter) =>
+      ((_invoke(() => _call, {'action': 'provider_catalog', 'adapter': adapter})
+                  as List?) ??
+              const [])
+          .map((m) => (m as Map).cast<String, dynamic>())
+          .toList();
+
   List<String> codexModels(String path) =>
       (_invoke(() => _call, {'action': 'codex_models', 'path': path}) as List)
           .cast<String>();
@@ -309,6 +316,10 @@ Future<Map<String, dynamic>> testAdapterAsync(Map<String, dynamic> adapter) =>
 
 Future<List<String>> providerModelsAsync(Map<String, dynamic> adapter) =>
     _offThread(() => NativeApi.instance.providerModels(adapter));
+
+Future<List<Map<String, dynamic>>> providerCatalogAsync(
+  Map<String, dynamic> adapter,
+) => _offThread(() => NativeApi.instance.providerCatalog(adapter));
 
 Future<List<String>> codexModelsAsync(String path) =>
     _offThread(() => NativeApi.instance.codexModels(path));

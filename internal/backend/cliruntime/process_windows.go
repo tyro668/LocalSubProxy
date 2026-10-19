@@ -1,6 +1,6 @@
 //go:build windows
 
-package connector
+package cliruntime
 
 import (
 	"os/exec"
@@ -8,16 +8,16 @@ import (
 	"syscall"
 )
 
-func setProcessGroup(cmd *exec.Cmd) {}
-func killProcessGroup(cmd *exec.Cmd) {
+func SetProcessGroup(cmd *exec.Cmd) {}
+func KillProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = exec.Command("taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F").Run()
 		_ = cmd.Process.Kill()
 	}
 }
 
-// setCmdLine passes a pre-escaped command line verbatim (batch shims).
-func setCmdLine(cmd *exec.Cmd, line string) {
+// SetCmdLine passes a pre-escaped command line verbatim (batch shims).
+func SetCmdLine(cmd *exec.Cmd, line string) {
 	if line == "" {
 		return
 	}

@@ -1,0 +1,139 @@
+package grokbuild
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+
+	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/cliruntime"
+)
+
+// Catalog uses ACP's per-model metadata. No prompt or config mutation is sent.
+func (a *Adapter) Catalog(ctx context.Context) ([]backend.ModelInfo, error) {
+	// The text catalog checks authentication; ACP can expose fallback models
+	// even when the CLI is signed out.
+	ids, err := a.Models(ctx)
+	if err != nil {
+		return nil, err
+	}
+	o, cleanup, err := a.prepare()
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	o.Args = append(o.Args, "agent", "stdio")
+	request := func(id int, method string, params any) []byte {
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		return append(b, '\n')
+	}
+	initial := request(1, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": map[string]any{}, "clientInfo": map[string]string{"name": "avora", "version": "0.1.0"}})
+	complete := errors.New("catalog complete")
+	var models []backend.ModelInfo
+	wantID := 1
+	err = cliruntime.Exchange(ctx, o, initial, func(line []byte, in io.WriteCloser) error {
+		var msg struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			return err
+		}
+		if msg.Method != "" {
+			if len(msg.ID) > 0 {
+				return backend.Failure("POLICY_DENIED: unexpected Grok request during model discovery")
+			}
+			return nil
+		}
+		var id int
+		if json.Unmarshal(msg.ID, &id) != nil || id != wantID {
+			return backend.Failure("PROTOCOL_MISMATCH: unexpected Grok catalog response")
+		}
+		if msg.Error != nil {
+			return backend.Failure("Grok model discovery failed: " + msg.Error.Message)
+		}
+		if id == 1 {
+			wantID = 2
+			_, err := in.Write(request(2, "session/new", map[string]any{"cwd": o.Dir, "mcpServers": []any{}}))
+			return err
+		}
+		models, err = parseCatalog(msg.Result)
+		if err != nil {
+			return err
+		}
+		return complete
+	})
+	if !errors.Is(err, complete) {
+		if err == nil {
+			err = io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+	// Keep authenticated model IDs, including models whose older metadata is
+	// absent. Unknown capabilities permit default only, never invented levels.
+	byID := map[string]backend.ModelInfo{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	result := make([]backend.ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		m, ok := byID[id]
+		if !ok {
+			m = backend.ModelInfo{ID: id, ReasoningEfforts: []backend.EffortOption{}}
+		}
+		result = append(result, m)
+	}
+	return result, nil
+}
+
+func parseCatalog(raw []byte) ([]backend.ModelInfo, error) {
+	var session struct {
+		Models struct {
+			Available []struct {
+				ID   string `json:"modelId"`
+				Meta struct {
+					Supports *bool  `json:"supportsReasoningEffort"`
+					Effort   string `json:"reasoningEffort"`
+					Efforts  []struct {
+						ID      string `json:"id"`
+						Value   string `json:"value"`
+						Default bool   `json:"default"`
+					} `json:"reasoningEfforts"`
+				} `json:"_meta"`
+			} `json:"availableModels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &session); err != nil {
+		return nil, err
+	}
+	if len(session.Models.Available) == 0 {
+		return nil, backend.Failure("PROTOCOL_MISMATCH: Grok ACP returned no model metadata")
+	}
+	var models []backend.ModelInfo
+	for _, m := range session.Models.Available {
+		info := backend.ModelInfo{ID: m.ID, ReasoningKnown: m.Meta.Supports != nil, ReasoningEfforts: []backend.EffortOption{}}
+		if m.Meta.Supports != nil && *m.Meta.Supports {
+			info.DefaultReasoningEffort = m.Meta.Effort
+			for _, e := range m.Meta.Efforts {
+				v := e.Value
+				if v == "" {
+					v = e.ID
+				}
+				if v == "" {
+					continue
+				}
+				info.ReasoningEfforts = append(info.ReasoningEfforts, backend.EffortOption{Value: v})
+				if e.Default {
+					info.DefaultReasoningEffort = v
+				}
+			}
+		}
+		models = append(models, info)
+	}
+	return models, nil
+}

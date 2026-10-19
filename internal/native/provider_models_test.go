@@ -2,6 +2,7 @@ package native
 
 import (
 	"encoding/json"
+	"github.com/tyro668/avora/internal/backend"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -40,6 +41,21 @@ func TestProviderModelsSharedAPI(t *testing.T) {
 	}
 	if !response.OK || !slices.Equal(response.Data, []string{"a-model", "z-model"}) {
 		t.Fatalf("model discovery: %+v", response)
+	}
+	var catalogRequest map[string]any
+	_ = json.Unmarshal(request, &catalogRequest)
+	catalogRequest["action"] = "provider_catalog"
+	encoded, _ := json.Marshal(catalogRequest)
+	var catalog struct {
+		OK    bool                `json:"ok"`
+		Error string              `json:"error"`
+		Data  []backend.ModelInfo `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(Call(string(encoded))), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.OK || len(catalog.Data) != 2 || catalog.Data[0].ID != "a-model" || catalog.Data[1].ID != "z-model" || catalog.Data[0].ReasoningKnown || len(catalog.Data[0].ReasoningEfforts) != 0 {
+		t.Fatalf("catalog fallback: %+v", catalog)
 	}
 	if adapters := must(t, map[string]any{"action": "list_adapters"})["adapters"].([]any); len(adapters) != 0 {
 		t.Fatalf("discovery saved a draft adapter: %v", adapters)

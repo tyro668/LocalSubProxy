@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'app_dialog.dart';
+import 'backend_catalog.dart';
+import 'model_capabilities.dart';
 
 import 'native_api.dart';
 import 'status_contract.dart';
@@ -51,17 +53,21 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   final model = TextEditingController();
   final baseURL = TextEditingController();
   final apiKey = TextEditingController();
-  final codexPath = TextEditingController(text: 'codex');
+  final cliPath = TextEditingController(text: 'codex');
   final contextWindow = TextEditingController();
   final maxTokens = TextEditingController();
   String? selectedID;
   String provider = 'codex';
-  String reasoning = 'medium';
+  String reasoning = '';
+  String reasoningModel = '';
+  List<ModelCapabilities> modelCatalog = [];
+  (String?, String, String)? catalogSource;
+  int catalogRequest = 0;
   bool isDefault = false;
   bool skipModelProbe = false;
-  // false while the name is the generated "<模型>_<编号>" default, which then
-  // follows the chosen model; true once the user typed a name.
-  bool nameTouched = true;
+  // A new draft gets a name once, from user input or a committed model choice.
+  // Later model changes never rename the scheme.
+  bool nameAssigned = true;
   bool dirty = false;
   bool working = false;
   bool codexConnected = false;
@@ -104,12 +110,71 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       selected?['has_api_key'] == true &&
       selected?['type'] == type &&
       selected?['base_url'] == baseURL.text.trim();
-  String get type => switch (provider) {
-    'codex' => 'codex_app_server',
-    'anthropic' => 'anthropic_compatible',
-    'ollama' => 'ollama_http',
-    _ => 'openai_compatible',
-  };
+  BackendProfile get backend => backendForProvider(provider);
+  bool get isCLI => backend.isCLI;
+  String get type => backend.type;
+  String get executable => cliPath.text.trim().isEmpty
+      ? (backend.executable ?? '')
+      : cliPath.text.trim();
+
+  (String?, String, String) get discoverySource =>
+      (selectedID, provider, executable);
+
+  ModelCapabilities? get currentModelCapabilities {
+    if (catalogSource != discoverySource) return null;
+    for (final m in modelCatalog) {
+      if (m.id == model.text.trim()) return m;
+    }
+    return null;
+  }
+
+  List<EffortOption> get effortOptions => [
+    const EffortOption(''),
+    if (!isCLI) ...const [
+      EffortOption('off'),
+      EffortOption('low'),
+      EffortOption('medium'),
+      EffortOption('high'),
+    ] else if (currentModelCapabilities?.known == true)
+      ...currentModelCapabilities!.efforts,
+  ];
+
+  String? get effortIssue {
+    if (!isCLI || reasoning.isEmpty) return null;
+    final info = currentModelCapabilities;
+    if (info?.known == true && info!.option(reasoning) == null) {
+      return '该模型不支持已配置的思考档位，请选择默认或其他可用档位。';
+    }
+    return null;
+  }
+
+  void syncModelEffort() {
+    if (reasoningModel == model.text.trim()) return;
+    reasoningModel = model.text.trim();
+    final info = currentModelCapabilities;
+    // Default always follows the selected model. Explicit choices follow a
+    // pinned variant, or reset when the new model cannot support the old level.
+    if (isCLI && reasoning.isNotEmpty) {
+      reasoning = info?.hasVariants == true
+          ? info!.defaultEffort
+          : (info?.option(reasoning) != null ? reasoning : '');
+    }
+  }
+
+  void selectEffort(String value) {
+    setState(() {
+      reasoning = value;
+      final variant = currentModelCapabilities?.option(value)?.model ?? '';
+      if (variant.isNotEmpty) {
+        model.text = variant;
+        reasoningModel = variant;
+        _fillNameFromModel();
+      }
+      dirty = true;
+      testStatus = null;
+      editorTest = null;
+    });
+  }
 
   @override
   void initState() {
@@ -119,13 +184,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       model,
       baseURL,
       apiKey,
-      codexPath,
+      cliPath,
       contextWindow,
       maxTokens,
     ]) {
       c.addListener(markDirty);
     }
-    model.addListener(_followModelName);
     _pickHighlight();
   }
 
@@ -158,7 +222,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       model,
       baseURL,
       apiKey,
-      codexPath,
+      cliPath,
       contextWindow,
       maxTokens,
     ]) {
@@ -176,11 +240,22 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   String? get nameError =>
       schemeNameError(name.text, widget.adapters, exceptId: selectedID);
 
-  void _followModelName() {
-    if (nameTouched || !editorOpen) return;
-    final m = model.text.trim();
-    final next = m.isEmpty ? '' : defaultSchemeName(m, takenNames());
-    if (name.text != next) name.text = next;
+  void _fillNameFromModel() {
+    final previousEffort = reasoning;
+    syncModelEffort();
+    if (mounted && previousEffort != reasoning) setState(() {});
+    if (!creating || nameAssigned || !editorOpen) return;
+    final chosen = model.text.trim();
+    if (chosen.isEmpty || name.text.trim().isNotEmpty) return;
+    nameAssigned = true;
+    name.text = defaultSchemeName(chosen, takenNames());
+  }
+
+  void _selectModel(String value) {
+    setState(() {
+      model.text = value;
+      _fillNameFromModel();
+    });
   }
 
   void markDirty() {
@@ -196,35 +271,37 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     selectedID = a['id'] as String;
     highlightedID = selectedID;
     editorOpen = true;
-    provider = switch (a['type']) {
-      'codex_app_server' => 'codex',
-      'anthropic_compatible' => 'anthropic',
-      'ollama_http' => 'ollama',
-      _ => 'openai',
-    };
-    // A new draft keeps the generated default name until the user edits it.
-    nameTouched = a['draft'] != true || a['name_custom'] == true;
-    name.text = nameTouched
+    provider = backendForType(a['type'] as String?).provider;
+    // Untitled drafts start empty; saved or manually renamed schemes keep their name.
+    nameAssigned = a['draft'] != true || a['name_custom'] == true;
+    name.text = nameAssigned
         ? ((a['name'] as String?)?.isNotEmpty == true
               ? a['name'] as String
               : selectedID!)
         : '';
     originalModels = (a['models'] as List?)?.cast<String>() ?? [];
     model.text = originalModels.isEmpty ? '' : originalModels.first;
-    _followModelName();
     originalModel = model.text;
     baseURL.text = a['base_url'] as String? ?? '';
     apiKey.clear();
-    codexPath.text = a['codex_bin'] as String? ?? 'codex';
+    cliPath.text =
+        (provider == 'codex' ? a['codex_bin'] : a['executable']) as String? ??
+        backend.executable ??
+        '';
     contextWindow.text = (a['context_window'] as int? ?? 0) == 0
         ? ''
         : '${a['context_window']}';
     maxTokens.text = (a['max_output_tokens'] as int? ?? 0) == 0
         ? ''
         : '${a['max_output_tokens']}';
-    reasoning = (a['reasoning_effort'] as String?)?.isNotEmpty == true
-        ? a['reasoning_effort'] as String
-        : (provider == 'codex' ? 'medium' : 'off');
+    reasoning = normalizeEffort(provider, a['reasoning_effort'] as String?);
+    reasoningModel = model.text;
+    modelCatalog = [];
+    catalogSource = null;
+    catalogRequest++;
+    fetchingModels = false;
+    checkingCodex = false;
+    codexModels = [];
     isDefault = a['is_default'] == true;
     skipModelProbe = a['skip_model_probe'] == true;
     dirty = false;
@@ -235,7 +312,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     providerModels = [];
     codexConnected = a['auth_state'] != 'required' && a['health'] == 'ready';
     if (mounted) setState(() {});
-    if (provider == 'codex') refreshCodex();
+    if (isCLI) fetchModels();
   }
 
   Future<void> addScheme() async {
@@ -447,7 +524,11 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           ? (models.isEmpty
                 ? '模型可用'
                 : '发现 ${models.length} 个模型：${models.join('、')}')
-          : (r['auth_state'] == 'required' ? '需要登录' : '请检查地址、密钥和模型 ID'),
+          : (r['error'] is String && (r['error'] as String).isNotEmpty
+                ? r['error'] as String
+                : r['auth_state'] == 'required'
+                ? '需要登录'
+                : '请检查连接配置、登录状态和模型 ID'),
       models,
     );
   }
@@ -530,11 +611,17 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (value == null || value == provider) return;
     setState(() {
       provider = value;
+      cliPath.text = backend.executable ?? '';
       baseURL.text = value == 'ollama' ? 'http://127.0.0.1:11434' : '';
-      model.text = value == 'codex' && codexModels.isNotEmpty
-          ? codexModels.first
-          : '';
-      reasoning = value == 'codex' ? 'medium' : 'off';
+      model.clear();
+      reasoning = '';
+      reasoningModel = '';
+      modelCatalog = [];
+      codexModels = [];
+      catalogSource = null;
+      catalogRequest++;
+      fetchingModels = false;
+      checkingCodex = false;
       skipModelProbe = false;
       apiKey.clear();
       testStatus = null;
@@ -544,15 +631,17 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (provider == 'codex') refreshCodex();
   }
 
-  /// 获取模型: Codex refreshes the subscription list; API providers are asked
-  /// for GET /models (Ollama: /api/tags) using the connection in the form.
+  /// Discover models using the configured CLI or provider endpoint.
   Future<void> fetchModels() async {
-    if (provider == 'codex') return refreshCodex();
-    if (baseURL.text.trim().isEmpty) {
+    if (isCLI) return fetchCatalog();
+    if (!isCLI && baseURL.text.trim().isEmpty) {
       setState(() => error = '请先填写 API 地址。');
       return;
     }
-    if (provider != 'ollama' && apiKey.text.trim().isEmpty && !hasReusableKey) {
+    if (!isCLI &&
+        provider != 'ollama' &&
+        apiKey.text.trim().isEmpty &&
+        !hasReusableKey) {
       setState(() => error = '请先填写 API 密钥。');
       return;
     }
@@ -560,50 +649,106 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       fetchingModels = true;
       error = null;
     });
+    final requestedProvider = provider;
+    final requestedID = selectedID;
+    final requestedExecutable = executable;
     try {
       final list = await providerModelsAsync({
         'id': selectedID ?? '',
         'type': type,
+        if (isCLI) 'executable': executable,
         'base_url': baseURL.text.trim(),
         'api_key': apiKey.text.trim(),
       });
-      if (!mounted) return;
+      if (!mounted ||
+          provider != requestedProvider ||
+          selectedID != requestedID ||
+          executable != requestedExecutable)
+        return;
       setState(() {
         providerModels = list;
         if (list.isEmpty) error = '服务商没有返回模型，请使用自定义模型。';
       });
-      if (model.text.isEmpty && list.isNotEmpty) model.text = list.first;
     } catch (e) {
-      if (mounted) setState(() => error = '获取模型失败：$e');
+      if (mounted && provider == requestedProvider && selectedID == requestedID)
+        setState(() => error = '获取模型失败：$e');
     } finally {
       if (mounted) setState(() => fetchingModels = false);
     }
   }
 
   Future<void> refreshCodex() async {
-    if (provider != 'codex' || checkingCodex) return;
-    setState(() => checkingCodex = true);
+    if (provider == 'codex') await fetchCatalog();
+  }
+
+  Future<void> fetchCatalog() async {
+    final source = discoverySource;
+    final request = ++catalogRequest;
+    final requestedProvider = provider;
+    setState(() {
+      if (provider == 'codex') {
+        checkingCodex = true;
+      } else {
+        fetchingModels = true;
+      }
+      error = null;
+    });
+    bool current() =>
+        mounted && request == catalogRequest && source == discoverySource;
     try {
-      final list = await codexModelsAsync(
-        codexPath.text.trim().isEmpty ? 'codex' : codexPath.text.trim(),
-      );
-      if (!mounted || provider != 'codex') return;
+      final data = await providerCatalogAsync({
+        'id': selectedID ?? '',
+        'type': type,
+        if (provider == 'codex')
+          'codex_bin': executable
+        else
+          'executable': executable,
+      });
+      if (!current()) return;
+      final catalog = data.map(ModelCapabilities.fromJson).toList();
       setState(() {
-        codexModels = list;
-        codexConnected = true;
-        if (model.text.isEmpty && list.isNotEmpty) {
-          model.text = list.first;
-          if (creating) dirty = true;
+        modelCatalog = catalog;
+        catalogSource = source;
+        final ids = catalog.map((m) => m.id).toList();
+        if (provider == 'codex') {
+          codexModels = ids;
+          codexConnected = true;
+        } else {
+          providerModels = ids;
+        }
+        // Existing variant/effort mismatches are resolved just as at execution.
+        // Discovery never selects an initial model or assigns a scheme name.
+        final variant =
+            currentModelCapabilities?.option(reasoning)?.model ?? '';
+        if (variant.isNotEmpty && variant != model.text) {
+          model.text = variant;
+          reasoningModel = variant;
         }
       });
-    } catch (_) {
-      if (mounted)
+    } catch (e) {
+      if (current()) {
         setState(() {
-          codexConnected = false;
-          codexModels = [];
+          modelCatalog = [];
+          catalogSource = null;
+          if (provider == 'codex') {
+            codexConnected = false;
+            codexModels = [];
+          } else {
+            providerModels = [];
+            error = '获取模型失败：$e';
+          }
         });
+      }
     } finally {
-      if (mounted) setState(() => checkingCodex = false);
+      if (mounted && request == catalogRequest) {
+        setState(() {
+          if (requestedProvider == 'codex') {
+            checkingCodex = false;
+          } else {
+            fetchingModels = false;
+          }
+        });
+      }
     }
   }
 
@@ -614,7 +759,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     });
     try {
       final url = await startCodexLoginAsync(
-        codexPath.text.trim().isEmpty ? 'codex' : codexPath.text.trim(),
+        cliPath.text.trim().isEmpty ? 'codex' : cliPath.text.trim(),
       );
       if (!mounted) return;
       setState(() {
@@ -652,14 +797,13 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           codexConnected = true;
           codexModels = (data['models'] as List?)?.cast<String>() ?? [];
         });
-        if (model.text.isEmpty && codexModels.isNotEmpty)
-          model.text = codexModels.first;
       }
     } catch (e) {
       if (mounted) setState(() => error = '检查订阅登录失败：$e');
     } finally {
       checkingCodex = false;
     }
+    if (mounted && !loginPending && codexConnected) await refreshCodex();
   }
 
   Future<void> cancelLogin() async {
@@ -684,12 +828,16 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     setState(() => working = true);
     try {
       await logoutCodexAsync(
-        codexPath.text.trim().isEmpty ? 'codex' : codexPath.text.trim(),
+        cliPath.text.trim().isEmpty ? 'codex' : cliPath.text.trim(),
       );
       if (mounted)
         setState(() {
           codexConnected = false;
           codexModels = [];
+          modelCatalog = [];
+          catalogSource = null;
+          catalogRequest++;
+          checkingCodex = false;
           testStatus = null;
         });
     } catch (e) {
@@ -709,9 +857,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         : [chosenModel];
     return {
       'id': selectedID ?? 'profile_${DateTime.now().microsecondsSinceEpoch}',
-      'name': name.text.trim().isEmpty
-          ? defaultSchemeName(chosenModel, takenNames())
-          : name.text.trim(),
+      'name': name.text.trim(),
       'type': type,
       'provider':
           selected != null &&
@@ -720,11 +866,10 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           ? (selected?['provider'] ?? provider)
           : provider,
       'models': models,
-      'base_url': type == 'codex_app_server' ? '' : baseURL.text.trim(),
+      'base_url': isCLI ? '' : baseURL.text.trim(),
       'api_key': apiKey.text.trim(),
-      'codex_bin': codexPath.text.trim().isEmpty
-          ? 'codex'
-          : codexPath.text.trim(),
+      if (provider == 'codex') 'codex_bin': executable,
+      if (isCLI && provider != 'codex') 'executable': executable,
       'context_window': int.tryParse(contextWindow.text.trim()) ?? 0,
       'max_output_tokens': int.tryParse(maxTokens.text.trim()) ?? 0,
       'reasoning_effort': reasoning,
@@ -736,6 +881,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
 
   String? validate() {
     if (model.text.trim().isEmpty) return '请输入模型 ID。';
+    _fillNameFromModel(); // Testing/saving also commits a manually entered model.
+    if (name.text.trim().isEmpty) return '请输入方案名称。';
     final dup = nameError;
     if (dup != null) return dup;
     if (contextWindow.text.trim().isNotEmpty &&
@@ -744,8 +891,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     if (maxTokens.text.trim().isNotEmpty &&
         (int.tryParse(maxTokens.text.trim()) ?? -1) < 1)
       return '最大输出 Token 必须是正整数。';
-    if (type != 'codex_app_server' && baseURL.text.trim().isEmpty)
-      return '请输入 API 根地址。';
+    if (effortIssue != null) return effortIssue;
+    if (!isCLI && baseURL.text.trim().isEmpty) return '请输入 API 根地址。';
     if ((type == 'openai_compatible' || type == 'anthropic_compatible') &&
         apiKey.text.trim().isEmpty &&
         !hasReusableKey)
@@ -840,6 +987,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
   String _providerLabel(Map<String, dynamic> adapter) =>
       switch (adapter['type']) {
         'codex_app_server' => 'OpenAI Codex（订阅）',
+        'grok_build' => 'Grok Build（CLI）',
+        'antigravity_cli' => 'Antigravity CLI',
         'anthropic_compatible' => 'Anthropic 兼容协议',
         'ollama_http' => 'Ollama 协议（本地模型）',
         _ => 'OpenAI 兼容协议',
@@ -1093,8 +1242,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
           child: EmptyState(
             icon: LucideIcons.layers,
             title: '添加第一个模型方案',
-            message:
-                '方案描述本机可用的模型：Codex 订阅、OpenAI 兼容或 Anthropic 兼容接口。远端服务只能调用你授权的方案。',
+            message: '方案描述本机可用的 CLI、Ollama 模型或兼容 API。远端服务只能调用你授权的方案。',
             action: AppButton(
               key: const ValueKey('empty-add-scheme'),
               label: '添加方案',
@@ -1177,29 +1325,20 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       itemBuilder: (context, value) => Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          TypeMark(switch (value) {
-            'codex' => 'codex_app_server',
-            'anthropic' => 'anthropic_compatible',
-            'ollama' => 'ollama_http',
-            _ => 'openai_compatible',
-          }),
+          TypeMark(backendForProvider(value).type),
           const SizedBox(width: 8),
-          Text(switch (value) {
-            'codex' => 'OpenAI Codex（订阅）',
-            'openai' => 'OpenAI 兼容协议',
-            'anthropic' => 'Anthropic 兼容协议',
-            _ => 'Ollama 协议（本地模型）',
-          }, style: AppText.md.copyWith(color: t.fg)),
+          Text(
+            backendForProvider(value).label,
+            style: AppText.md.copyWith(color: t.fg),
+          ),
         ],
       ),
       onChanged: changeProvider,
-      popup: const SelectPopup(
+      popup: SelectPopup(
         items: SelectItemList(
           children: [
-            SelectItemButton(value: 'codex', child: Text('OpenAI Codex（订阅）')),
-            SelectItemButton(value: 'openai', child: Text('OpenAI 兼容协议')),
-            SelectItemButton(value: 'anthropic', child: Text('Anthropic 兼容协议')),
-            SelectItemButton(value: 'ollama', child: Text('Ollama 协议（本地模型）')),
+            for (final item in backendProfiles)
+              SelectItemButton(value: item.provider, child: Text(item.label)),
           ],
         ),
       ),
@@ -1208,7 +1347,9 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
 
   static const _customItem = '__custom_model__';
 
-  List<String> get modelChoices => provider == 'codex'
+  List<String> get modelChoices => isCLI && catalogSource != discoverySource
+      ? []
+      : provider == 'codex'
       ? codexModels
       : <String>{...providerModels, ...?editorTest?.models}.toList();
 
@@ -1234,14 +1375,20 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
       ...modelChoices,
     }.toList();
     if (modelChoices.isEmpty) {
-      return appTextField(
-        context,
-        controller: model,
-        placeholder: switch (provider) {
-          'codex' => '输入模型 ID',
-          'ollama' => '输入本地模型 ID（如 qwen3:8b）',
-          _ => '输入供应商提供的模型 ID',
+      return Focus(
+        onFocusChange: (focused) {
+          if (!focused && mounted) _fillNameFromModel();
         },
+        child: appTextField(
+          context,
+          controller: model,
+          onSubmitted: (_) => _fillNameFromModel(),
+          placeholder: switch (provider) {
+            'codex' => '输入模型 ID',
+            'ollama' => '输入本地模型 ID（如 qwen3:8b）',
+            _ => '输入供应商提供的模型 ID',
+          },
+        ),
       );
     }
     return _fieldSelect(
@@ -1268,8 +1415,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
             _customModel();
             return;
           }
-          model.text = value;
-          markDirty();
+          _selectModel(value);
         },
         popup: SelectPopup.noVirtualization(
           items: SelectItemList(
@@ -1316,54 +1462,65 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
         ),
       ),
     ).future;
-    if (result == true && mounted) model.text = input.text.trim();
+    if (result == true && mounted) _selectModel(input.text.trim());
     input.dispose();
   }
 
-  Widget _reasoningSelect() => Container(
-    height: AppSize.button,
-    padding: const EdgeInsets.all(2),
-    decoration: BoxDecoration(
-      color: t.surface,
-      border: Border.all(color: t.border),
-      borderRadius: BorderRadius.circular(AppRadius.control),
-    ),
-    child: Row(
+  Widget _reasoningSelect() {
+    final info = currentModelCapabilities;
+    final hint =
+        effortIssue ??
+        (isCLI
+            ? (info?.known != true
+                  ? (reasoning.isEmpty
+                        ? '获取模型能力后可选择支持的档位；默认由模型决定。'
+                        : '保留已配置档位（${reasoningLabel(reasoning)}）；获取模型能力后可确认支持情况。')
+                  : info!.efforts.isEmpty
+                  ? '该模型未提供可调整的思考档位，使用模型默认行为。'
+                  : info.hasVariants
+                  ? '选择档位会同步切换模型变体；默认沿用当前变体。'
+                  : '默认由模型决定${info.defaultEffort.isEmpty ? '' : '（${reasoningLabel(info.defaultEffort)}）'}。')
+            : '默认不覆盖服务商设置；其他档位需服务商支持。');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final item in const [
-          ('off', '关闭'),
-          ('low', '低'),
-          ('medium', '中'),
-          ('high', '高'),
-        ])
-          Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => setState(() {
-                reasoning = item.$1;
-                dirty = true;
-                testStatus = null;
-                editorTest = null;
-              }),
-              child: Container(
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: reasoning == item.$1 ? t.brand : null,
-                  borderRadius: BorderRadius.circular(AppRadius.badge),
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          children: [
+            for (final option in effortOptions)
+              GestureDetector(
+                key: ValueKey(
+                  'effort-${option.value.isEmpty ? 'default' : option.value}',
                 ),
-                child: Text(
-                  item.$2,
-                  style: AppText.xs.copyWith(
-                    color: reasoning == item.$1 ? t.brandFg : t.fg2,
-                    fontWeight: AppText.medium,
+                behavior: HitTestBehavior.opaque,
+                onTap: () => selectEffort(option.value),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: reasoning == option.value ? t.brand : t.surface,
+                    border: Border.all(color: t.border),
+                    borderRadius: BorderRadius.circular(AppRadius.control),
+                  ),
+                  child: Text(
+                    reasoningLabel(option.value),
+                    style: AppText.xs.copyWith(
+                      color: reasoning == option.value ? t.brandFg : t.fg2,
+                      fontWeight: AppText.medium,
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(hint, style: AppText.xs.copyWith(color: t.fg2)),
       ],
-    ),
-  );
+    );
+  }
 
   String get _advancedSummary {
     String v(TextEditingController c) =>
@@ -1375,12 +1532,7 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     return parts.join(' · ');
   }
 
-  static String _reasoningLabel(String? r) => switch (r) {
-    'low' => '低',
-    'medium' => '中',
-    'high' => '高',
-    _ => '关闭',
-  };
+  static String _reasoningLabel(String? r) => reasoningLabel(r);
 
   Widget _testAlert() {
     final r = editorTest;
@@ -1429,8 +1581,10 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                         appTextField(
                           context,
                           controller: name,
-                          placeholder: '默认：模型名，重名时加 _2、_3',
-                          onChanged: (_) => setState(() => nameTouched = true),
+                          placeholder: '输入名称，或选定模型后自动填充',
+                          onChanged: (value) {
+                            if (value.trim().isNotEmpty) nameAssigned = true;
+                          },
                         ),
                         error: nameError,
                       ),
@@ -1495,9 +1649,20 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                     'Codex CLI 路径',
                     appTextField(
                       context,
-                      controller: codexPath,
+                      controller: cliPath,
                       placeholder: 'codex',
                     ),
+                  ),
+                ] else if (isCLI) ...[
+                  _field(
+                    '${backend.short} CLI 路径',
+                    appTextField(
+                      context,
+                      controller: cliPath,
+                      placeholder: backend.executable,
+                    ),
+                    hint:
+                        '请先在终端运行 ${backend.loginCommand} 完成登录，再点击「获取模型」。登录凭据由官方 CLI 管理。',
                   ),
                 ] else ...[
                   _field(
@@ -1552,12 +1717,12 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                     ],
                   ),
                   hint: modelChoices.isNotEmpty
-                      ? (codex
-                            ? '列表来自本机 Codex CLI；最后一项可输入自定义模型 ID'
+                      ? (isCLI
+                            ? '列表来自本机 ${backend.short} CLI；最后一项可输入自定义模型 ID'
                             : provider == 'ollama'
                             ? '列表来自 Ollama /api/tags；请选择已下载的本地模型'
                             : '列表来自 /v1/models；最后一项可输入自定义模型 ID')
-                      : (codex
+                      : (isCLI
                             ? null
                             : provider == 'ollama'
                             ? '请先启动 Ollama 并下载模型，再点击“获取模型”或输入完整模型 ID（含标签）'
@@ -1733,7 +1898,8 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
     Widget val(String v) => Text(v.isEmpty ? '—' : v);
     final cw = (scheme['context_window'] as int? ?? 0);
     final mt = (scheme['max_output_tokens'] as int? ?? 0);
-    final codex = scheme['type'] == 'codex_app_server';
+    final profile = backendForType(scheme['type'] as String?);
+    final cli = profile.isCLI;
     final h = schemeHealth(scheme);
     final usage = widget.usage['${scheme['id']}'];
     final last = lastTests['${scheme['id']}'];
@@ -1759,11 +1925,11 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
               ),
             ),
             ('状态', StatusBadge(h.detail, tone: h.dot, dot: true)),
-            if (codex)
+            if (cli)
               (
-                'Codex CLI 路径',
+                '${profile.short} CLI 路径',
                 Text(
-                  '${scheme['codex_bin'] ?? 'codex'}',
+                  '${scheme['type'] == 'codex_app_server' ? (scheme['codex_bin'] ?? 'codex') : (scheme['executable'] ?? profile.executable)}',
                   style: monoStyle(AppText.sm.copyWith(color: t.fg)),
                 ),
               )
@@ -1782,7 +1948,14 @@ class _ProfileWorkspaceState extends State<ProfileWorkspace> {
                 scheme['type'] != 'ollama_http')
               (
                 '思考强度',
-                val(_reasoningLabel(scheme['reasoning_effort'] as String?)),
+                val(
+                  _reasoningLabel(
+                    normalizeEffort(
+                      backendForType(scheme['type'] as String?).provider,
+                      scheme['reasoning_effort'] as String?,
+                    ),
+                  ),
+                ),
               ),
           ]),
           const SectionLabel('高级'),
@@ -2159,6 +2332,7 @@ Map<String, dynamic> adapterEditBody(
     'provider',
     'base_url',
     'codex_bin',
+    'executable',
     'models',
     'context_window',
     'max_output_tokens',

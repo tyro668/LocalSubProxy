@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tyro668/LocalSubProxy/internal/audit"
+	"github.com/tyro668/avora/internal/audit"
 )
 
 // A saved scheme that no longer validates (here: a plain-HTTP URL to a
