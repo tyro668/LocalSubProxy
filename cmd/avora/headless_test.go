@@ -40,9 +40,9 @@ func TestAPIKeyNeverOnArgv(t *testing.T) {
 }
 
 func TestSchemeTypesAndNames(t *testing.T) {
-	for short, full := range map[string]string{"ollama": "ollama_http", "openai": "openai_compatible", "anthropic": "anthropic_compatible", "codex": "codex_app_server", "codex_app_server": "codex_app_server"} {
-		if got, err := schemeType(short); err != nil || got != full {
-			t.Errorf("%s: %q %v", short, got, err)
+	for short, full := range map[string]string{"ollama": "ollama_http", "openai": "openai_compatible", "anthropic": "anthropic_compatible", "codex": "codex_app_server", "codex_app_server": "codex_app_server", "grok": "grok_build", "antigravity": "antigravity_cli", "agy": "antigravity_cli", "grok_build": "grok_build", "antigravity_cli": "antigravity_cli"} {
+		if got, err := schemeType(short); err != nil || got.Type != full {
+			t.Errorf("%s: %q %v", short, got.Type, err)
 		}
 	}
 	if _, err := schemeType("gemini"); err == nil {
@@ -74,5 +74,20 @@ func TestClientsNeedServe(t *testing.T) {
 	err := statusCmd([]string{"--data-dir", t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Fatal(err)
+	}
+}
+
+// Scheme type help and names come from the backend registry.
+func TestSchemeHelpFromRegistry(t *testing.T) {
+	names, efforts := typeNames(), effortHelp()
+	for _, d := range backends.Definitions() {
+		if !strings.Contains(names, d.Short) || !strings.Contains(efforts, d.Short+": "+strings.Join(d.Efforts, "|")) {
+			t.Errorf("%s missing from help: %s / %s", d.Type, names, efforts)
+		}
+		for _, n := range append(d.Names(), d.Type) {
+			if got, err := schemeType(n); err != nil || got.Type != d.Type {
+				t.Errorf("%s: %v %v", n, got.Type, err)
+			}
+		}
 	}
 }

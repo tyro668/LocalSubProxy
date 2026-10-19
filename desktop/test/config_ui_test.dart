@@ -1,9 +1,28 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:avora_ui/backend_catalog.dart';
 import 'package:avora_ui/native_api.dart';
 import 'package:avora_ui/profile_workspace.dart';
 import 'package:avora_ui/ui_kit.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
+
+List<Map<String, dynamic>> modelCatalog(
+  List<String> ids, {
+  List<String>? efforts,
+  String defaultEffort = '',
+}) => [
+  for (final id in ids)
+    {
+      'id': id,
+      'reasoning_known': efforts != null,
+      'default_reasoning_effort': defaultEffort,
+      'reasoning_efforts': [
+        for (final value in efforts ?? <String>[]) {'value': value},
+      ],
+    },
+];
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -61,6 +80,18 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> chooseModel(
+    WidgetTester tester,
+    String model, {
+    String current = '选择模型',
+  }) async {
+    await tester.tap(find.widgetWithText(Select<String>, current));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text(model).last);
     await tester.pumpAndSettle();
   }
 
@@ -134,7 +165,7 @@ void main() {
     expect(find.text('API 密钥'), findsOneWidget);
   });
 
-  testWidgets('服务支持四种类型，云端兼容协议均显示地址和密钥', (tester) async {
+  testWidgets('服务支持六种类型，云端兼容协议均显示地址和密钥', (tester) async {
     debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
     try {
       await pumpWorkspace(tester);
@@ -147,6 +178,8 @@ void main() {
       expect(find.text('OpenAI 兼容协议'), findsWidgets);
       expect(find.text('Anthropic 兼容协议'), findsWidgets);
       expect(find.text('DeepSeek'), findsNothing);
+      expect(find.text('Grok Build（CLI）'), findsOneWidget);
+      expect(find.text('Antigravity CLI'), findsOneWidget);
       expect(find.text('Ollama 协议（本地模型）'), findsOneWidget);
 
       await tester.tap(find.text('Anthropic 兼容协议').last);
@@ -166,6 +199,134 @@ void main() {
     } finally {
       debugDefaultTargetPlatformOverride = null;
     }
+  });
+
+  for (final cli in [
+    ('Grok Build（CLI）', 'grok_build', 'grok'),
+    ('Antigravity CLI', 'antigravity_cli', 'agy'),
+  ]) {
+    testWidgets(
+      '${cli.$1} 可获取模型并保存自定义执行路径',
+      (tester) async {
+        final requests = <Map<String, dynamic>>[];
+        NativeApi.debugTransport = (payload) {
+          requests.add(payload);
+          return switch (payload['action']) {
+            'provider_catalog' =>
+              payload['adapter']['type'] == 'codex_app_server'
+                  ? []
+                  : modelCatalog(['test-model']),
+            'test_adapter' => {
+              'health': 'ready',
+              'models': ['test-model'],
+            },
+            'create_adapter' => payload['adapter'],
+            _ => throw StateError('Unexpected action: ${payload['action']}'),
+          };
+        };
+        addTearDown(() => NativeApi.debugTransport = null);
+        await pumpWorkspace(tester);
+        await tester.tap(find.text('添加方案').first);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.widgetWithText(Select<String>, 'OpenAI Codex（订阅）'),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.text(cli.$1).last);
+        await tester.pumpAndSettle();
+        expect(find.text('API 地址'), findsNothing);
+        expect(find.text('API 密钥'), findsNothing);
+        final path = find.byWidgetPredicate(
+          (w) => w is TextField && w.controller?.text == cli.$3,
+        );
+        await tester.enterText(path, '/opt/my tools/${cli.$3}');
+        await tester.tap(find.text('获取模型'));
+        await tester.pumpAndSettle();
+        final discovery = requests.singleWhere(
+          (r) =>
+              r['action'] == 'provider_catalog' &&
+              r['adapter']['type'] == cli.$2,
+        )['adapter'];
+        expect(discovery, containsPair('type', cli.$2));
+        expect(
+          discovery,
+          containsPair('executable', '/opt/my tools/${cli.$3}'),
+        );
+        expect(find.widgetWithText(Select<String>, '选择模型'), findsOneWidget);
+        await chooseModel(tester, 'test-model');
+        expect(
+          find.widgetWithText(Select<String>, 'test-model'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('测试连接'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('保存'));
+        await tester.pumpAndSettle();
+        final saved = requests.singleWhere(
+          (r) => r['action'] == 'create_adapter',
+        )['adapter'];
+        expect(saved, containsPair('type', cli.$2));
+        expect(saved, containsPair('executable', '/opt/my tools/${cli.$3}'));
+        expect(saved, containsPair('models', ['test-model']));
+        expect(saved, isNot(contains('codex_bin')));
+        expect(find.text('编辑方案'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets('${cli.$1} 编辑时保留路径和多个模型', (tester) async {
+      await pumpWorkspace(
+        tester,
+        adapters: [
+          {
+            'id': 'cli',
+            'name': '自定义 CLI',
+            'type': cli.$2,
+            'executable': '/opt/my tools/${cli.$3}',
+            'models': ['first', 'second'],
+            'enabled': true,
+          },
+        ],
+      );
+      await tester.tap(find.text('编辑'));
+      await tester.pumpAndSettle();
+      final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+      expect(state.validate(), isNull);
+      expect(state.body()['type'], cli.$2);
+      expect(state.body()['executable'], '/opt/my tools/${cli.$3}');
+      expect(state.body()['models'], ['first', 'second']);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('切换 CLI 后丢弃之前的模型查询结果', (tester) async {
+    NativeApi.debugTransport = (payload) =>
+        payload['adapter']['type'] == 'codex_app_server'
+        ? []
+        : modelCatalog(['old-grok-model']);
+    addTearDown(() {
+      NativeApi.debugTransport = null;
+      NativeApi.debugGate = null;
+    });
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    state.changeProvider('grok');
+    await tester.pumpAndSettle();
+    final gate = Completer<void>();
+    NativeApi.debugGate = () => gate.future;
+    final pending = state.fetchModels() as Future<void>;
+    await tester.pump();
+    state.changeProvider('antigravity');
+    gate.complete();
+    await pending;
+    await tester.pumpAndSettle();
+    expect(state.providerModels, isEmpty);
+    expect(state.model.text, isEmpty);
+    expect(find.text('old-grok-model'), findsNothing);
   });
 
   testWidgets(
@@ -216,8 +377,9 @@ void main() {
         containsPair('base_url', 'http://127.0.0.1:11435'),
       );
       expect(discovery['adapter'], containsPair('api_key', ''));
+      await chooseModel(tester, 'qwen3:8b');
       expect(find.widgetWithText(Select<String>, 'qwen3:8b'), findsOneWidget);
-      expect(find.textContaining('列表来自 Ollama /api/tags'), findsOneWidget);
+      expect(find.textContaining('列表来自 Ollama /api/tags'), findsNothing);
 
       await tester.tap(find.text('测试连接'));
       await tester.pumpAndSettle();
@@ -268,26 +430,123 @@ void main() {
     expect(state.body()['models'], ['qwen3:8b', 'llama3:latest']);
   });
 
-  testWidgets('新方案名称默认为模型名，重名时加编号 并随模型变化，重名时提示', (tester) async {
+  testWidgets(
+    '模型查询和登录不命名，首次选定模型后名称固定',
+    (tester) async {
+      NativeApi.debugTransport = (payload) => switch (payload['action']) {
+        'provider_catalog' => modelCatalog(['gpt-6.1-sol', 'another-model']),
+        'codex_login_check' => {
+          'complete': true,
+          'models': ['gpt-6.1-sol', 'another-model'],
+        },
+        _ => throw StateError('Unexpected action: ${payload['action']}'),
+      };
+      addTearDown(() => NativeApi.debugTransport = null);
+      await pumpWorkspace(tester);
+      await tester.tap(find.text('添加方案').first);
+      await tester.pumpAndSettle();
+      final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+      expect(state.name.text, isEmpty);
+      expect(state.model.text, isEmpty);
+      expect(state.dirty, isFalse);
+      expect(state.body()['name'], isEmpty);
+      expect(find.text('未命名方案'), findsWidgets);
+
+      await tester.tap(find.text('获取模型'));
+      await tester.pumpAndSettle();
+      state.loginPending = true;
+      await state.checkLogin();
+      await tester.pumpAndSettle();
+      expect(state.name.text, isEmpty);
+      expect(state.model.text, isEmpty);
+      expect(state.codexConnected, isTrue);
+
+      await chooseModel(tester, 'gpt-6.1-sol');
+      expect(state.name.text, 'gpt-6.1-sol');
+      await chooseModel(tester, 'another-model', current: 'gpt-6.1-sol');
+      expect(state.name.text, 'gpt-6.1-sol');
+      expect(state.body()['models'], ['another-model']);
+      state.changeProvider('grok');
+      await tester.pumpAndSettle();
+      expect(state.model.text, isEmpty);
+      expect(state.name.text, 'gpt-6.1-sol');
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets('手动填写的方案名不会被选择模型覆盖', (tester) async {
+    NativeApi.debugTransport = (_) =>
+        modelCatalog(['gpt-6.1-sol', 'another-model']);
+    addTearDown(() => NativeApi.debugTransport = null);
     await pumpWorkspace(tester);
     await tester.tap(find.text('添加方案').first);
     await tester.pumpAndSettle();
-
-    TextField field(String hint) => tester.widget<TextField>(
-      find.ancestor(of: find.text(hint), matching: find.byType(TextField)),
-    );
-    final nameHint = '默认：模型名，重名时加 _2、_3';
     await tester.enterText(
-      find.ancestor(of: find.text('输入模型 ID'), matching: find.byType(TextField)),
-      'claude-sonnet',
+      find.widgetWithText(TextField, '输入名称，或选定模型后自动填充'),
+      '工作方案',
     );
-    await tester.pumpAndSettle();
-    expect(field(nameHint).controller!.text, 'claude-sonnet_2');
+    await chooseModel(tester, 'gpt-6.1-sol');
+    await chooseModel(tester, 'another-model', current: 'gpt-6.1-sol');
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    expect(state.name.text, '工作方案');
+    expect(state.body()['name'], '工作方案');
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
-    // a user-typed duplicate (trimmed, case-insensitive) is flagged inline
-    await tester.enterText(find.byWidget(field(nameHint)), ' Claude-Sonnet ');
+  testWidgets('手动模型输入完成后只命名一次，重名仍提示', (tester) async {
+    NativeApi.debugTransport = (_) => <String>[];
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    final modelField = find.widgetWithText(TextField, '输入模型 ID');
+    const nameHint = '输入名称，或选定模型后自动填充';
+    await tester.enterText(modelField, 'claude');
+    await tester.pump();
+    expect(state.name.text, isEmpty);
+    await tester.enterText(modelField, 'claude-sonnet');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(state.name.text, 'claude-sonnet_2');
+    await tester.enterText(modelField, 'changed-model');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+    expect(state.name.text, 'claude-sonnet_2');
+
+    await tester.enterText(
+      find.widgetWithText(TextField, nameHint),
+      ' Claude-Sonnet ',
+    );
     await tester.pumpAndSettle();
     expect(find.textContaining('已被其他方案使用'), findsOneWidget);
+    await tester.enterText(find.widgetWithText(TextField, nameHint), '');
+    expect(state.validate(), '请输入方案名称。');
+    expect(state.body()['name'], isEmpty);
+  });
+
+  testWidgets('自定义模型确认后命名，后续编辑模型保持方案名', (tester) async {
+    NativeApi.debugTransport = (_) => modelCatalog(['gpt-6.1-sol']);
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    for (final model in ['custom-model', 'changed-model']) {
+      await tester.tap(find.widgetWithText(AppButton, '自定义模型'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.descendant(
+          of: find.byKey(const ValueKey('app-dialog')),
+          matching: find.byType(TextField),
+        ),
+        model,
+      );
+      await tester.tap(find.text('确定'));
+      await tester.pumpAndSettle();
+      expect(state.name.text, 'custom-model');
+      expect(state.body()['models'], [model]);
+    }
   });
 
   testWidgets(
@@ -323,13 +582,9 @@ void main() {
       });
 
       final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
-      expect(state.body()['models'], ['deepseek-v4-pro']);
-      await tester.tap(find.widgetWithText(Select<String>, 'deepseek-v4-pro'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
-      await tester.tap(find.text('provider-choice').last);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      expect(state.model.text, isEmpty);
+      await chooseModel(tester, 'provider-choice');
+      expect(state.name.text, 'deepseek-v4-pro');
       expect(state.body()['models'], ['provider-choice']);
       // Editing the model invalidates connection tests, but keeps discovered choices.
       expect(
@@ -403,5 +658,354 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byKey(const ValueKey('skip-model-probe')), findsOneWidget);
     debugDefaultTargetPlatformOverride = null;
+  });
+  Future<void> openAdvanced(WidgetTester tester) async {
+    final toggle = find.byKey(const ValueKey('advanced-toggle'));
+    await tester.ensureVisible(toggle);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> chooseEffort(WidgetTester tester, String value) async {
+    final option = find.byKey(ValueKey('effort-$value'));
+    await tester.ensureVisible(option);
+    await tester.tap(option);
+    await tester.pumpAndSettle();
+  }
+
+  for (final service in [
+    ('codex', 'codex_app_server'),
+    ('grok', 'grok_build'),
+  ]) {
+    testWidgets(
+      '${service.$1} 仅展示真实档位，默认不覆盖模型设置',
+      (tester) async {
+        final levels = service.$1 == 'codex'
+            ? ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+            : ['low', 'medium', 'high', 'xhigh'];
+        NativeApi.debugTransport = (_) => [
+          ...modelCatalog(['full'], efforts: levels, defaultEffort: 'high'),
+          ...modelCatalog(['limited'], efforts: ['low', 'high']),
+          ...modelCatalog(['can-disable'], efforts: ['none', 'low']),
+        ];
+        addTearDown(() => NativeApi.debugTransport = null);
+        await pumpWorkspace(
+          tester,
+          adapters: [
+            {
+              'id': 's',
+              'name': '工作方案',
+              'type': service.$2,
+              'models': ['full'],
+              'enabled': true,
+            },
+          ],
+        );
+        await tester.tap(find.text('编辑'));
+        await tester.pumpAndSettle();
+        final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+        expect(state.body()['reasoning_effort'], '');
+        await openAdvanced(tester);
+        expect(find.byKey(const ValueKey('effort-default')), findsOneWidget);
+        expect(find.byKey(const ValueKey('effort-none')), findsNothing);
+        expect(find.byKey(const ValueKey('effort-off')), findsNothing);
+        for (final level in levels) {
+          expect(find.byKey(ValueKey('effort-$level')), findsOneWidget);
+        }
+        await chooseEffort(tester, levels.last);
+        expect(state.body()['reasoning_effort'], levels.last);
+        await chooseEffort(tester, 'default');
+        expect(state.body()['reasoning_effort'], '');
+        await chooseModel(tester, 'limited', current: 'full');
+        expect(find.byKey(const ValueKey('effort-xhigh')), findsNothing);
+        await chooseModel(tester, 'can-disable', current: 'limited');
+        expect(find.byKey(const ValueKey('effort-none')), findsOneWidget);
+        await chooseEffort(tester, 'none');
+        expect(state.body()['reasoning_effort'], 'none');
+        await chooseModel(tester, 'limited', current: 'can-disable');
+        expect(state.body()['reasoning_effort'], '');
+        expect(state.body()['name'], '工作方案');
+        expect(tester.takeException(), isNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+  }
+
+  List<Map<String, dynamic>> variantCatalog() => [
+    for (final level in ['low', 'medium', 'high'])
+      {
+        'id': 'flash-$level',
+        'reasoning_known': true,
+        'default_reasoning_effort': level,
+        'reasoning_efforts': [
+          for (final e in ['low', 'medium', 'high'])
+            {'value': e, 'model': 'flash-$e'},
+        ],
+      },
+    ...modelCatalog(['gpt-oss-120b-medium'], efforts: []),
+  ];
+
+  testWidgets(
+    'Antigravity 档位与模型双向联动，默认保留变体和方案名称',
+    (tester) async {
+      NativeApi.debugTransport = (_) => variantCatalog();
+      addTearDown(() => NativeApi.debugTransport = null);
+      await pumpWorkspace(
+        tester,
+        adapters: [
+          {
+            'id': 's',
+            'name': '固定方案名',
+            'type': 'antigravity_cli',
+            'models': ['flash-high'],
+            'enabled': true,
+          },
+        ],
+      );
+      await tester.tap(find.text('编辑'));
+      await tester.pumpAndSettle();
+      final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+      expect(state.body()['reasoning_effort'], '');
+      await openAdvanced(tester);
+      await chooseEffort(tester, 'low');
+      expect(state.body()['models'], ['flash-low']);
+      expect(state.body()['reasoning_effort'], 'low');
+      expect(state.body()['name'], '固定方案名');
+      await chooseModel(tester, 'flash-medium', current: 'flash-low');
+      expect(state.body()['reasoning_effort'], 'medium');
+      await chooseEffort(tester, 'default');
+      expect(state.body()['models'], ['flash-medium']);
+      expect(state.body()['reasoning_effort'], '');
+      await chooseModel(tester, 'gpt-oss-120b-medium', current: 'flash-medium');
+      expect(find.byKey(const ValueKey('effort-low')), findsNothing);
+      expect(find.byKey(const ValueKey('effort-medium')), findsNothing);
+      expect(find.byKey(const ValueKey('effort-none')), findsNothing);
+      expect(find.byKey(const ValueKey('effort-default')), findsOneWidget);
+      expect(state.body()['name'], '固定方案名');
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+  );
+
+  testWidgets('已有 Antigravity 冲突配置映射到可用变体', (tester) async {
+    NativeApi.debugTransport = (_) => variantCatalog();
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 's',
+          'name': '旧方案',
+          'type': 'antigravity_cli',
+          'models': ['flash-high'],
+          'reasoning_effort': 'low',
+          'enabled': true,
+        },
+      ],
+    );
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    expect(state.body()['models'], ['flash-low']);
+    expect(state.body()['reasoning_effort'], 'low');
+    expect(state.body()['name'], '旧方案');
+  });
+
+  testWidgets('Codex 已存的 none 不在目录中时必须显式修正，不显示不支持的选项', (tester) async {
+    NativeApi.debugTransport = (_) =>
+        modelCatalog(['m'], efforts: ['low', 'high']);
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 's',
+          'name': '旧方案',
+          'type': 'codex_app_server',
+          'models': ['m'],
+          'reasoning_effort': 'none', // the kernel stores off as none
+          'enabled': true,
+        },
+      ],
+    );
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    expect(state.body()['reasoning_effort'], 'none');
+    expect(state.validate(), contains('不支持'));
+    await openAdvanced(tester);
+    expect(find.byKey(const ValueKey('effort-none')), findsNothing);
+    await chooseEffort(tester, 'default');
+    expect(state.validate(), isNull);
+    expect(state.body()['reasoning_effort'], '');
+  });
+
+  testWidgets('切换执行路径时丢弃过期能力，不填充名称', (tester) async {
+    NativeApi.debugTransport = (_) =>
+        modelCatalog(['old'], efforts: ['low', 'high']);
+    addTearDown(() {
+      NativeApi.debugTransport = null;
+      NativeApi.debugGate = null;
+    });
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    final gate = Completer<void>();
+    NativeApi.debugGate = () => gate.future;
+    final pending = state.refreshCodex() as Future<void>;
+    state.cliPath.text = '/different/codex';
+    gate.complete();
+    await pending;
+    await tester.pumpAndSettle();
+    expect(state.currentModelCapabilities, isNull);
+    expect(state.modelChoices, isEmpty);
+    expect(state.model.text, isEmpty);
+    expect(state.name.text, isEmpty);
+    expect(state.checkingCodex, isFalse);
+  });
+  testWidgets('同服务切换方案不接收上一个方案的能力', (tester) async {
+    NativeApi.debugTransport = (payload) => modelCatalog([
+      payload['adapter']['id'] == 'second' ? 'new-model' : 'old-model',
+    ], efforts: payload['adapter']['id'] == 'second' ? ['low'] : ['high']);
+    addTearDown(() {
+      NativeApi.debugTransport = null;
+      NativeApi.debugGate = null;
+    });
+    await pumpWorkspace(tester);
+    await tester.tap(find.text('添加方案').first);
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    final gate = Completer<void>();
+    NativeApi.debugGate = () => gate.future;
+    final oldRequest = state.refreshCodex() as Future<void>;
+    NativeApi.debugGate = null;
+    state.load({
+      'id': 'second',
+      'name': '第二个方案',
+      'type': 'codex_app_server',
+      'models': ['new-model'],
+    });
+    await tester.pumpAndSettle();
+    gate.complete();
+    await oldRequest;
+    await tester.pumpAndSettle();
+    expect(state.modelChoices, ['new-model']);
+    expect(state.currentModelCapabilities.option('high'), isNull);
+    expect(state.currentModelCapabilities.option('low'), isNotNull);
+    expect(state.name.text, '第二个方案');
+  });
+
+  testWidgets('目录获取失败保留已配置档位', (tester) async {
+    NativeApi.debugTransport = (_) => throw StateError('offline');
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 's',
+          'name': '原配置',
+          'type': 'grok_build',
+          'models': ['m'],
+          'reasoning_effort': 'high',
+        },
+      ],
+    );
+    await tester.tap(find.text('编辑'));
+    await tester.pumpAndSettle();
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    expect(state.body()['reasoning_effort'], 'high');
+    await openAdvanced(tester);
+    expect(find.byKey(const ValueKey('effort-high')), findsNothing);
+    expect(find.textContaining('保留已配置档位'), findsNothing);
+  });
+  testWidgets('后台不可用原因与手动测试记录分别显示', (tester) async {
+    const model = 'gemini-3.8-flash-high';
+    const failure =
+        'Antigravity model discovery failed: context deadline exceeded';
+    final adapter = <String, dynamic>{
+      'id': 'agy',
+      'name': model,
+      'type': 'antigravity_cli',
+      'models': [model],
+      'enabled': true,
+      'health': 'unavailable',
+      'health_error': failure,
+    };
+    NativeApi.debugTransport = (_) => {
+      'health': 'ready',
+      'models': [model],
+    };
+    addTearDown(() => NativeApi.debugTransport = null);
+    await pumpWorkspace(tester, adapters: [adapter]);
+    final state = tester.state(find.byType(ProfileWorkspace)) as dynamic;
+    await state.testSaved(adapter);
+    await tester.pumpAndSettle();
+    expect(find.text('不可用原因'), findsOneWidget);
+    expect(find.text(failure), findsOneWidget);
+    expect(find.textContaining('✓ 通过'), findsOneWidget);
+    expect(find.text('不可用'), findsWidgets);
+  });
+  testWidgets('未知类型的方案只读显示', (tester) async {
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 'future',
+          'name': '新版方案',
+          'type': 'future_cli',
+          'models': ['m'],
+          'enabled': true,
+        },
+      ],
+    );
+    expect(find.textContaining('未知类型（future_cli）'), findsWidgets);
+    expect(find.text('编辑'), findsNothing);
+  });
+
+  testWidgets('服务列表与表单来自内核的 backends', (tester) async {
+    final saved = backendProfiles;
+    addTearDown(() => backendProfiles = saved);
+    loadBackendProfiles([
+      {
+        'type': 'x_cli',
+        'name': 'X',
+        'label': 'X CLI（测试）',
+        'short': 'x',
+        'executable': 'xcli',
+        'login_command': 'xcli login',
+        'efforts': ['default', 'low'],
+      },
+      {
+        'type': 'y_http',
+        'name': 'Y',
+        'label': 'Y 协议',
+        'short': 'y',
+        'needs_api_key': true,
+        'cloud': true,
+        'efforts': ['default'],
+      },
+    ]);
+    expect(backendForType('x_cli').isCLI, isTrue);
+    expect(backendForType('x_cli').loginCommand, 'xcli login');
+    expect(backendForType('y_http').needsApiKey, isTrue);
+    expect(backendForType('y_http').efforts, isEmpty);
+    expect(backendForType('codex_app_server').known, isFalse);
+    await pumpWorkspace(
+      tester,
+      adapters: [
+        {
+          'id': 'y',
+          'name': 'Y 方案',
+          'type': 'y_http',
+          'models': ['m'],
+          'enabled': true,
+          'has_api_key': true,
+        },
+      ],
+    );
+    expect(find.text('Y 协议'), findsWidgets);
+    expect(find.text('思考强度'), findsNothing); // no efforts besides default
+    expect(find.text('API 密钥'), findsOneWidget);
   });
 }

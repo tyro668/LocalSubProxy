@@ -24,6 +24,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/builtin"
 	"github.com/tyro668/avora/internal/connector"
 	"github.com/tyro668/avora/internal/control"
 	"github.com/tyro668/avora/internal/native"
@@ -563,23 +565,33 @@ func confirmFrom(in *bufio.Reader, prompt string) bool {
 
 // ---- scheme ----
 
-var schemeTypes = map[string]string{
-	"ollama":    "ollama_http",
-	"openai":    "openai_compatible",
-	"anthropic": "anthropic_compatible",
-	"codex":     "codex_app_server",
+// backends is the backend registry; scheme types, names and help come from it.
+var backends = builtin.NewRegistry()
+
+// typeNames lists the CLI names of every scheme type.
+func typeNames() string {
+	var names []string
+	for _, d := range backends.Definitions() {
+		n := strings.Join(d.Names(), "/")
+		names = append(names, n)
+	}
+	return strings.Join(names, ", ")
 }
 
-func schemeType(t string) (string, error) {
-	if full, ok := schemeTypes[t]; ok {
-		return full, nil
+// effortHelp lists the reasoning efforts each scheme type accepts.
+func effortHelp() string {
+	parts := []string{"default"}
+	for _, d := range backends.Definitions() {
+		parts = append(parts, d.Short+": "+strings.Join(d.Efforts, "|"))
 	}
-	for _, full := range schemeTypes {
-		if t == full {
-			return full, nil
-		}
+	return strings.Join(parts, "; ")
+}
+
+func schemeType(t string) (backend.Definition, error) {
+	if d, ok := backends.Find(t); ok {
+		return d, nil
 	}
-	return "", fmt.Errorf("unsupported scheme type %q (ollama, openai, anthropic or codex)", t)
+	return backend.Definition{}, fmt.Errorf("unsupported scheme type %q (%s)", t, typeNames())
 }
 
 // rejectKeyArgs refuses an API key on the command line (visible in ps and
@@ -595,30 +607,31 @@ func rejectKeyArgs(args []string) error {
 }
 
 type schemeFlags struct {
-	typ, id, name, baseURL, models, codexBin, caps, keyEnv, provider, effort *string
-	keyStdin, enable, disable, def                                           *bool
-	conc, ctxWin, maxOut                                                     *int
+	typ, id, name, baseURL, models, codexBin, executable, caps, keyEnv, provider, effort *string
+	keyStdin, enable, disable, def                                                       *bool
+	conc, ctxWin, maxOut                                                                 *int
 }
 
 func addSchemeFlags(f *flag.FlagSet, add bool) schemeFlags {
 	s := schemeFlags{
-		id:       f.String("id", "", "scheme ID (letters, digits, - or _; default derived from --type)"),
-		name:     f.String("name", "", fmt.Sprintf("display name (at most %d bytes; default from the first model)", connector.MaxSchemeNameBytes)),
-		baseURL:  f.String("base-url", "", "API base URL (ollama, openai, anthropic)"),
-		models:   f.String("models", "", "comma separated model IDs"),
-		codexBin: f.String("codex-bin", "", "Codex CLI executable (codex)"),
-		caps:     f.String("capabilities", "", "comma separated capability flags: tools,vision,audio"),
-		keyEnv:   f.String("api-key-env", "", "read the API key from this environment variable"),
-		keyStdin: f.Bool("api-key-stdin", false, "read the API key from the first line of stdin"),
-		provider: f.String("provider", "", "provider label (optional)"),
-		effort:   f.String("reasoning-effort", "", "off, low, medium or high"),
-		conc:     f.Int("concurrency", 0, "parallel tasks on this scheme"),
-		ctxWin:   f.Int("context-window", 0, "context window tokens"),
-		maxOut:   f.Int("max-output-tokens", 0, "maximum output tokens"),
-		def:      f.Bool("default", false, "make this the default scheme"),
+		id:         f.String("id", "", "scheme ID (letters, digits, - or _; default derived from --type)"),
+		name:       f.String("name", "", fmt.Sprintf("display name (at most %d bytes; default from the first model)", connector.MaxSchemeNameBytes)),
+		baseURL:    f.String("base-url", "", "API base URL (HTTP scheme types)"),
+		models:     f.String("models", "", "comma separated model IDs"),
+		executable: f.String("executable", "", "CLI executable path (default: the CLI's command on PATH)"),
+		codexBin:   f.String("codex-bin", "", "Codex CLI executable (codex)"),
+		caps:       f.String("capabilities", "", "comma separated capability flags: tools,vision,audio"),
+		keyEnv:     f.String("api-key-env", "", "read the API key from this environment variable"),
+		keyStdin:   f.Bool("api-key-stdin", false, "read the API key from the first line of stdin"),
+		provider:   f.String("provider", "", "provider label (optional)"),
+		effort:     f.String("reasoning-effort", "", "reasoning effort, model-dependent: "+effortHelp()),
+		conc:       f.Int("concurrency", 0, "parallel tasks on this scheme"),
+		ctxWin:     f.Int("context-window", 0, "context window tokens"),
+		maxOut:     f.Int("max-output-tokens", 0, "maximum output tokens"),
+		def:        f.Bool("default", false, "make this the default scheme"),
 	}
 	if add {
-		s.typ = f.String("type", "", "ollama, openai, anthropic or codex (required)")
+		s.typ = f.String("type", "", typeNames()+" (required)")
 	} else {
 		s.enable = f.Bool("enable", false, "enable the scheme")
 		s.disable = f.Bool("disable", false, "disable the scheme")
@@ -700,43 +713,37 @@ func schemeAdd(args []string) error {
 	} else if len(pos) > 0 {
 		return fmt.Errorf("unexpected argument %q", pos[0])
 	}
-	typ, err := schemeType(*s.typ)
+	d, err := schemeType(*s.typ)
 	if err != nil {
 		return err
 	}
+	typ := d.Type
 	if err := checkName(*s.name); err != nil {
 		return err
 	}
 	a := connector.AdapterConfig{Type: typ, ID: *s.id, Name: strings.TrimSpace(*s.name), BaseURL: *s.baseURL, Models: split(*s.models),
-		CodexBin: *s.codexBin, Capabilities: split(*s.caps), Provider: *s.provider, ReasoningEffort: *s.effort,
+		CodexBin: *s.codexBin, Executable: *s.executable, Capabilities: split(*s.caps), Provider: *s.provider, ReasoningEffort: *s.effort,
 		Concurrency: *s.conc, ContextWindow: *s.ctxWin, MaxOutputTokens: *s.maxOut, IsDefault: *s.def, Enabled: true}
 	key, hasKey, err := s.apiKey()
 	if err != nil {
 		return err
 	}
-	switch typ {
-	case "openai_compatible", "anthropic_compatible":
-		if !hasKey {
-			return errors.New("this scheme type needs an API key: --api-key-env VAR or --api-key-stdin")
-		}
-	default:
-		if hasKey {
-			return fmt.Errorf("%s schemes do not take an API key", *s.typ)
-		}
+	if d.NeedsAPIKey && !hasKey {
+		return errors.New("this scheme type needs an API key: --api-key-env VAR or --api-key-stdin")
+	}
+	if !d.NeedsAPIKey && hasKey {
+		return fmt.Errorf("%s schemes do not take an API key", *s.typ)
 	}
 	a.APIKey = key
-	if typ == "ollama_http" && a.BaseURL == "" {
-		a.BaseURL = "http://127.0.0.1:11434"
-	}
-	if typ == "codex_app_server" && a.CodexBin == "" {
-		a.CodexBin = "codex"
+	if a.BaseURL == "" {
+		a.BaseURL = d.DefaultBaseURL
 	}
 	if a.ID == "" {
 		existing, err := listAdapters(c)
 		if err != nil {
 			return err
 		}
-		a.ID = nextID(strings.SplitN(typ, "_", 2)[0], existing)
+		a.ID = nextID(d.Short, existing)
 	}
 	raw, err := call(c, map[string]any{"action": "create_adapter", "adapter": a})
 	if err != nil {
@@ -827,8 +834,8 @@ func schemeUpdate(args []string) error {
 		}
 		patch["name"] = strings.TrimSpace(*s.name)
 	}
-	str := map[string]*string{"base-url": s.baseURL, "codex-bin": s.codexBin, "provider": s.provider, "reasoning-effort": s.effort}
-	keys := map[string]string{"base-url": "base_url", "codex-bin": "codex_bin", "provider": "provider", "reasoning-effort": "reasoning_effort"}
+	str := map[string]*string{"base-url": s.baseURL, "codex-bin": s.codexBin, "executable": s.executable, "provider": s.provider, "reasoning-effort": s.effort}
+	keys := map[string]string{"base-url": "base_url", "codex-bin": "codex_bin", "executable": "executable", "provider": "provider", "reasoning-effort": "reasoning_effort"}
 	for fl, p := range str {
 		if set[fl] {
 			patch[keys[fl]] = *p
@@ -922,7 +929,7 @@ func schemeTest(args []string) error {
 	if a.HealthError != "" && a.Health == "unavailable" && strings.HasPrefix(a.HealthError, "invalid configuration") {
 		return fmt.Errorf("scheme %s cannot be tested: %s (fix it with scheme update)", a.ID, a.HealthError)
 	}
-	cfg := connector.AdapterConfig{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin,
+	cfg := connector.AdapterConfig{ID: a.ID, Type: a.Type, Name: a.Name, Provider: a.Provider, BaseURL: a.BaseURL, CodexBin: a.CodexBin, Executable: a.Executable,
 		Models: a.Models, ContextWindow: a.ContextWindow, MaxOutputTokens: a.MaxOutputTokens, ReasoningEffort: a.ReasoningEffort,
 		Capabilities: a.ConfiguredCapabilities, Concurrency: a.ConfiguredConcurrency, Enabled: true} // the stored key is reused
 	raw, err := call(c, map[string]any{"action": "test_adapter", "adapter": cfg})

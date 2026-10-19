@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tyro668/avora/internal/audit"
 )
 
 // A saved scheme that no longer validates (here: a plain-HTTP URL to a
@@ -75,5 +78,38 @@ func TestUnaddressableSavedSchemeIsSkippedWithWarning(t *testing.T) {
 	}
 	if len(x.ListAdapters()) != 1 || !strings.Contains(x.AdapterStorageWarning(), "unusable ID") {
 		t.Fatalf("list %+v warning %q", x.ListAdapters(), x.AdapterStorageWarning())
+	}
+}
+
+func TestDeleteAdapterClearsUsageStats(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	f := filepath.Join(dir, "adapters.enc")
+	a1 := oneAdapter[0]
+	a2 := AdapterConfig{ID: "ol", Type: "ollama_http", Name: "local ollama", BaseURL: "http://127.0.0.1:11434", Models: []string{"qwen3"}, Enabled: true}
+	sealAdapters(t, f, keyA, []AdapterConfig{a1, a2})
+	al, err := audit.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer al.Close()
+	for _, ad := range []string{a1.ID, "ol"} {
+		if err := al.Record(ctx, audit.Record{At: time.Now(), ConnectionID: "dev_1", Gateway: "https://gw.a", Tenant: "acme", TaskID: "t", Model: ad + "/m", Adapter: ad, Status: audit.StatusOK, PromptTokens: 20, CompletionTokens: 10, UsageReported: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	x, err := New(Config{DataKey: keyA, AdapterFile: f, Audit: al})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.DeleteAdapter("ol"); err != nil {
+		t.Fatal(err)
+	}
+	bs, err := x.UsageStats(ctx, audit.Filter{}, []string{audit.ByAdapter}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bs) != 1 || bs[0].Adapter != a1.ID {
+		t.Fatalf("expected only %s usage to remain after deleting ol, got %+v", a1.ID, bs)
 	}
 }

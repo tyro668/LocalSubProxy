@@ -264,6 +264,8 @@ class TypeMark extends StatelessWidget {
     final t = AppTokens.of(context);
     final (Color c, String l) = switch (type) {
       'codex_app_server' => (t.typeCodex, 'C'),
+      'grok_build' => (t.typeCodex, 'G'),
+      'antigravity_cli' => (t.typeCodex, 'A'),
       'anthropic_compatible' => (t.typeAnthropic, 'A'),
       'ollama_http' => (t.neutral, 'L'),
       _ => (t.typeOpenAI, 'O'),

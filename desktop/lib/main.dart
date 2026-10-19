@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'backend_catalog.dart';
+
 import 'package:flutter/services.dart';
 import 'package:shadcn_flutter/shadcn_flutter.dart';
 import 'package:window_manager/window_manager.dart';
@@ -202,6 +204,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> boot() async {
     try {
+      final types = api.backends();
+      if (types.isNotEmpty) loadBackendProfiles(types);
       api.start();
       if (mounted) {
         setState(() {
@@ -516,21 +520,25 @@ class _HomePageState extends State<HomePage> {
     ).future;
   }
 
+  bool _hasScheme(String id) => adapters.any((a) => '${a['id']}' == id);
+
   /// Total tokens per scheme id, for the scheme details.
   Map<String, int> get usageByScheme => {
     for (final b in usage)
-      '${b['adapter'] ?? ''}': ((b['total_tokens'] ?? 0) as num).toInt(),
+      if (_hasScheme('${b['adapter'] ?? ''}'))
+        '${b['adapter'] ?? ''}': ((b['total_tokens'] ?? 0) as num).toInt(),
   };
 
   Widget usageCard() => UsagePanel(
     rows: [
       for (final b in usage)
-        UsageRow(
-          _schemeName('${b['adapter'] ?? ''}'),
-          ((b['prompt_tokens'] ?? 0) as num).toInt(),
-          ((b['completion_tokens'] ?? 0) as num).toInt(),
-          ((b['total_tokens'] ?? 0) as num).toInt(),
-        ),
+        if (_hasScheme('${b['adapter'] ?? ''}'))
+          UsageRow(
+            _schemeName('${b['adapter'] ?? ''}'),
+            ((b['prompt_tokens'] ?? 0) as num).toInt(),
+            ((b['completion_tokens'] ?? 0) as num).toInt(),
+            ((b['total_tokens'] ?? 0) as num).toInt(),
+          ),
     ],
   );
 
@@ -558,6 +566,7 @@ class _HomePageState extends State<HomePage> {
     try {
       api.deleteAdapter(adapter['id'] as String);
       await refresh();
+      await loadUsage();
     } catch (e) {
       if (mounted) show('$e', error: true);
     }
@@ -975,7 +984,10 @@ class _HomePageState extends State<HomePage> {
                 usage: usageByScheme,
                 onConnectionTap: openConnection,
                 onUsageTap: openUsage,
-                onChanged: () => refresh(force: true),
+                onChanged: () async {
+                  await refresh(force: true);
+                  await loadUsage();
+                },
               )
             : KernelErrorPage(
                 error: kernelError ?? '内核启动失败',
@@ -1707,11 +1719,12 @@ class _TypeMark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final icon = switch (type) {
-      'codex_app_server' => LucideIcons.terminal,
-      'ollama_http' => LucideIcons.monitor,
-      _ => LucideIcons.cloud,
-    };
+    final profile = backendForType(type);
+    final icon = profile.isCLI
+        ? LucideIcons.terminal
+        : profile.cloud || !profile.known
+        ? LucideIcons.cloud
+        : LucideIcons.monitor;
     return Container(
       width: 36,
       height: 36,
@@ -1742,19 +1755,8 @@ class _HealthBadge extends StatelessWidget {
   }
 }
 
-String adapterTypeShort(String? type) => switch (type) {
-  'codex_app_server' => 'Codex',
-  'anthropic_compatible' => 'Anthropic 兼容',
-  'ollama_http' => 'Ollama',
-  _ => 'OpenAI 兼容',
-};
-
-String adapterTypeLabel(String type) => switch (type) {
-  'codex_app_server' => 'OpenAI Codex（订阅）',
-  'anthropic_compatible' => 'Anthropic 兼容协议',
-  'ollama_http' => 'Ollama 协议（本地模型）',
-  _ => 'OpenAI 兼容协议',
-};
+String adapterTypeShort(String? type) => backendForType(type).short;
+String adapterTypeLabel(String type) => backendForType(type).label;
 
 class AdapterDialog extends StatefulWidget {
   const AdapterDialog({super.key, required this.api, this.existing});
@@ -1773,7 +1775,13 @@ class _AdapterDialogState extends State<AdapterDialog> {
     text: widget.existing?['base_url'] ?? '',
   );
   late final codex = TextEditingController(
-    text: widget.existing?['codex_bin'] ?? 'codex',
+    text:
+        widget.existing?['executable'] ??
+        widget.existing?['codex_bin'] ??
+        backendForType(
+          widget.existing?['type'] ?? 'codex_app_server',
+        ).executable ??
+        '',
   );
   late final models = TextEditingController(
     text: (widget.existing?['models'] as List?)?.join(', ') ?? '',
@@ -1809,16 +1817,16 @@ class _AdapterDialogState extends State<AdapterDialog> {
             .toList(),
         // edit is a partial update: keep the stored enabled state
         'enabled': widget.existing?['enabled'] ?? true,
-        'skip_model_probe':
-            (type == 'openai_compatible' || type == 'anthropic_compatible') &&
-            skipModelProbe,
+        'skip_model_probe': backendForType(type).needsApiKey && skipModelProbe,
       };
       if (type == 'codex_app_server') {
         body['codex_bin'] = codex.text.trim();
+      } else if (backendForType(type).isCLI) {
+        body['executable'] = codex.text.trim();
       } else {
         body['base_url'] = url.text.trim();
       }
-      if (type == 'openai_compatible' || type == 'anthropic_compatible') {
+      if (backendForType(type).needsApiKey) {
         body['api_key'] = apiKey.text.trim();
       }
       // off the UI thread: saving may probe the provider over the network
@@ -1870,24 +1878,21 @@ class _AdapterDialogState extends State<AdapterDialog> {
                       onChanged: creating
                           ? (value) {
                               if (value == null) return;
-                              setState(() => type = value);
+                              setState(() {
+                                type = value;
+                                codex.text =
+                                    backendForType(value).executable ?? '';
+                              });
                             }
                           : null,
-                      popup: (context) => const SelectPopup(
+                      popup: (context) => SelectPopup(
                         items: SelectItemList(
                           children: [
-                            SelectItemButton(
-                              value: 'codex_app_server',
-                              child: Text('OpenAI Codex（订阅）'),
-                            ),
-                            SelectItemButton(
-                              value: 'openai_compatible',
-                              child: Text('OpenAI 兼容协议'),
-                            ),
-                            SelectItemButton(
-                              value: 'anthropic_compatible',
-                              child: Text('Anthropic 兼容协议'),
-                            ),
+                            for (final profile in backendProfiles)
+                              SelectItemButton(
+                                value: profile.type,
+                                child: Text(profile.label),
+                              ),
                           ],
                         ),
                       ),
@@ -1911,12 +1916,14 @@ class _AdapterDialogState extends State<AdapterDialog> {
                     ),
                   ),
                   const Gap(14),
-                  if (type == 'codex_app_server')
+                  if (backendForType(type).isCLI)
                     LabeledField(
-                      label: '官方 Codex CLI 路径',
+                      label: '${backendForType(type).short} CLI 路径',
                       child: TextField(
                         controller: codex,
-                        placeholder: const Text('codex'),
+                        placeholder: Text(
+                          backendForType(type).executable ?? '',
+                        ),
                       ),
                     )
                   else
@@ -1927,8 +1934,7 @@ class _AdapterDialogState extends State<AdapterDialog> {
                         placeholder: const Text('https://host/v1'),
                       ),
                     ),
-                  if (type == 'openai_compatible' ||
-                      type == 'anthropic_compatible') ...[
+                  if (backendForType(type).needsApiKey) ...[
                     const Gap(14),
                     LabeledField(
                       label: widget.existing?['has_api_key'] == true

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/tyro668/avora/internal/audit"
+	"github.com/tyro668/avora/internal/backend/codex"
 	"github.com/tyro668/avora/internal/connector"
 	"github.com/tyro668/avora/internal/durable"
 	"github.com/tyro668/avora/internal/lmbp/client"
@@ -134,7 +135,7 @@ var runtime struct {
 	uncertain   bool              // identity.json may differ from runtime.local
 	keepClosed  map[string]bool   // links closed by an uncertain revoke
 	landed      map[string]bool   // revokes confirmed by reconcile
-	login       *connector.CodexLogin
+	login       *codex.CodexLogin
 	loginGen    uint64     // bumped by codex login start/cancel/logout and stop; a start that returns under an older generation is stale
 	audit       *audit.Log // per-connection request log (audit.db)
 	auditStop   context.CancelFunc
@@ -676,7 +677,9 @@ func call(raw string) string {
 	// the global lock (the connector has its own), so status polling and
 	// other calls are never stuck behind a slow model test.
 	switch request.Action {
-	case "test_adapter", "provider_models", "codex_models", "create_adapter", "update_adapter":
+	case "backends":
+		return result(connector.Backends(), nil)
+	case "test_adapter", "provider_catalog", "provider_models", "codex_models", "create_adapter", "update_adapter", "login_status":
 		runtime.Lock()
 		core := runtime.core
 		runtime.Unlock()
@@ -1002,15 +1005,23 @@ func unlockedCall(core *connector.Connector, action string, a connector.AdapterC
 		v, err := core.UpdateAdapter(a)
 		return result(v, err)
 	case "test_adapter":
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		health, err := core.TestAdapter(ctx, a)
+		health, err := core.TestAdapter(context.Background(), a)
 		return result(health, err)
+	case "provider_catalog":
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		models, err := core.ProviderCatalog(ctx, a)
+		return result(models, err)
 	case "provider_models":
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		models, err := core.ProviderModels(ctx, a)
 		return result(models, err)
+	case "login_status":
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		status, err := core.LoginStatus(ctx, a)
+		return result(status, err)
 	default: // codex_models
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
@@ -1025,7 +1036,7 @@ var pairApprove = func(ctx context.Context, r *client.PairRequest) (*client.Pair
 }
 
 // codexModels is injected in tests (a slow external process).
-var codexModels = connector.CodexModels
+var codexModels = codex.CodexModels
 
 // codexLoginCall runs Codex login actions without holding the global runtime
 // lock across the App Server (start/probe/logout can each take seconds);
@@ -1052,7 +1063,7 @@ func codexLoginCall(action, path string) string {
 	}
 	switch action {
 	case "codex_login_start":
-		next, err := connector.BeginCodexLogin(path)
+		next, err := codex.BeginCodexLogin(path)
 		if err != nil {
 			return result(nil, err)
 		}
@@ -1079,7 +1090,7 @@ func codexLoginCall(action, path string) string {
 		}
 		return result(map[string]any{"complete": complete, "models": models}, err)
 	case "codex_logout":
-		return result(nil, connector.LogoutCodex(path))
+		return result(nil, codex.LogoutCodex(path))
 	}
 	return result(nil, nil)
 }

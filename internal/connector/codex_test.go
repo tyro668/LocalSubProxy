@@ -12,11 +12,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tyro668/avora/internal/backend"
+	"github.com/tyro668/avora/internal/backend/codex"
 	"github.com/tyro668/avora/internal/lmbp"
 )
 
 // The test binary doubles as a small App Server. It never calls a model.
 func TestMain(m *testing.M) {
+	// Antigravity model listing can legitimately take longer than the former
+	// five-second background deadline. This CLI double never calls a provider.
+	if len(os.Args) > 1 && os.Args[1] == "--help" {
+		fmt.Println("--agent --disable-slash-commands --sandbox --input-format")
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "models" {
+		time.Sleep(6 * time.Second)
+		fmt.Println("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println("codex-cli fake")
 		os.Exit(0)
@@ -56,7 +69,28 @@ func fakeCodex() {
 			}
 			result(map[string]any{"account": map[string]string{"type": accountType}, "requiresOpenaiAuth": true})
 		case "model/list":
-			result(map[string]any{"data": []map[string]any{{"id": "fake-model", "hidden": false}}})
+			if mode == "catalog-pages" {
+				var p struct {
+					Cursor string `json:"cursor"`
+				}
+				_ = json.Unmarshal(msg.Params, &p)
+				if p.Cursor == "" {
+					result(json.RawMessage(`{"data":[{"id":"page-one","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}],"nextCursor":"two"}`))
+				} else if p.Cursor == "two" {
+					result(json.RawMessage(`{"data":[{"id":"page-two","supportedReasoningEfforts":[]},{"id":"hidden","hidden":true}],"nextCursor":null}`))
+				} else {
+					os.Exit(49)
+				}
+				continue
+			}
+			efforts := []map[string]string{}
+			for _, v := range []string{"low", "medium", "high", "xhigh", "max", "ultra"} {
+				efforts = append(efforts, map[string]string{"reasoningEffort": v})
+			}
+			if mode == "effort:none" {
+				efforts = append(efforts, map[string]string{"reasoningEffort": "none"})
+			}
+			result(map[string]any{"data": []map[string]any{{"id": "fake-model", "hidden": false, "defaultReasoningEffort": "low", "supportedReasoningEfforts": efforts}}})
 		case "thread/start":
 			var p struct {
 				Sandbox        string `json:"sandbox"`
@@ -74,6 +108,15 @@ func fakeCodex() {
 				result(map[string]any{"thread": map[string]string{"id": "thread_1"}, "modelProvider": "openai"})
 			}
 		case "turn/start":
+			if strings.HasPrefix(mode, "effort:") {
+				var p map[string]any
+				_ = json.Unmarshal(msg.Params, &p)
+				want := strings.TrimPrefix(mode, "effort:")
+				got, present := p["effort"]
+				if (want == "" && present) || (want != "" && got != want) {
+					os.Exit(48)
+				}
+			}
 			var p struct {
 				SandboxPolicy struct {
 					Type string `json:"type"`
@@ -132,25 +175,34 @@ func fakeCodex() {
 	}
 }
 
+// runCodex executes one fake-model task through the Codex backend.
+func runCodex(ctx context.Context, emit func(string) error) (*lmbp.Usage, error) {
+	b := codex.Definition().New(backend.Config{Type: "codex_app_server", CodexBin: os.Args[0], Enabled: true}, backend.Dependencies{})
+	done, err := b.Execute(ctx, lmbp.TaskRun{Model: "fake-model", Messages: fakeMessages()}, &backend.Emitter{Emit: func(d lmbp.TaskDelta) error { return emit(d.Text) }})
+	if err != nil {
+		return nil, err
+	}
+	return done.Usage, nil
+}
+
 func fakeMessages() []lmbp.Message {
 	return []lmbp.Message{{Role: "user", Content: lmbp.Text("say hello")}}
 }
 
 func TestCodexProbeAndStreaming(t *testing.T) {
 	t.Setenv("CODEX_HOME", "normal")
-	x := &Connector{running: map[string]runSlot{}}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	models, err := CodexModels(ctx, os.Args[0])
+	models, err := codex.CodexModels(ctx, os.Args[0])
 	if err != nil || len(models) != 1 || models[0] != "fake-model" {
 		t.Fatalf("model discovery: %v %v", models, err)
 	}
-	h := x.probeCodexAdapter(ctx, AdapterConfig{ID: "codex-local", Type: "codex_app_server", CodexBin: os.Args[0], Models: []string{"fake-model"}, Enabled: true})
+	h := codex.Probe(ctx, AdapterConfig{ID: "codex-local", Type: "codex_app_server", CodexBin: os.Args[0], Models: []string{"fake-model"}, Enabled: true})
 	if h.Health != "ready" || h.AuthState != "ready" || len(h.Models) != 1 || h.InferenceLocation != "provider_cloud" {
 		t.Fatalf("probe: %#v", h)
 	}
 	var answer string
-	if _, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if _, err := runCodex(ctx, func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -163,7 +215,7 @@ func TestCodexFinalAnswerFromTurnSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var answer string
-	if _, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(delta string) error { answer += delta; return nil }); err != nil {
+	if _, err := runCodex(ctx, func(delta string) error { answer += delta; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if answer != "hello world" {
@@ -177,8 +229,8 @@ func TestCodexRejectsUnsupportedExecution(t *testing.T) {
 			t.Setenv("CODEX_HOME", mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
-			var known knownFailure
+			_, err := runCodex(ctx, func(string) error { return nil })
+			var known backend.Failure
 			if !errors.As(err, &known) {
 				t.Fatalf("expected known failure, got %v", err)
 			}
@@ -204,7 +256,7 @@ func TestCodexCancellationSendsInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		_, err := runCodex(ctx, func(string) error { return nil })
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -221,7 +273,7 @@ func TestCodexCancellationSendsInterrupt(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if !errors.Is(err, errCodexInterrupted) {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancel result %v", err)
 		}
 	case <-time.After(5 * time.Second):
@@ -238,7 +290,7 @@ func TestCodexCancellationWithoutCompletionIsUncertain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := runCodex(ctx, "fake-model", fakeMessages(), os.Args[0], func(string) error { return nil })
+		_, err := runCodex(ctx, func(string) error { return nil })
 		done <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -286,5 +338,53 @@ func TestCodexTaskThroughExecutor(t *testing.T) {
 	run.Tools = []lmbp.Tool{{Type: "function", Function: lmbp.FunctionDef{Name: "f"}}}
 	if _, fail := x.Execute(ctx, run, func(lmbp.TaskDelta) error { return nil }); fail == nil || fail.Code != lmbp.ErrUnsupported {
 		t.Fatalf("tools on codex: %v", fail)
+	}
+}
+
+func TestCodexReasoningCapabilitiesAndWireValue(t *testing.T) {
+	for _, effort := range []string{"", "default", "low", "medium", "high", "xhigh", "max", "ultra", "none", "off", "minimal"} {
+		t.Run(effort, func(t *testing.T) {
+			want := codex.Definition().Effort(effort)
+			mode := "effort:" + want
+			if effort == "off" {
+				mode = "unsupported-none"
+			}
+			t.Setenv("CODEX_HOME", mode)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			a := codex.Definition().New(backend.Config{CodexBin: os.Args[0], ReasoningEffort: effort}, backend.Dependencies{})
+			_, err := a.Execute(ctx, lmbp.TaskRun{Model: "fake-model", Messages: fakeMessages()}, &backend.Emitter{Emit: func(lmbp.TaskDelta) error { return nil }})
+			if effort == "off" || effort == "minimal" {
+				if err == nil || !strings.Contains(err.Error(), "CAPABILITY_UNSUPPORTED") {
+					t.Fatalf("unsupported accepted: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestProviderCatalogAndEffortValidation(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	x, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := AdapterConfig{ID: "test", Type: "codex_app_server", CodexBin: os.Args[0], Models: []string{"fake-model"}, ReasoningEffort: "none"}
+	models, err := x.ProviderCatalog(context.Background(), a)
+	if err != nil || len(models) != 1 || models[0].DefaultReasoningEffort != "low" || len(models[0].ReasoningEfforts) != 6 {
+		t.Fatalf("%+v %v", models, err)
+	}
+	if _, err = x.TestAdapter(context.Background(), a); err == nil || !strings.Contains(err.Error(), "CAPABILITY_UNSUPPORTED") {
+		t.Fatalf("test accepted unsupported effort: %v", err)
+	}
+}
+
+func TestCodexCatalogPagination(t *testing.T) {
+	t.Setenv("CODEX_HOME", "catalog-pages")
+	catalog, err := codex.CodexCatalog(context.Background(), os.Args[0])
+	if err != nil || len(catalog) != 2 || catalog[0].ID != "page-one" || catalog[1].ID != "page-two" || !catalog[1].ReasoningKnown || len(catalog[1].ReasoningEfforts) != 0 {
+		t.Fatalf("catalog: %+v %v", catalog, err)
 	}
 }

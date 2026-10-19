@@ -38,6 +38,20 @@ void main() {
     }
   });
 
+  test('renaming CLI schemes keeps the executable', () {
+    final b = adapterEditBody(
+      {
+        'id': 'grok',
+        'type': 'grok_build',
+        'executable': '/opt/bin/grok',
+        'models': ['m'],
+        'enabled': true,
+      },
+      {'name': 'New'},
+    );
+    expect(b['executable'], '/opt/bin/grok');
+  });
+
   test('set default keeps everything else', () {
     final b = adapterEditBody(view, {'is_default': true});
     expect(b['is_default'], true);

@@ -1,6 +1,6 @@
 # 无界面模式（headless）
 
-`avora` 命令行可以不打开桌面应用，单独运行和桌面端**同一个内核**：多个 SaaS 连接、四种模型方案、模型授权、撤销、用量与审计。支持 Linux、macOS、Windows（amd64 / arm64）。
+`avora` 命令行可以不打开桌面应用，单独运行和桌面端**同一个内核**：多个 SaaS 连接、六种模型方案、模型授权、撤销、用量与审计。支持 Linux、macOS、Windows（amd64 / arm64）。
 
 下载：Releases 中的 `avora-cli-<版本>-<系统>-<架构>.tar.gz`（Windows 为 `.zip`）。从源码构建：`go build ./cmd/avora`，或 `scripts/build-cli.sh` 一次构建全部六个平台。
 
@@ -17,9 +17,10 @@
 ```text
 avora serve [--data-dir DIR] [--quiet]
 avora pair <https://SaaS 地址 | lmbp://pair?...> [--allow 方案/模型,...|*] [--yes] [--max-concurrency N]
-avora scheme add --type ollama|openai|anthropic|codex [--id ID] [--name 名称] [--base-url URL]
+avora scheme add --type codex|grok|antigravity|openai|anthropic|ollama [--id ID] [--name 名称] [--base-url URL]
                          [--models m1,m2] [--capabilities tools,vision,audio]
                          [--api-key-env 变量名 | --api-key-stdin] [--codex-bin codex]
+                         [--executable CLI路径]
 avora scheme list | update <id> [同上的选项, --enable, --disable] | rm <id> | test <id>
 avora status | connections
 avora revoke <连接 ID>
@@ -57,6 +58,23 @@ schemes:      2 (2 healthy)
 ID              SAAS       STATUS  TASKS  MODELS           URL
 b_816403ff4440  Acme Chat  online  0      ollama/qwen3-8b  https://chat.example.com
 ```
+
+## 配置 Grok Build 和 Antigravity CLI
+
+先在运行 Avora 的同一系统用户下安装官方 CLI 并登录：Grok 使用 `grok login`；Antigravity 使用 `agy` 并完成交互登录。Avora 使用官方 CLI 的登录状态，不接收这两种方案的 API Key。
+
+先用 `grok --no-auto-update models` 或 `agy models` 查出账号当前可用的模型 ID，再添加方案：
+
+```sh
+avora scheme add --type grok --id grok --models YOUR_GROK_MODEL --executable /path/to/grok
+avora scheme add --type antigravity --id agy --models YOUR_AGY_MODEL --executable /path/to/agy
+avora scheme test grok
+avora scheme test agy
+```
+
+`--executable` 可省略，默认从 PATH 查找官方命令；Codex 用 `--codex-bin`。`--type` 可用的名称和每种类型允许的 `--reasoning-effort` 见 `avora scheme add -h`。`default`（或省略）不覆盖模型设置。
+
+执行边界、隔离限制和错误映射见 [本地后端架构](backend-architecture.md#cli-后端)。
 
 ## 作为系统服务运行
 
