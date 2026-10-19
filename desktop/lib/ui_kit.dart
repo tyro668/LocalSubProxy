@@ -632,3 +632,51 @@ class Hairline extends StatelessWidget {
 TextStyle monoStyle(TextStyle base) => base.merge(
   const TextStyle(fontFamily: AppText.mono, package: AppText.monoPackage),
 );
+
+/// 40x22 on/off switch (brand track when on).
+class AppSwitch extends StatelessWidget {
+  const AppSwitch({super.key, required this.value, this.onChanged});
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    final enabled = onChanged != null;
+    return MouseRegion(
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: enabled ? () => onChanged!(!value) : null,
+        child: Opacity(
+          opacity: enabled ? 1 : 0.6,
+          child: Container(
+            width: 40,
+            height: 22,
+            padding: const EdgeInsets.all(2),
+            alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+            decoration: BoxDecoration(
+              color: value ? t.brand : t.checkboxBorder,
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: t.brandFg,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: t.shadow,
+                    blurRadius: 2,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

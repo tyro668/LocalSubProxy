@@ -120,12 +120,12 @@ void main() {
     await tester.tap(find.text('连接'));
     await tester.pumpAndSettle();
     expect(kernel.calls, contains('pair_prepare'));
-    expect(find.text('同意并配对'), findsOneWidget); // step 1 (consent)
+    expect(find.text('允许'), findsOneWidget); // step 1 (consent)
     expect(find.textContaining('Acme SaaS'), findsWidgets);
 
-    await tester.tap(find.text('同意并配对'));
+    await tester.tap(find.text('允许'));
     await tester.pumpAndSettle();
-    expect(find.text('同意并配对'), findsNothing);
+    expect(find.text('允许'), findsNothing);
     expect(find.textContaining('ABCD-1234'), findsWidgets); // step 2 (code)
 
     kernel.pairState = 'paired';
@@ -165,7 +165,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(dialogs(), findsNWidgets(2));
     expect(find.text('可用模型'), findsOneWidget);
-    expect(find.textContaining('Acme SaaS · 只能调用勾选的方案'), findsOneWidget);
+    expect(find.textContaining('Acme SaaS · 选择这个连接能调用的模型'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('app-dialog-close')).last);
     await tester.pumpAndSettle();

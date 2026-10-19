@@ -322,7 +322,11 @@ void main() {
     expect(dialogs(), findsNWidgets(2));
     expect(find.text('可用模型'), findsOneWidget);
     expect(find.text('已选 2 / 5'), findsNothing);
+    expect(find.text('允许全部模型'), findsOneWidget);
     await shot(t, '04_connection_models');
+    await tap(t, find.byKey(const ValueKey('allow-all-switch')));
+    expect(find.byKey(const ValueKey('model-locked')), findsOneWidget);
+    await shot(t, '04b_connection_models_all');
     await unmount(t);
   }, variant: desktop);
 
@@ -335,13 +339,16 @@ void main() {
     await t.pumpAndSettle();
     await shot(t, '05_pair_step1_input');
     await tap(t, find.text('连接').last);
-    expect(find.text('「Acme 智能客服」请求使用本机模型'), findsOneWidget);
+    expect(find.text('允许 Acme 智能客服 连接'), findsOneWidget);
     expect(find.text('签名已校验'), findsOneWidget);
     await tap(t, find.byKey(const ValueKey('model-codex/gpt-5-codex')));
     await tap(t, find.byKey(const ValueKey('model-deepseek/deepseek-chat')));
     expect(find.textContaining('已选 2 / 3'), findsOneWidget);
     await shot(t, '06_pair_step2_consent');
-    await tap(t, find.text('同意并配对'));
+    await tap(t, find.byKey(const ValueKey('allow-all-switch')));
+    expect(find.textContaining('已选 3 / 3'), findsOneWidget);
+    await shot(t, '06b_pair_step2_consent_all');
+    await tap(t, find.text('允许'));
     expect(find.byKey(const ValueKey('pair-code')), findsOneWidget);
     expect(find.text('K7QF-3H9X'), findsOneWidget);
     await shot(t, '07_pair_step3_code');

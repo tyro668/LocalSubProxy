@@ -339,6 +339,40 @@ bool coveredByWildcard(String id, Set<String> selected) {
   return selected.contains('*') || selected.contains('$adapter/*');
 }
 
+/// Editing state of one connection's allow list with the 允许全部模型
+/// switch. The switch stands for "*"; the per-model selection is kept
+/// while it is on, so turning it off restores what the user had picked.
+class ModelAccess {
+  /// [models]: the concrete model ids shown in the list. A policy that
+  /// already is "*" starts with all of them checked once the switch is off.
+  ModelAccess(Iterable<String> allow, {Iterable<String> models = const []})
+    : all = allow.contains('*'),
+      selected = {
+        for (final e in allow)
+          if (e != '*') e,
+      } {
+    if (all) {
+      selected.addAll([
+        for (final m in models)
+          if (m != '*' && !m.endsWith('/*')) m,
+      ]);
+    }
+  }
+
+  /// 允许全部模型 (stored as "*").
+  bool all;
+
+  /// Per-model selection ("adapter/model", "adapter/*", unknown ids).
+  final Set<String> selected;
+
+  /// Whether model id is granted (checked) under the current state.
+  bool covers(String id) =>
+      all || selected.contains(id) || coveredByWildcard(id, selected);
+
+  /// What is stored: exactly ["*"] with the switch on, else the selection.
+  List<String> get allow => all ? const ['*'] : (selected.toList()..sort());
+}
+
 /// Result lines of connection_revoke: the removal and, separately, a failed
 /// key cleanup (the kernel sets `warning` but the connection is gone).
 List<({String text, bool error})> revokeOutcome(

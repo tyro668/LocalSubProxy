@@ -89,7 +89,7 @@ class _HomePageState extends State<HomePage> {
   // (default deny: nothing is checked until the user picks).
   String? pairId;
   List<String> consentModels = [];
-  final Set<String> consentAllow = {};
+  ModelAccess consentAccess = ModelAccess(const []);
   // Showing the "add connection" form while other SaaS are already paired.
   bool adding = false;
   // Local token usage (last 7 days, by SaaS and model).
@@ -267,7 +267,7 @@ class _HomePageState extends State<HomePage> {
           consent = (p['consent'] as Map?)?.cast<String, dynamic>();
           consentModels = ((p['available_models'] as List?) ?? const [])
               .cast<String>();
-          consentAllow.clear();
+          consentAccess = ModelAccess(const []);
         });
       }
     } catch (e) {
@@ -280,7 +280,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> approveConsent() async {
     setState(() => busy = true);
     try {
-      final p = await pairApproveAsync(pairId, consentAllow.toList()..sort());
+      final p = await pairApproveAsync(pairId, consentAccess.allow);
       if (mounted) {
         setState(() {
           consent = null;
@@ -417,10 +417,17 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> editPolicy(ConnectionInfo c) async {
-    // Every model (incl. disabled adapters), wildcards and unknown entries
-    // are listed so that saving keeps authorizations the user did not touch.
-    final entries = policyEntries(adapters, c.allow);
-    final selected = <String>{...c.allow};
+    // Every model (incl. disabled adapters), scheme wildcards and unknown
+    // entries are listed so that saving keeps authorizations the user did
+    // not touch; "*" is the 允许全部模型 switch, not a row.
+    final entries = [
+      for (final e in policyEntries(adapters, c.allow))
+        if (e.id != '*') e,
+    ];
+    final access = ModelAccess(
+      c.allow,
+      models: [for (final e in entries) e.id],
+    );
     final types = adapterTypes(adapters);
     final ok = await showOverlay<bool>(
       context,
@@ -428,9 +435,10 @@ class _HomePageState extends State<HomePage> {
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setLocal) => AppDialog(
             title: const Text('可用模型'),
-            subtitle: Text('${c.title} · 只能调用勾选的方案'),
+            subtitle: Text('${c.title} · 选择这个连接能调用的模型'),
             maxWidth: 480,
-            content: ModelChecklist(
+            content: ModelAccessEditor(
+              access: access,
               models: [for (final e in entries) e.id],
               notes: {for (final e in entries) e.id: e.note},
               labels: {for (final e in entries) e.id: e.label},
@@ -438,20 +446,7 @@ class _HomePageState extends State<HomePage> {
                 for (final e in entries)
                   e.id: modelDetail(e.id, adapters, types, model: e.detail),
               },
-              selected: selected,
-              lockedBy: (m) => coveredByWildcard(m, selected),
-              onChanged: (m, v) =>
-                  setLocal(() => v ? selected.add(m) : selected.remove(m)),
-              onAll: (v) => setLocal(() {
-                if (v) {
-                  selected.addAll([
-                    for (final e in entries)
-                      if (!e.isWildcard) e.id,
-                  ]);
-                } else {
-                  selected.clear();
-                }
-              }),
+              onChanged: () => setLocal(() {}),
             ),
             actions: [
               AppButton(
@@ -471,7 +466,7 @@ class _HomePageState extends State<HomePage> {
     if (ok != true || !mounted) return;
     try {
       // allow only: the connection's max_concurrency is left unchanged
-      await setConnectionPolicyAsync(c.id, selected.toList()..sort());
+      await setConnectionPolicyAsync(c.id, access.allow);
       await refresh(force: true);
       show('已更新「${c.title}」的可用模型');
     } catch (e) {
@@ -652,8 +647,7 @@ class _HomePageState extends State<HomePage> {
             AppButton(label: '拒绝', onPressed: busy ? null : denyConsent),
             const SizedBox(width: 8),
             AppButton(
-              label: busy ? '处理中…' : '同意并配对',
-              icon: LucideIcons.link,
+              label: busy ? '处理中…' : '允许',
               variant: ButtonVariant.primary,
               onPressed: busy ? null : approveConsent,
             ),
@@ -727,37 +721,29 @@ class _HomePageState extends State<HomePage> {
           children: [
             _StepHeader(
               icon: LucideIcons.shieldCheck,
-              title: saasName.isEmpty ? '确认服务授权' : '「$saasName」请求使用本机模型',
-              trailing: verified
-                  ? const StatusBadge(
-                      '签名已校验',
-                      tone: Tone.success,
-                      icon: LucideIcons.check,
-                    )
-                  : const StatusBadge('身份未校验', tone: Tone.warning),
+              title: saasName.isEmpty ? '确认服务授权' : '允许 $saasName 连接',
+              desc: '请核对服务信息，并选择它能调用的模型',
             ),
             const SizedBox(height: 16),
-            _ConsentView(consent: consent!),
+            _ConsentView(consent: consent!, verified: verified),
             const SizedBox(height: 16),
-            ModelChecklist(
-              title: '授权给它的模型',
+            Text(
+              '可调用的模型',
+              style: AppText.sm.copyWith(
+                color: t.fg,
+                fontWeight: AppText.semibold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ModelAccessEditor(
+              access: consentAccess,
               models: concrete,
               labels: schemeLabels(adapters),
-              types: {
-                for (final m in concrete) m: types[m.split('/').first] ?? '',
-              },
               details: {
                 for (final m in concrete)
                   m: adapterTypeLabel(types[m.split('/').first] ?? ''),
               },
-              inlineDetail: true,
-              selected: consentAllow,
-              onChanged: (m, v) => setState(
-                () => v ? consentAllow.add(m) : consentAllow.remove(m),
-              ),
-              onAll: (v) => setState(() {
-                v ? consentAllow.addAll(concrete) : consentAllow.clear();
-              }),
+              onChanged: () => setState(() {}),
             ),
           ],
         );
@@ -1421,19 +1407,13 @@ class ConnectionSummaryHeader extends StatelessWidget {
   }
 }
 
-/// Icon tile + title (+ description, + trailing badge) for each step.
+/// Icon tile + title (+ description) for each step.
 class _StepHeader extends StatelessWidget {
-  const _StepHeader({
-    required this.icon,
-    required this.title,
-    this.desc,
-    this.trailing,
-  });
+  const _StepHeader({required this.icon, required this.title, this.desc});
 
   final IconData icon;
   final String title;
   final String? desc;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -1452,7 +1432,6 @@ class _StepHeader extends StatelessWidget {
             ],
           ),
         ),
-        if (trailing != null) ...[const SizedBox(width: 12), trailing!],
       ],
     );
   }
@@ -1986,22 +1965,81 @@ class _AdapterDialogState extends State<AdapterDialog> {
 /// Consent screen: the SaaS identity verified from the gateway's signed
 /// metadata (docs/lmbp-spec.md §19). Nothing here comes from the link.
 class _ConsentView extends StatelessWidget {
-  const _ConsentView({required this.consent});
+  const _ConsentView({required this.consent, this.verified = false});
   final Map<String, dynamic> consent;
+  final bool verified;
+
+  static String host(String uri) => Uri.tryParse(uri)?.host ?? '';
 
   @override
   Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
     final saas = (consent['saas'] as Map?)?.cast<String, dynamic>() ?? {};
+    final name = '${saas['name'] ?? ''}'.trim();
     final scopes = ((consent['requested_scopes'] as List?) ?? []).join('、');
     final gateway = '${consent['gateway'] ?? ''}';
     final homepage = '${saas['homepage_uri'] ?? ''}';
     final policy = '${saas['policy_uri'] ?? ''}';
+    final site = host(homepage).isNotEmpty ? host(homepage) : host(gateway);
     return AppCard(
+      key: const ValueKey('consent-saas'),
       subtle: true,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: t.brand,
+                  borderRadius: BorderRadius.circular(AppRadius.control),
+                ),
+                child: Text(
+                  name.isEmpty ? '?' : name.characters.first.toUpperCase(),
+                  style: AppText.md.copyWith(
+                    color: t.brandFg,
+                    fontWeight: AppText.semibold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name.isEmpty ? '未命名服务' : name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.md.copyWith(
+                        color: t.fg,
+                        fontWeight: AppText.semibold,
+                      ),
+                    ),
+                    if (site.isNotEmpty)
+                      Text(site, style: AppText.xs.copyWith(color: t.fg2)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              verified
+                  ? const StatusBadge(
+                      '签名已校验',
+                      tone: Tone.success,
+                      icon: LucideIcons.check,
+                    )
+                  : const StatusBadge('身份未校验', tone: Tone.warning),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Hairline(),
+          const SizedBox(height: 4),
+          // docs/lmbp-spec.md §19: gateway, tenant, homepage, privacy
+          // policy, scopes and gateway key must be shown before approval.
           _StatRow('网关', gateway),
           _StatRow('租户', '${consent['tenant'] ?? ''}'),
           if (homepage.isNotEmpty && homepage != gateway)
@@ -2055,7 +2093,12 @@ class ModelChecklist extends StatelessWidget {
     this.onAll,
     this.title,
     this.inlineDetail = false,
+    this.allLocked = false,
   });
+
+  /// 允许全部模型 is on: every row checked, faded and read-only, 全选 /
+  /// 清空 disabled, and an 已锁定 tag next to the counter.
+  final bool allLocked;
 
   /// Display only: scheme name per stored id (falls back to the id).
   final Map<String, String> labels;
@@ -2097,7 +2140,8 @@ class ModelChecklist extends StatelessWidget {
         style: AppText.sm.copyWith(color: t.fg2),
       );
     }
-    bool isOn(String m) => (lockedBy?.call(m) ?? false) || selected.contains(m);
+    bool isOn(String m) =>
+        allLocked || (lockedBy?.call(m) ?? false) || selected.contains(m);
     final count = models.where(isOn).length;
     final all = count == models.length;
     return Column(
@@ -2105,7 +2149,8 @@ class ModelChecklist extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(
+            Flexible(
+              fit: allLocked ? FlexFit.loose : FlexFit.tight,
               child: Text.rich(
                 TextSpan(
                   children: [
@@ -2128,31 +2173,51 @@ class ModelChecklist extends StatelessWidget {
                 style: AppText.sm.copyWith(color: t.fg2),
               ),
             ),
+            if (allLocked) ...[
+              const SizedBox(width: 8),
+              const StatusBadge(
+                '已锁定',
+                key: ValueKey('model-locked'),
+                tone: Tone.brand,
+                icon: LucideIcons.lock,
+              ),
+            ],
+            if (allLocked) const Spacer(),
             if (onAll != null) ...[
               AppButton(
                 label: '全选',
                 variant: ButtonVariant.ghost,
                 small: true,
-                onPressed: all ? null : () => onAll!(true),
+                onPressed: all || allLocked ? null : () => onAll!(true),
               ),
               AppButton(
                 label: '清空',
                 variant: ButtonVariant.ghost,
                 small: true,
-                onPressed: count == 0 ? null : () => onAll!(false),
+                onPressed: count == 0 || allLocked ? null : () => onAll!(false),
               ),
             ],
           ],
         ),
         const SizedBox(height: 4),
-        for (final m in models) _row(context, t, m),
+        Opacity(
+          opacity: allLocked ? 0.5 : 1,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [for (final m in models) _row(context, t, m)],
+          ),
+        ),
       ],
     );
   }
 
   Widget _row(BuildContext context, AppTokens t, String m) {
-    final locked = lockedBy?.call(m) ?? false;
-    final note = locked ? '已由通配授权' : (notes[m] ?? '');
+    final locked = allLocked || (lockedBy?.call(m) ?? false);
+    final note = allLocked
+        ? ''
+        : locked
+        ? '已由通配授权'
+        : (notes[m] ?? '');
     final wildcard = m == '*' || m.endsWith('/*');
     final label = (labels[m] ?? '').isEmpty ? m : labels[m]!;
     var detail = details[m] ?? '';
@@ -2166,7 +2231,7 @@ class ModelChecklist extends StatelessWidget {
       label,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: AppText.sm.copyWith(color: t.fg, fontWeight: AppText.medium),
+      style: AppText.sm.copyWith(color: t.fg, fontWeight: AppText.semibold),
     );
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -2214,6 +2279,155 @@ class ModelChecklist extends StatelessWidget {
               const SizedBox(width: 8),
               StatusBadge(badgeText(badge)),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Model access for one SaaS (可用模型 dialog and the pairing consent
+/// page): the 允许全部模型 switch ("*") above the flat model checklist.
+class ModelAccessEditor extends StatelessWidget {
+  const ModelAccessEditor({
+    super.key,
+    required this.access,
+    required this.models,
+    required this.onChanged,
+    this.labels = const {},
+    this.details = const {},
+    this.notes = const {},
+    this.types = const {},
+    this.inlineDetail = false,
+  });
+
+  final ModelAccess access;
+
+  /// Rows: concrete models plus kept "adapter/*" and unknown entries
+  /// (never "*", which the switch represents).
+  final List<String> models;
+
+  /// Called after [access] changed, to rebuild.
+  final VoidCallback onChanged;
+  final Map<String, String> labels, details, notes, types;
+  final bool inlineDetail;
+
+  @override
+  Widget build(BuildContext context) {
+    final sel = access.selected;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        AllModelsSwitch(
+          value: access.all,
+          onChanged: (v) {
+            access.all = v;
+            onChanged();
+          },
+        ),
+        const SizedBox(height: 12),
+        ModelChecklist(
+          models: models,
+          labels: labels,
+          details: details,
+          notes: notes,
+          types: types,
+          inlineDetail: inlineDetail,
+          selected: sel,
+          allLocked: access.all,
+          lockedBy: (m) => coveredByWildcard(m, sel),
+          onChanged: (m, v) {
+            v ? sel.add(m) : sel.remove(m);
+            onChanged();
+          },
+          onAll: (v) {
+            if (v) {
+              sel.addAll([
+                for (final m in models)
+                  if (!m.endsWith('/*')) m,
+              ]);
+            } else {
+              sel.clear();
+            }
+            onChanged();
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// The 允许全部模型 row: icon, title (+ "*" tag when on) and a switch.
+/// Light brand tint when on; no description text.
+class AllModelsSwitch extends StatelessWidget {
+  const AllModelsSwitch({super.key, required this.value, this.onChanged});
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = AppTokens.of(context);
+    return GestureDetector(
+      key: const ValueKey('allow-all'),
+      behavior: HitTestBehavior.opaque,
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: value ? t.brand50 : t.subtle,
+          borderRadius: BorderRadius.circular(AppRadius.card),
+          border: Border.all(color: value ? t.brand100 : t.border),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: value ? t.brand : t.brand50,
+                borderRadius: BorderRadius.circular(AppRadius.control),
+              ),
+              child: Icon(
+                LucideIcons.grid2x2Plus,
+                size: 16,
+                color: value ? t.brandFg : t.brand,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              '允许全部模型',
+              style: AppText.md.copyWith(
+                color: t.fg,
+                fontWeight: AppText.semibold,
+              ),
+            ),
+            if (value) ...[
+              const SizedBox(width: 8),
+              Container(
+                key: const ValueKey('allow-all-tag'),
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                decoration: BoxDecoration(
+                  color: t.brand100,
+                  borderRadius: BorderRadius.circular(AppRadius.badge),
+                ),
+                child: Text(
+                  '*',
+                  style: monoStyle(
+                    AppText.xs.copyWith(
+                      color: t.brand,
+                      fontWeight: AppText.semibold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            const Spacer(),
+            AppSwitch(
+              key: const ValueKey('allow-all-switch'),
+              value: value,
+              onChanged: onChanged,
+            ),
           ],
         ),
       ),
