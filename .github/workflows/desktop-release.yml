@@ -209,6 +209,12 @@ jobs:
           $dll = 'desktop/build/windows/x64/runner/Release/avora.dll'
           $ws = ($env:GITHUB_WORKSPACE -replace '\\', '/') + '/'
           if ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Resolve-Path $dll).Path)).Contains($ws)) { Write-Error "avora.dll embeds the checkout path $ws; build it with -trimpath"; exit 1 }
+          # 托盘菜单文字须以 UTF-16 编进 Avora.exe（/utf-8；v2.1.2 显示为 é…ç½® / é€€å‡º）
+          $exe = [IO.File]::ReadAllBytes((Resolve-Path 'desktop/build/windows/x64/runner/Release/Avora.exe').Path)
+          $u16 = [Text.Encoding]::Unicode.GetString($exe) + [Text.Encoding]::Unicode.GetString($exe, 1, $exe.Length - 1)
+          foreach ($w in @(([string][char]0x914D + [char]0x7F6E), ([string][char]0x9000 + [char]0x51FA))) {
+            if (-not $u16.Contains($w)) { Write-Error "Avora.exe lacks the tray menu text U+$('{0:X4}' -f [int]$w[0]) (compile the runner with /utf-8)"; exit 1 }
+          }
       - name: Remove certificate
         if: always()
         run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP 'cert.pfx')
