@@ -21,7 +21,7 @@ CASES = [
 
 async def test_invalid_terminal_body_not_accepted(serve_app):
     store = MemoryStore()
-    lsp = LMBPServer([TenantConfig("acme", KEY, {"display_name": "Acme"})], store=store, log=lambda *a: None)
+    lmbp = LMBPServer([TenantConfig("acme", KEY, {"display_name": "Acme"})], store=store, log=lambda *a: None)
     st = {"bad": None, "last": "", "acks": {}}
 
     def manual(run, ws, listeners):
@@ -38,8 +38,8 @@ async def test_invalid_terminal_body_not_accepted(serve_app):
             await ws.send(json.dumps({"v": L.VERSION, "type": typ, "task_id": tid, "seq": 2, "data": data}))
         asyncio.ensure_future(go())
 
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, "acme", "u1", manual=manual)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, "acme", "u1", manual=manual)
         try:
             hs = {"Authorization": "Bearer " + KEY, "X-End-User": "u1"}
             for c in CASES:

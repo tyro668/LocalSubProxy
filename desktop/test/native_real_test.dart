@@ -57,7 +57,7 @@ void main() {
         ('acme', 'http://127.0.0.1:$port', kv['LMBP_TENANT_KEY_ACME']!),
         ('beta', 'http://127.0.0.1:${port + 1}', kv['LMBP_TENANT_KEY_BETA']!),
       ];
-      final data = Directory.systemTemp.createTempSync('lsp-flutter-').path;
+      final data = Directory.systemTemp.createTempSync('lmbp-flutter-').path;
       final api = NativeApi.instance;
       api.start(dataDir: data);
       api.createAdapter({

@@ -21,23 +21,23 @@ import org.junit.jupiter.api.io.TempDir;
 class EngineTest {
   static final String KEY = "k".repeat(40);
   static final String MODEL = "tiny";
-  LMBPServer lsp;
+  LMBPServer lmbp;
   StandaloneServer srv;
   FakeDevice dev;
 
   String start(Store store) throws Exception {
-    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(store).logger(s -> { }).build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(store).logger(s -> { }).build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     return "http://127.0.0.1:" + srv.port();
   }
 
   void pairAndConnect(String base) throws Exception {
     dev = new FakeDevice(base, "acme");
     String code = dev.authorize();
-    Pairing.Pending p = lsp.pairing().lookup("acme", code);
+    Pairing.Pending p = lmbp.pairing().lookup("acme", code);
     assertEquals("pending", p.status());
     assertEquals("test-pc", p.deviceName());
-    Pairing.Decision d = lsp.pairing().approve("acme", "alice", code);
+    Pairing.Decision d = lmbp.pairing().approve("acme", "alice", code);
     assertEquals("approved", d.status());
     dev.token();
     dev.connect(MODEL);
@@ -46,7 +46,7 @@ class EngineTest {
   @AfterEach void stop() throws Exception {
     if (dev != null) dev.close();
     if (srv != null) srv.close();
-    if (lsp != null) lsp.close();
+    if (lmbp != null) lmbp.close();
   }
 
   String model() { return dev.deviceId + "/" + MODEL; }
@@ -60,7 +60,7 @@ class EngineTest {
 
   @Test void pairCallStreamResume() throws Exception {
     pairAndConnect(start(new MemoryStore()));
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     assertEquals(model(), Json.get(c.models().get(0), "id"));
     Map<String, Object> r = c.call(req(model()));
     assertEquals("hello world", Json.get(Json.get(Json.asList(r.get("choices")).get(0), "message"), "content"));
@@ -78,14 +78,14 @@ class EngineTest {
     try (LmbpStream st = c.resume(taskId, "1")) { for (Map<String, Object> ch : st) rest.append(text(ch)); }
     assertEquals(" world", rest.toString());
     // another user sees nothing of alice's
-    assertTrue(lsp.client("acme", "bob").models().isEmpty());
-    assertEquals(1, lsp.pairing().listDevices("acme", "alice").size());
-    assertTrue(lsp.pairing().listDevices("acme", "alice").get(0).online());
+    assertTrue(lmbp.client("acme", "bob").models().isEmpty());
+    assertEquals(1, lmbp.pairing().listDevices("acme", "alice").size());
+    assertTrue(lmbp.pairing().listDevices("acme", "alice").get(0).online());
   }
 
   @Test void anthropicMessages() throws Exception {
     pairAndConnect(start(new MemoryStore()));
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     Map<String, Object> m = c.messages(Json.obj("model", model(), "max_tokens", 16L, "messages", List.of(Json.obj("role", "user", "content", "hi"))));
     assertEquals("hello world", Json.get(Json.asList(m.get("content")).get(0), "text"));
     int events = 0;
@@ -100,7 +100,7 @@ class EngineTest {
   @Test void cancelEndsStreamWithDefiniteResult() throws Exception {
     pairAndConnect(start(new MemoryStore()));
     dev.mode = FakeDevice.Mode.HANG;
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     try (LmbpStream st = c.stream(req(model()))) {
       assertTrue(st.hasNext());
       st.next(); // role preamble
@@ -118,7 +118,7 @@ class EngineTest {
   @Test void closingStreamEarlyCancelsTask() throws Exception {
     pairAndConnect(start(new MemoryStore()));
     dev.mode = FakeDevice.Mode.HANG;
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     String id;
     try (LmbpStream st = c.stream(req(model()))) {
       st.next();
@@ -133,7 +133,7 @@ class EngineTest {
 
   @Test void invalidParamsAndOfflineAreDefiniteErrors() throws Exception {
     start(new MemoryStore());
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     Map<String, Object> bad = req("dev_x/tiny");
     bad.put("temperature", 3L);
     LmbpApiException e = assertThrows(LmbpApiException.class, () -> c.call(bad));
@@ -144,7 +144,7 @@ class EngineTest {
     LmbpStream st = c.stream(bad);
     e = assertThrows(LmbpApiException.class, st::hasNext);
     assertEquals(400, e.status());
-    Pairing.PairingException pe = assertThrows(Pairing.PairingException.class, () -> lsp.pairing().approve("acme", "alice", "XXXX-XXXX"));
+    Pairing.PairingException pe = assertThrows(Pairing.PairingException.class, () -> lmbp.pairing().approve("acme", "alice", "XXXX-XXXX"));
     assertEquals("NOT_FOUND", pe.code());
   }
 
@@ -164,7 +164,7 @@ class EngineTest {
     String url = "jdbc:sqlite:" + dir.resolve("lmbp.db");
     String base = start(JdbcStore.open(url));
     pairAndConnect(base);
-    String kid = lsp.kid(), devId = dev.deviceId;
+    String kid = lmbp.kid(), devId = dev.deviceId;
     HttpClient h = HttpClient.newHttpClient();
     HttpResponse<String> r = h.send(java.net.http.HttpRequest.newBuilder(URI.create(base + "/v1/chat/completions")).header("Authorization", "Bearer " + KEY)
         .header("X-End-User", "alice").header("Content-Type", "application/json").POST(java.net.http.HttpRequest.BodyPublishers.ofString(Json.stringify(req(model())))).build(),
@@ -177,14 +177,14 @@ class EngineTest {
     stop();
     dev = null;
     start(JdbcStore.open(url));
-    assertEquals(kid, lsp.kid(), "signing key persisted in the store");
-    List<Pairing.Device> ds = lsp.pairing().listDevices("acme", "alice");
+    assertEquals(kid, lmbp.kid(), "signing key persisted in the store");
+    List<Pairing.Device> ds = lmbp.pairing().listDevices("acme", "alice");
     assertEquals(1, ds.size());
     assertEquals(devId, ds.get(0).deviceId());
     assertFalse(ds.get(0).online());
-    assertTrue(lsp.pairing().revokeDevice("acme", "alice", devId));
-    assertEquals("revoked", lsp.pairing().listDevices("acme", "alice").get(0).status());
-    assertNotNull(lsp.jwks().get("keys"));
+    assertTrue(lmbp.pairing().revokeDevice("acme", "alice", devId));
+    assertEquals("revoked", lmbp.pairing().listDevices("acme", "alice").get(0).status());
+    assertNotNull(lmbp.jwks().get("keys"));
   }
 
   // Review7 #2: a revoke while the gateway awaits the hello must not be
@@ -195,27 +195,27 @@ class EngineTest {
     String base = start(st);
     dev = new FakeDevice(base, "acme");
     String code = dev.authorize();
-    lsp.pairing().approve("acme", "alice", code);
+    lmbp.pairing().approve("acme", "alice", code);
     dev.token();
-    dev.beforeHello = () -> assertTrue(lsp.pairing().revokeDevice("acme", "alice", dev.deviceId));
+    dev.beforeHello = () -> assertTrue(lmbp.pairing().revokeDevice("acme", "alice", dev.deviceId));
     assertThrows(Exception.class, () -> dev.connect(MODEL), "session activated for a revoked device");
     assertEquals("revoked", st.getDevice(dev.deviceId).status);
-    FakeDevice.waitFor(() -> lsp.pairing().listDevices("acme", "alice").stream().noneMatch(Pairing.Device::online), 2000);
-    assertTrue(lsp.pairing().listDevices("acme", "alice").stream().noneMatch(Pairing.Device::online));
+    FakeDevice.waitFor(() -> lmbp.pairing().listDevices("acme", "alice").stream().noneMatch(Pairing.Device::online), 2000);
+    assertTrue(lmbp.pairing().listDevices("acme", "alice").stream().noneMatch(Pairing.Device::online));
   }
 
   // Review7 #10: a caller that disconnects while queued records CANCELLED (the
   // decided outcome), and an idempotent replay reports exactly that.
   @Test void queuedDisconnectRecordsCancelled() throws Exception {
-    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).maxConcurrency(1).logger(s -> { }).build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).maxConcurrency(1).logger(s -> { }).build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     dev = new FakeDevice("http://127.0.0.1:" + srv.port(), "acme");
     String code = dev.authorize();
-    lsp.pairing().approve("acme", "alice", code);
+    lmbp.pairing().approve("acme", "alice", code);
     dev.token();
     dev.connect(MODEL);
     dev.mode = FakeDevice.Mode.HANG;
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     LmbpStream hog = c.stream(req(model())); // holds the only slot
     Thread.sleep(200);
     HttpRequest q = new HttpRequest("POST", "/v1/chat/completions", "", Map.of("content-type", "application/json", "idempotency-key", "k-gone"),
@@ -223,7 +223,7 @@ class EngineTest {
     q.trustedTenant = "acme";
     q.trustedUser = "alice";
     int[] st = {0};
-    Thread t = Thread.ofVirtual().start(() -> lsp.handle(q, new HttpSink() {
+    Thread t = Thread.ofVirtual().start(() -> lmbp.handle(q, new HttpSink() {
       @Override public void start(int status, Map<String, String> h) { st[0] = status; }
       @Override public void write(byte[] b) { }
     }));

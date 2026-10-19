@@ -21,7 +21,7 @@ class OrphanRecoveryTest {
       store.createTask(t, null, null);
     }
     store.appendEvent("task_orphan_RUNNING", new Store.Event(1, "task.delta", Json.obj("text", "partial")));
-    LMBPServer lsp = LMBPServer.builder().tenant("acme", "k".repeat(40), Map.of()).store(store).logger(s -> { }).retentionMillis(60_000).build();
+    LMBPServer lmbp = LMBPServer.builder().tenant("acme", "k".repeat(40), Map.of()).store(store).logger(s -> { }).retentionMillis(60_000).build();
     try {
       for (String state : new String[] {"RUNNING", "QUEUED"}) {
         Store.TaskRecord t = store.getTask("task_orphan_" + state);
@@ -32,9 +32,9 @@ class OrphanRecoveryTest {
         if (state.equals("RUNNING")) assertEquals(2, last.seq());
       }
       Thread.sleep(5);
-      assertEquals(2, lsp.g.purge(System.currentTimeMillis() + 120_000), "retention did not purge the orphans");
+      assertEquals(2, lmbp.g.purge(System.currentTimeMillis() + 120_000), "retention did not purge the orphans");
       assertNull(store.getTask("task_orphan_RUNNING"));
-    } finally { lsp.close(); }
+    } finally { lmbp.close(); }
   }
 
   @Test void memory() throws Exception { check(new MemoryStore()); }

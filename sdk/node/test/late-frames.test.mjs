@@ -17,9 +17,9 @@ const until = async (cond, ms, what) => {
 };
 
 test('local cancel: late device frames and terminal frame are ACKed (credit returned)', async () => {
-  const lsp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const runs = new Map(); // task id → { acked, cancels: [], sent }
@@ -43,11 +43,11 @@ test('local cancel: late device frames and terminal frame are ACKed (credit retu
     send('task.delta', { text: 'hello ' });
     send('task.delta', { text: 'world' });
   };
-  const { ws } = await pairAndConnect(lsp, base, 'acme', 'u1', { manual });
+  const { ws } = await pairAndConnect(lmbp, base, 'acme', 'u1', { manual });
   try {
     const N = 5;
     for (let i = 0; i < N; i++) {
-      const c = lsp.client('acme', 'u1');
+      const c = lmbp.client('acme', 'u1');
       const ac = new AbortController();
       const st = c.chat.completions.stream({ model: 'm1', messages: [{ role: 'user', content: 'go' }] }, { signal: ac.signal });
       await st.next();
@@ -60,11 +60,11 @@ test('local cancel: late device frames and terminal frame are ACKed (credit retu
       assert.ok(!r.cancels.includes('unknown_task'), `task ${id} late frames got unknown_task: ${r.cancels}`);
     }
     // bounded cleanup state is gone once each device terminal arrived
-    const ds = [...lsp.engine.devs.values()][0];
+    const ds = [...lmbp.engine.devs.values()][0];
     assert.equal(ds.reclaimed.size, 0, 'late-frame records left behind');
     // the decided outcome is unchanged
     for (const id of runs.keys()) {
-      const t = lsp.store.getTask(id);
+      const t = lmbp.store.getTask(id);
       assert.ok(t, `task ${id} not stored`);
       assert.equal(t.state, 'CANCELLED', `task ${id} state ${t.state}`);
     }

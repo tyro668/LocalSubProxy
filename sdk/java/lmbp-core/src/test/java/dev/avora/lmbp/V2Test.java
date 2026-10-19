@@ -29,24 +29,24 @@ import org.junit.jupiter.api.Test;
  */
 class V2Test {
   static final String KEY = "k".repeat(40);
-  LMBPServer lsp;
+  LMBPServer lmbp;
   StandaloneServer srv;
   String base;
   final HttpClient http = HttpClient.newHttpClient();
 
   FakeDevice paired() throws Exception {
-    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).logger(s -> { }).build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).logger(s -> { }).build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     base = "http://127.0.0.1:" + srv.port();
     FakeDevice d = new FakeDevice(base, "acme");
-    lsp.pairing().approve("acme", "alice", d.authorize());
+    lmbp.pairing().approve("acme", "alice", d.authorize());
     d.token();
     return d;
   }
 
   @AfterEach void stop() throws Exception {
     if (srv != null) srv.close();
-    if (lsp != null) lsp.close();
+    if (lmbp != null) lmbp.close();
   }
 
   /** Opens a WebSocket offering proto; frames land in the queue ("CLOSE" on close). */
@@ -140,7 +140,7 @@ class V2Test {
     ws.sendText(Json.stringify(Json.obj("v", 2L, "type", "models.update", "id", "mu1", "data", Json.obj("models", List.of("m1", "zzz"), "max_concurrency", 99L))), true).join();
     Map<String, Object> f = next(q);
     assertEquals("BAD_REQUEST", Json.get(f.get("data"), "code"), String.valueOf(f));
-    List<Object> models = lsp.client("acme", "alice").models();
+    List<Object> models = lmbp.client("acme", "alice").models();
     assertFalse(models.stream().anyMatch(m -> String.valueOf(Json.get(m, "id")).endsWith("/zzz")), String.valueOf(models));
     ws.abort();
   }
@@ -164,6 +164,6 @@ class V2Test {
     String chat = Json.stringify(Json.obj("model", "m1", "messages", List.of(Json.obj("role", "user", "content", "hi"))));
     assertEquals(400, status("POST", "/v1/chat/completions", bearer + "X-End-User: alice\r\nIdempotency-Key: " + "k".repeat(256) + "\r\n", chat));
     assertEquals(400, status("POST", "/v1/chat/completions", bearer + "X-End-User: alice\r\nIdempotency-Key: 键\r\n", chat));
-    assertThrows(Pairing.PairingException.class, () -> lsp.pairing().approve("acme", "张三", "BCDF-GHJK"));
+    assertThrows(Pairing.PairingException.class, () -> lmbp.pairing().approve("acme", "张三", "BCDF-GHJK"));
   }
 }

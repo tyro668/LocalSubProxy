@@ -12,12 +12,12 @@ import { pairAndConnect, connect, startPairing } from '../test-support/simdevice
 const KEY = 'k'.repeat(40);
 const T = 'acme';
 async function setup() {
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store: new MemoryStore(), log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store: new MemoryStore(), log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
-  return { lsp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
+  return { lmbp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
 }
 const api = (base, method, p, body, headers = {}) => fetch(base + p, { method, body: body && JSON.stringify(body),
   headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json', ...headers } });
@@ -37,7 +37,7 @@ test('metadata advertises 2.0 and the profiles', async () => {
 test('subprotocol is unversioned: only lmbp.2 gets 400 VERSION_UNSUPPORTED; a 1.x hello (lmbp, v 1) gets error VERSION_UNSUPPORTED', async () => {
   const s = await setup();
   try {
-    const d = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const d = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     d.ws.close();
     const status = await new Promise((ok) => {
       const ws = new WebSocket(s.base.replace(/^http/, 'ws') + '/lmbp/v1/connect', 'lmbp.2', { headers: { Authorization: 'Bearer ' + d.tok.access_token } });
@@ -54,7 +54,7 @@ test('subprotocol is unversioned: only lmbp.2 gets 400 VERSION_UNSUPPORTED; a 1.
 test('hello max_concurrency 0, 17, missing or "2" is rejected (no clamping); model_names of 129 code points is rejected', async () => {
   const s = await setup();
   try {
-    const d = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const d = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     d.ws.close();
     await sleep(30);
     for (const patch of [{ max_concurrency: 0 }, { max_concurrency: 17 }, { max_concurrency: undefined }, { max_concurrency: '2' }, { model_names: { m1: '😀'.repeat(129) } }]) {
@@ -69,7 +69,7 @@ test('hello max_concurrency 0, 17, missing or "2" is rejected (no clamping); mod
 test('models.update with max_concurrency 99 is rejected whole and not applied', async () => {
   const s = await setup();
   try {
-    const d = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const d = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     const frames = [];
     d.ws.on('message', (m) => frames.push(JSON.parse(m)));
     d.ws.send(JSON.stringify({ v: L.VERSION, type: 'models.update', id: 'mu1', data: { models: ['m1', 'zzz'], max_concurrency: 99 } }));
@@ -99,6 +99,6 @@ test('device_name counts code points; X-End-User and Idempotency-Key must be pri
     const chat = { model: 'm1', messages: [{ role: 'user', content: 'hi' }] };
     assert.equal((await api(s.base, 'POST', '/v1/chat/completions', chat, { 'Idempotency-Key': 'k'.repeat(256) })).status, 400);
     assert.equal((await api(s.base, 'POST', '/v1/chat/completions', chat, { 'Idempotency-Key': Buffer.from('键').toString('latin1') })).status, 400);
-    assert.throws(() => s.lsp.pairing.approve(T, '张三', 'BCDF-GHJK'), /printable ASCII/);
+    assert.throws(() => s.lmbp.pairing.approve(T, '张三', 'BCDF-GHJK'), /printable ASCII/);
   } finally { await s.close(); }
 });

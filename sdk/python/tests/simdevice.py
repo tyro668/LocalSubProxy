@@ -150,13 +150,13 @@ async def connect(base, key, tok, models=("m1",), e2ee=False, max_concurrency=4,
     return ws, task
 
 
-async def pair_and_connect(lsp, base, tenant, user, e2ee=False, **kw):
+async def pair_and_connect(lmbp, base, tenant, user, e2ee=False, **kw):
     key, a = await start_pairing(base, tenant)
-    ok = lsp.pairing.approve(tenant, user, a["user_code"])
+    ok = lmbp.pairing.approve(tenant, user, a["user_code"])
     tok = await finish_pairing(base, key, a)
     ws, task = await connect(base, key, tok, e2ee=e2ee, **kw)
     for _ in range(50):
-        if any(d.online for d in lsp.pairing.list_devices(tenant, user)):
+        if any(d.online for d in lmbp.pairing.list_devices(tenant, user)):
             break
         await asyncio.sleep(0.02)
     return ws, task, ok.device_id

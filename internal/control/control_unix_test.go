@@ -9,7 +9,7 @@ import (
 
 // short paths: unix socket paths are limited to ~104 bytes on macOS
 func shortDir(t *testing.T) string {
-	d, err := os.MkdirTemp("", "lspc")
+	d, err := os.MkdirTemp("", "avorac")
 	if err != nil {
 		t.Fatal(err)
 	}

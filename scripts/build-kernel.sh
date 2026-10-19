@@ -1,7 +1,7 @@
 #!/bin/sh
 # 构建 Go 内核（cmd/avora_native）为 C 共享库，供 Flutter UI 通过 FFI 加载。
 # 用法: scripts/build-kernel.sh [输出目录]   默认输出到 build/kernel/
-# -trimpath：产物里不带构建机的源码绝对路径（如 CI 的 .../LocalSubProxy/LocalSubProxy/...）
+# -trimpath：产物里不带构建机的源码绝对路径（如 CI 的检出目录）
 set -eu
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 out_dir=${1:-"$repo_dir/build/kernel"}

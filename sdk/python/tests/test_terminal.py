@@ -52,9 +52,9 @@ async def test_sqlite_status_failure_restart_same_outcome(serve_app, tmp_path):
     for ev in ("INSERT", "UPDATE"):
         st.db.execute(f"CREATE TRIGGER fail_{ev} BEFORE {ev} ON lmbp_tasks WHEN json_extract(NEW.doc,'$.state')='SUCCEEDED' "
                       "BEGIN SELECT RAISE(ABORT,'injected status write failure'); END")
-    lsp = new(st)
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1")
+    lmbp = new(st)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1")
         c1, tid, b1 = await idem_chat(base, "k-term")
         assert outcome(c1, b1) != "success", "status write failed but the caller got success"
         await asyncio.sleep(0.2)
@@ -63,8 +63,8 @@ async def test_sqlite_status_failure_restart_same_outcome(serve_app, tmp_path):
     st.db.executescript("DROP TRIGGER fail_INSERT; DROP TRIGGER fail_UPDATE;")
     st.close()
     st2 = SQLiteStore(path)  # restart over the same file
-    lsp2 = new(st2)
-    async with serve_app(lsp2.asgi()) as base:
+    lmbp2 = new(st2)
+    async with serve_app(lmbp2.asgi()) as base:
         c2, tid2, b2 = await idem_chat(base, "k-term")
     assert tid2 == tid
     assert outcome(c2, b2) == outcome(c1, b1), f"before restart {c1} {b1}\nafter {c2} {b2}"
@@ -92,12 +92,12 @@ async def test_memory_one_shot_status_failure_replay_same_outcome(serve_app):
                 raise OSError("disk full")
             return fin(tid, ev, state)
         st.finish_task = failing_finish
-    lsp = new(st)
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1")
+    lmbp = new(st)
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1")
         c1, tid, b1 = await idem_chat(base, "k-mem")
         await asyncio.sleep(0.2)
-        lsp.engine.tasks.pop(tid, None)  # drop the hub: replay from the store
+        lmbp.engine.tasks.pop(tid, None)  # drop the hub: replay from the store
         c2, _, b2 = await idem_chat(base, "k-mem")
         await ws.close()
         task.cancel()
@@ -111,8 +111,8 @@ async def test_recovery_inconsistent_legacy_row(serve_app):
     st.put_task({"id": "task_x", "tenant": T, "owner": "u1", "device": "d", "model": "m1", "state": "FAILED",
                  "events": [{"seq": 1, "type": "task.delta", "data": {"content": "hi"}},
                             {"seq": 2, "type": "task.done", "data": {"finish_reason": "stop"}}]})
-    lsp = new(st)
-    async with serve_app(lsp.asgi()) as base:
+    lmbp = new(st)
+    async with serve_app(lmbp.asgi()) as base:
         async with httpx.AsyncClient(base_url=base, headers={"Authorization": "Bearer " + KEY, "X-End-User": "u1"}) as h:
             r = await h.get("/lmbp/v1/tenant/tasks/task_x/events")
     assert "OUTCOME_UNKNOWN" in r.text, r.text

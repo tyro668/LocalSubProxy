@@ -8,12 +8,12 @@ from test_sdk import T, new
 
 
 async def test_slow_consumer_bounded(serve_app):
-    lsp = new()
+    lmbp = new()
     stats = {"sent": 0}
     n, size = 256, 32 * 1024  # 8 MiB; window 1 MiB
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1", flood={"n": n, "size": size, "stats": stats})
-        c = lsp.client(T, "u1")
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1", flood={"n": n, "size": size, "stats": stats})
+        c = lmbp.client(T, "u1")
         st = c.chat.completions.stream(model="m1", messages=[{"role": "user", "content": "go"}])
         first = await st.__anext__()
         await asyncio.sleep(1.5)  # stall
@@ -29,11 +29,11 @@ async def test_slow_consumer_bounded(serve_app):
 
 
 async def test_close_while_producer_blocked(serve_app):
-    lsp = new()
+    lmbp = new()
     stats = {"sent": 0}
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1", flood={"n": 256, "size": 32 * 1024, "stats": stats})
-        c = lsp.client(T, "u1")
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1", flood={"n": 256, "size": 32 * 1024, "stats": stats})
+        c = lmbp.client(T, "u1")
         st = c.chat.completions.stream(model="m1", messages=[{"role": "user", "content": "go"}])
         await st.__anext__()
         await asyncio.sleep(0.5)  # producer now blocked on the full buffer

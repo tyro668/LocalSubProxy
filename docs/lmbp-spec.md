@@ -237,7 +237,6 @@
 
 ### 6.1 发现
 - 租户后端 SHOULD 在 `GET /.well-known/avora` 返回 `{gateway_url, tenant, link_url, protocol: "lmbp"}`（`protocol` 是协议族名，不含版本），供设备只凭租户网址就能完成配对。该文档 MUST NOT 包含任何秘密。
-  - 兼容：参考实现改名前使用 `/.well-known/localsubproxy`。设备 SHOULD 在 `/.well-known/avora` 返回 404 时再尝试该旧路径；租户后端 MAY 在过渡期同时提供两个路径。
 - 网关 MUST 提供 `GET /.well-known/jwks.json`（`application/jwk-set+json`）。
 - 网关 MUST 提供 `GET /.well-known/lmbp[?tenant=<id>]` 元数据文档（§18.2）；带 `tenant` 时还包含签名的 SaaS 身份（§19.1）。`gateway_url` MUST 是网关的 origin（不带路径）。
 

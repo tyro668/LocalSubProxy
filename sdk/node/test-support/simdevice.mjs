@@ -105,11 +105,11 @@ export async function connect(base, p, tok, models = ['m1'], opts = {}) {
 }
 
 /** Pair (approving through the SDK API) and connect; returns {ws, deviceId}. */
-export async function pairAndConnect(lsp, base, tenant, user, opts = {}) {
+export async function pairAndConnect(lmbp, base, tenant, user, opts = {}) {
   const p = await startPairing(base, tenant);
-  const ok = lsp.pairing.approve(tenant, user, p.user_code);
+  const ok = lmbp.pairing.approve(tenant, user, p.user_code);
   const tok = await finishPairing(base, p);
   const ws = await connect(base, p, tok, ['m1'], opts);
-  for (let i = 0; i < 50 && !lsp.pairing.listDevices(tenant, user).find((d) => d.online); i++) await new Promise((r) => setTimeout(r, 20));
+  for (let i = 0; i < 50 && !lmbp.pairing.listDevices(tenant, user).find((d) => d.online); i++) await new Promise((r) => setTimeout(r, 20));
   return { ws, deviceId: ok.deviceId, jkt: ok.jkt, pairing: p, tok };
 }

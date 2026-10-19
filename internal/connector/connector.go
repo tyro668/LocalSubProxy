@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/tyro668/avora/internal/compat"
 	"io"
 	"log"
 	"net"
@@ -823,24 +822,18 @@ func (x *Connector) notifyModels() {
 }
 
 func (x *Connector) checkRemote(ctx context.Context, remote string) error {
-	status := 0
-	for _, path := range compat.DiscoveryPaths {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+path, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := x.client.Do(req)
-		if err != nil {
-			return err
-		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		_ = resp.Body.Close()
-		if status = resp.StatusCode; status != http.StatusNotFound {
-			break // 404: pre-rename SaaS, try the legacy path
-		}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(remote, "/")+lmbp.DiscoveryPath, nil)
+	if err != nil {
+		return err
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("remote service discovery: HTTP %d", status)
+	resp, err := x.client.Do(req)
+	if err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("remote service discovery: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

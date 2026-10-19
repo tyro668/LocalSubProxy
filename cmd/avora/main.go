@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/tyro668/avora/internal/audit"
-	"github.com/tyro668/avora/internal/compat"
 	"github.com/tyro668/avora/internal/connector"
 	"github.com/tyro668/avora/internal/lmbp/client"
 	"github.com/tyro668/avora/internal/lmbp/gateway"
@@ -66,9 +65,6 @@ func main() {
 	case "connector":
 		f := flag.NewFlagSet("connector", flag.ExitOnError)
 		localDir, _ := native.DefaultDataDir()
-		if _, merr := native.MigrateDefaultDataDir(localDir); merr != nil {
-			log.Printf("warning: %v", merr)
-		}
 		remoteURL := f.String("remote-url", "", "remote service origin that serves /.well-known/avora (first run)")
 		pairLink := f.String("pair-link", "", "lmbp://pair?v=2&gateway=...&tenant=... deep link (first run, alternative to -remote-url)")
 		yes := f.Bool("yes", false, "approve the pairing consent without prompting (automation only)")
@@ -84,7 +80,7 @@ func main() {
 		auditDB := f.String("audit-db", filepath.Join(localDir, "audit.db"), "local per-request audit log (empty disables)")
 		auditKeep := f.Duration("audit-retention", audit.DefaultRetention, "delete audit rows older than this")
 		_ = f.Parse(os.Args[2:])
-		cfg := connector.Config{DataKey: compat.Getenv("AVORA_DATA_KEY"), AdapterFile: *adapterFile, MaxConcurrency: *conc}
+		cfg := connector.Config{DataKey: os.Getenv("AVORA_DATA_KEY"), AdapterFile: *adapterFile, MaxConcurrency: *conc}
 		if *adapter != "" {
 			a := connector.AdapterConfig{ID: *adapter, Type: *adapterType, CodexBin: *codexBin, Models: split(*models), Capabilities: split(*caps), Enabled: true}
 			if a.Type == "ollama_http" {
@@ -244,11 +240,6 @@ func auditCmd(name string, args []string) error {
 	asJSON := f.Bool("json", false, "print JSON")
 	purge := f.Duration("purge-older-than", 0, "audit: delete rows older than this and exit")
 	_ = f.Parse(args)
-	if *db == filepath.Join(dataDir, "audit.db") {
-		if _, err := native.MigrateDefaultDataDir(dataDir); err != nil {
-			log.Printf("warning: %v", err)
-		}
-	}
 	l, err := audit.Open(*db)
 	if err != nil {
 		return err

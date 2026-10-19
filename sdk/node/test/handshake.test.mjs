@@ -11,12 +11,12 @@ import { pairAndConnect, connect } from '../test-support/simdevice.mjs';
 const KEY = 'k'.repeat(40);
 const T = 'acme';
 async function setup(store) {
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store, log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store, log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
-  return { lsp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
+  return { lmbp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
 }
 const api = (base, method, p, body) => fetch(base + p, { method, body: body && JSON.stringify(body),
   headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' } });
@@ -30,7 +30,7 @@ for (const [name, mk] of [['memory', () => new MemoryStore()], ['sqlite', () => 
     const st = mk();
     const s = await setup(st);
     try {
-      const d = await pairAndConnect(s.lsp, s.base, T, 'u1');
+      const d = await pairAndConnect(s.lmbp, s.base, T, 'u1');
       d.ws.close();
       await new Promise((ok) => setTimeout(ok, 50));
       // a new connection passes the upgrade check, then the device is revoked
@@ -49,7 +49,7 @@ for (const [name, mk] of [['memory', () => new MemoryStore()], ['sqlite', () => 
 test('malformed hello.resume is rejected without crashing the gateway', async () => {
   const s = await setup(new MemoryStore());
   try {
-    const d = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const d = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     d.ws.close();
     await new Promise((ok) => setTimeout(ok, 50));
     for (const resume of [{ token: 'x', tasks: [null] }, { token: 'x', tasks: 'oops' }, { token: 'x', tasks: [{ task_id: 1, recv_seq: 'a' }] }, 'str']) {
@@ -69,7 +69,7 @@ test('malformed hello.resume is rejected without crashing the gateway', async ()
 test('an old connection closing late does not take a newer one offline', async () => {
   const s = await setup(new MemoryStore());
   try {
-    const d = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const d = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     const ws2 = await connect(s.base, d.pairing, d.tok, ['m1']); // new, not resumed
     d.ws.close(); // the old socket's close arrives after the new session
     await new Promise((ok) => setTimeout(ok, 100));
@@ -84,17 +84,17 @@ test('E2EE task replayed after a restart stays sealed (review7 #6)', async () =>
   const { sealE2EERequest } = await import('../dist/index.js');
   const st = new SqliteStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lmbp-e2r-')), 'g.db'));
   const s = await setup(st);
-  const { ws, jkt } = await pairAndConnect(s.lsp, s.base, T, 'u1', { e2ee: true });
+  const { ws, jkt } = await pairAndConnect(s.lmbp, s.base, T, 'u1', { e2ee: true });
   try {
-    const dev = s.lsp.pairing.listDevices(T, 'u1')[0];
+    const dev = s.lmbp.pairing.listDevices(T, 'u1')[0];
     const sealed = sealE2EERequest(dev, jkt, { model: 'm1', messages: [{ role: 'user', content: 'secret' }] });
     const post = () => fetch(s.base + '/v1/chat/completions', { method: 'POST', body: JSON.stringify({ model: 'm1', lmbp_e2ee: sealed.jwe }),
       headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json', 'Idempotency-Key': 'e2r-1' } }).then(async (r) => ({ status: r.status, body: await r.json() }));
     const first = await post();
     assert.equal(first.status, 200, JSON.stringify(first.body));
     assert.ok(first.body.lmbp_e2ee, 'first response sealed');
-    s.lsp.engine.tasks.delete(first.body.id.replace(/^chatcmpl-/, '')); // restart: only storage is left
-    s.lsp.engine.tasks.clear();
+    s.lmbp.engine.tasks.delete(first.body.id.replace(/^chatcmpl-/, '')); // restart: only storage is left
+    s.lmbp.engine.tasks.clear();
     const again = await post();
     assert.equal(again.status, 200);
     assert.deepEqual(again.body.lmbp_e2ee, first.body.lmbp_e2ee, 'replay lost the E2EE frames: ' + JSON.stringify(again.body));
@@ -104,7 +104,7 @@ test('E2EE task replayed after a restart stays sealed (review7 #6)', async () =>
 test('a caller disconnecting while queued records CANCELLED; replay reports it (review7 #10/#15)', async () => {
   const st = new MemoryStore();
   const s = await setup(st);
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1', { maxConcurrency: 1, delayMs: 1500 });
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1', { maxConcurrency: 1, delayMs: 1500 });
   try {
     const body = { model: 'm1', messages: [{ role: 'user', content: 'hi' }] };
     const hog = api(s.base, 'POST', '/v1/chat/completions', body).then((r) => r.text());

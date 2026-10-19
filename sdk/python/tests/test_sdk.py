@@ -31,36 +31,36 @@ def test_anthropic_translation():
 
 
 async def test_pairing_api(serve_app):
-    lsp = new(issuer="https://gw.example.com")
-    async with serve_app(lsp.asgi()) as base:
-        info = lsp.pairing.create(T)
+    lmbp = new(issuer="https://gw.example.com")
+    async with serve_app(lmbp.asgi()) as base:
+        info = lmbp.pairing.create(T)
         assert info.link == "lmbp://pair?v=2&gateway=https%3A%2F%2Fgw.example.com&tenant=acme"
         assert info.qr_svg.startswith("<svg")
         _, a = await start_pairing(base, T, "my-laptop")
-        pend = lsp.pairing.lookup(T, a["user_code"].lower().replace("-", ""))
+        pend = lmbp.pairing.lookup(T, a["user_code"].lower().replace("-", ""))
         assert pend.device_name == "my-laptop" and pend.status == "pending"
         with pytest.raises(PairingError):
-            lsp.pairing.approve(T, "u1", "BBBB-BBBB")
-        ok = lsp.pairing.approve(T, "u1", a["user_code"], jkt=pend.jkt)
+            lmbp.pairing.approve(T, "u1", "BBBB-BBBB")
+        ok = lmbp.pairing.approve(T, "u1", a["user_code"], jkt=pend.jkt)
         assert ok.status == "approved"
         with pytest.raises(PairingError, match="already used"):
-            lsp.pairing.approve(T, "u1", a["user_code"])
-        ds = lsp.pairing.list_devices(T, "u1")
+            lmbp.pairing.approve(T, "u1", a["user_code"])
+        ds = lmbp.pairing.list_devices(T, "u1")
         assert [d.device_id for d in ds] == [ok.device_id]
-        assert lsp.pairing.list_devices(T, "other") == []
-        assert lsp.pairing.revoke_device(T, "u2", ok.device_id) is False
-        assert lsp.pairing.revoke_device(T, "u1", ok.device_id) is True
-        assert lsp.pairing.list_devices(T, "u1")[0].status == "revoked"
+        assert lmbp.pairing.list_devices(T, "other") == []
+        assert lmbp.pairing.revoke_device(T, "u2", ok.device_id) is False
+        assert lmbp.pairing.revoke_device(T, "u1", ok.device_id) is True
+        assert lmbp.pairing.list_devices(T, "u1")[0].status == "revoked"
         _, a2 = await start_pairing(base, T)
-        assert lsp.pairing.deny(T, "u1", a2["user_code"]).status == "denied"
-        assert lsp.keys.jwks()["keys"][0]["kid"] == lsp.keys.kid()
+        assert lmbp.pairing.deny(T, "u1", a2["user_code"]).status == "denied"
+        assert lmbp.keys.jwks()["keys"][0]["kid"] == lmbp.keys.kid()
 
 
 async def test_in_process_client(serve_app):
-    lsp = new()
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, dev = await pair_and_connect(lsp, base, T, "u1")
-        c = lsp.client(T, "u1")
+    lmbp = new()
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, dev = await pair_and_connect(lmbp, base, T, "u1")
+        c = lmbp.client(T, "u1")
         assert (await c.models())[0]["id"] == f"{dev}/m1"
         r = await c.chat.completions.create(model="m1", messages=[{"role": "user", "content": "hello"}])
         assert r["choices"][0]["message"]["content"] == "echo: hello"
@@ -88,20 +88,20 @@ async def test_in_process_client(serve_app):
 
 
 async def test_fastapi_middleware(serve_app):
-    lsp = new()
+    lmbp = new()
     app = FastAPI()
 
     @app.get("/app/hello")
     async def hello():
         return {"hi": True}
-    app.add_middleware(LMBPMiddleware, server=lsp)
+    app.add_middleware(LMBPMiddleware, server=lmbp)
     async with serve_app(app) as base:
         async with httpx.AsyncClient(base_url=base) as h:
             assert (await h.get("/app/hello")).json() == {"hi": True}
             assert (await h.get("/healthz")).json() == {"status": "ok"}
             r = await h.post("/v1/messages", headers={"x-api-key": "bad"}, json={})
             assert r.status_code == 401 and r.json()["error"]["type"] == "authentication_error"
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1")
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1")
         async with httpx.AsyncClient(base_url=base, headers={"Authorization": "Bearer " + KEY, "X-End-User": "u1"}) as h:
             r = await h.post("/v1/chat/completions", json={"model": "m1", "messages": [{"role": "user", "content": "fa"}]})
             assert r.json()["choices"][0]["message"]["content"] == "echo: fa"
@@ -111,18 +111,18 @@ async def test_fastapi_middleware(serve_app):
 
 async def test_sqlite_persistence(serve_app, tmp_path):
     db = str(tmp_path / "gw.db")
-    lsp = new(store=SQLiteStore(db))
-    kid = lsp.keys.kid()
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, dev = await pair_and_connect(lsp, base, T, "u1")
-        r = await lsp.client(T, "u1").chat.completions.create(model="m1", messages=[{"role": "user", "content": "persist me"}])
+    lmbp = new(store=SQLiteStore(db))
+    kid = lmbp.keys.kid()
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, dev = await pair_and_connect(lmbp, base, T, "u1")
+        r = await lmbp.client(T, "u1").chat.completions.create(model="m1", messages=[{"role": "user", "content": "persist me"}])
         await ws.close()
         task.cancel()
-    lsp.store.close()
-    lsp = new(store=SQLiteStore(db))
-    assert lsp.keys.kid() == kid
-    assert [d.device_id for d in lsp.pairing.list_devices(T, "u1")] == [dev]
-    async with serve_app(lsp.asgi()) as base:
+    lmbp.store.close()
+    lmbp = new(store=SQLiteStore(db))
+    assert lmbp.keys.kid() == kid
+    assert [d.device_id for d in lmbp.pairing.list_devices(T, "u1")] == [dev]
+    async with serve_app(lmbp.asgi()) as base:
         async with httpx.AsyncClient(base_url=base, headers={"Authorization": "Bearer " + KEY, "X-End-User": "u1"}) as h:
             ev = await h.get(f"/lmbp/v1/tenant/tasks/{r['id'].removeprefix('chatcmpl-')}/events")
             assert ev.status_code == 200 and "persist me" in ev.text

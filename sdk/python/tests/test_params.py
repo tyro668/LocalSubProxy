@@ -30,11 +30,11 @@ def err_param(b):
 
 async def test_param_vectors(serve_app):
     assert len(V["cases"]) >= 80
-    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], log=lambda *a: None)
+    lmbp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], log=lambda *a: None)
     runs = {}
     failures = []
-    async with serve_app(lsp.asgi()) as base:
-        ws, task, _ = await pair_and_connect(lsp, base, T, "u1", on_run=lambda r: runs.__setitem__(r["task_id"], r))
+    async with serve_app(lmbp.asgi()) as base:
+        ws, task, _ = await pair_and_connect(lmbp, base, T, "u1", on_run=lambda r: runs.__setitem__(r["task_id"], r))
         async with httpx.AsyncClient(base_url=base, headers={"Authorization": "Bearer " + KEY, "X-End-User": "u1"}, timeout=30) as h:
             for c in V["cases"]:
                 name = f"{c['endpoint']}/{c['name']}"

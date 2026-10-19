@@ -22,14 +22,14 @@ import org.junit.jupiter.api.Test;
 class OutboxForgetTest {
   static final String KEY = "k".repeat(40);
   static final long WIN = Lmbp.MAX_FRAME_BYTES; // smallest legal windows: one blob chunk at a time
-  LMBPServer lsp;
+  LMBPServer lmbp;
   StandaloneServer srv;
   FakeDevice dev;
 
   @AfterEach void stop() throws Exception {
     if (dev != null) dev.close();
     if (srv != null) srv.close();
-    if (lsp != null) lsp.close();
+    if (lmbp != null) lmbp.close();
   }
 
   static Map<String, Object> imageReq(String model) {
@@ -41,23 +41,23 @@ class OutboxForgetTest {
   }
 
   <T> T underLock(java.util.function.Supplier<T> s) {
-    lsp.g.lock.lock();
-    try { return s.get(); } finally { lsp.g.lock.unlock(); }
+    lmbp.g.lock.lock();
+    try { return s.get(); } finally { lmbp.g.lock.unlock(); }
   }
 
   @Test void cancelWhileChunksWaitThenResumeLeaksNoCredit() throws Exception {
-    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).logger(s -> { }).build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).logger(s -> { }).build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     dev = new FakeDevice("http://127.0.0.1:" + srv.port(), "acme");
-    lsp.pairing().approve("acme", "alice", dev.authorize());
+    lmbp.pairing().approve("acme", "alice", dev.authorize());
     dev.token();
     Map<String, Object> extra = Json.obj("capabilities", List.of("tools", "flow", "resume", "multimodal"),
         "flow", Json.obj("task_window", WIN, "conn_window", WIN), "model_capabilities", Json.obj("pic", List.of("tools", "vision")));
     dev.helloExtra = extra;
     dev.mode = FakeDevice.Mode.SILENT;
     dev.connect("pic");
-    Gateway.DState ds = underLock(() -> lsp.g.devs.values().iterator().next());
-    InProcessClient c = lsp.client("acme", "alice");
+    Gateway.DState ds = underLock(() -> lmbp.g.devs.values().iterator().next());
+    InProcessClient c = lmbp.client("acme", "alice");
     String model = dev.deviceId + "/pic";
     LmbpStream st = c.stream(imageReq(model));
     FakeDevice.waitFor(() -> underLock(() -> ds.out.waiters.size()) == 1, 5000);

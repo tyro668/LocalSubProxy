@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/avora/internal/compat"
 	"github.com/tyro668/avora/internal/lmbp"
 	"github.com/tyro668/avora/internal/lmbp/store"
 )
@@ -21,8 +20,7 @@ import (
 // ServeOptions configures a standalone gateway process. Secrets come from the
 // environment: LMBP_SIGNING_SEED (32-byte hex Ed25519 seed; required unless
 // AllowEphemeralKey), LMBP_DATA_KEY (optional 32-byte hex AES key for data at
-// rest) and one env var per tenant API key. The pre-2.1 LSP_* names of LMBP_*
-// variables still work for one release, with a deprecation warning.
+// rest) and one env var per tenant API key.
 type ServeOptions struct {
 	Listen            string
 	DB                string
@@ -43,7 +41,7 @@ type ServeOptions struct {
 
 func Serve(ctx context.Context, o ServeOptions) error {
 	var c *store.Cipher
-	if k := compat.GetenvLMBP("LMBP_DATA_KEY"); k != "" {
+	if k := os.Getenv("LMBP_DATA_KEY"); k != "" {
 		kb, err := hex.DecodeString(k)
 		if err != nil {
 			return errors.New("LMBP_DATA_KEY must be 64 hex characters")
@@ -53,7 +51,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 		}
 	}
 	var sk ed25519.PrivateKey
-	if k := compat.GetenvLMBP("LMBP_SIGNING_SEED"); k != "" {
+	if k := os.Getenv("LMBP_SIGNING_SEED"); k != "" {
 		kb, err := hex.DecodeString(k)
 		if err != nil || len(kb) != ed25519.SeedSize {
 			return errors.New("LMBP_SIGNING_SEED must be 64 hex characters")
@@ -95,7 +93,7 @@ func Serve(ctx context.Context, o ServeOptions) error {
 		if !ok {
 			p = store.TenantProfile{DisplayName: id}
 		}
-		if err := g.RegisterTenantProfile(ctx, id, compat.GetenvLMBP(env), p); err != nil {
+		if err := g.RegisterTenantProfile(ctx, id, os.Getenv(env), p); err != nil {
 			return fmt.Errorf("tenant %s: %w (set %s)", id, err, env)
 		}
 	}

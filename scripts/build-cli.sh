@@ -17,8 +17,6 @@ for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 wi
   ext=; [ "$os" = windows ] && ext=.exe
   mkdir -p "$work/$name"
   CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$work/$name/avora$ext" ./cmd/avora
-  # 改名兼容（保留一个版本）：旧命令名 localsubproxy 提示后转发到 avora
-  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$work/$name/localsubproxy$ext" ./cmd/localsubproxy
   cp docs/headless.md "$work/$name/"
   if [ "$os" = windows ]; then
     rm -f "$out/$name.zip"

@@ -12,12 +12,12 @@ const KEY = 'k'.repeat(40);
 const T = 'acme';
 
 export async function setup(opts = {}) {
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {}, ...opts });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {}, ...opts });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
-  return { lsp, srv, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
+  return { lmbp, srv, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
 }
 const chat = (base, user, body, hdr = {}) => fetch(base + '/v1/chat/completions', {
   method: 'POST', headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': user, 'Content-Type': 'application/json', ...hdr }, body: JSON.stringify(body) });
@@ -39,7 +39,7 @@ test('idempotency store keys are unambiguous (a, "b|c") vs ("a|b", "c")', () => 
 
 test('idempotent replay never crosses users (gateway, exact audit example)', async () => {
   const s = await setup();
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'a');
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'a');
   try {
     const body = { model: 'm1', messages: [{ role: 'user', content: 'secret-of-a' }] };
     const r1 = await chat(s.base, 'a', body, { 'Idempotency-Key': 'b|c' });
@@ -63,11 +63,11 @@ test('in-process pairing is rate limited and shares the HTTP lockout', async () 
   try {
   const codes = [];
   for (let i = 0; i < 12; i++) {
-    try { s.lsp.pairing.approve(T, 'u1', `WRONG-${String(i).padStart(4, '0')}`); codes.push('ok'); }
+    try { s.lmbp.pairing.approve(T, 'u1', `WRONG-${String(i).padStart(4, '0')}`); codes.push('ok'); }
     catch (e) { codes.push(e.code); }
   }
   assert.deepEqual(codes.slice(10), ['RATE_LIMITED', 'RATE_LIMITED'], codes.join(','));
-  assert.throws(() => s.lsp.pairing.deny(T, 'u1', 'WRONG-0000'), (e) => e.code === 'RATE_LIMITED');
+  assert.throws(() => s.lmbp.pairing.deny(T, 'u1', 'WRONG-0000'), (e) => e.code === 'RATE_LIMITED');
   const r = await fetch(s.base + '/lmbp/v1/tenant/devices/approvals', { method: 'POST',
     headers: { Authorization: 'Bearer ' + KEY, 'X-End-User': 'u1', 'Content-Type': 'application/json' }, body: JSON.stringify({ user_code: 'WRONG-0000' }) });
   assert.equal(r.status, 429);
@@ -77,9 +77,9 @@ test('in-process pairing is rate limited and shares the HTTP lockout', async () 
 // Finding 7: SSE cursor + resume + idempotent replay from the in-process client.
 test('client stream exposes lastEventId/taskId and resumes after the cursor', async () => {
   const s = await setup();
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
   try {
-    const c = s.lsp.client(T, 'u1');
+    const c = s.lmbp.client(T, 'u1');
     const req = { model: 'm1', messages: [{ role: 'user', content: 'hello' }] };
     const st = c.chat.completions.stream(req, { idempotencyKey: 'k-1' });
     const ids = []; const parts = [];
@@ -105,14 +105,14 @@ test('client stream exposes lastEventId/taskId and resumes after the cursor', as
 test('client E2EE: sealE2EERequest + open sealed stream frames', async () => {
   const { sealE2EERequest, decodeE2EEDelta } = await import('../dist/index.js');
   const s = await setup();
-  const { ws, jkt } = await pairAndConnect(s.lsp, s.base, T, 'u1', { e2ee: true });
+  const { ws, jkt } = await pairAndConnect(s.lmbp, s.base, T, 'u1', { e2ee: true });
   try {
-    const dev = s.lsp.pairing.listDevices(T, 'u1')[0];
+    const dev = s.lmbp.pairing.listDevices(T, 'u1')[0];
     assert.ok(dev.e2eeKey && dev.publicKey.length === 32);
     assert.throws(() => sealE2EERequest(dev, 'not-the-pinned-jkt', { model: 'm1', messages: [] }));
     const sealed = sealE2EERequest(dev, jkt, { model: 'm1', messages: [{ role: 'user', content: 'secret' }] });
     assert.ok(!sealed.jwe.includes('secret'));
-    const c = s.lsp.client(T, 'u1');
+    const c = s.lmbp.client(T, 'u1');
     let text = ''; let frames = 0;
     const rd = sealed.reader();
     for await (const ch of c.chat.completions.stream({ model: 'm1', lmbp_e2ee: sealed.jwe })) {
@@ -139,14 +139,14 @@ for (const mode of ['event', 'state']) {
     if (mode === 'event') st.appendEvent = (id, ev) => { if (ev.seq === 2 && ev.type !== 'task.error') throw new Error('disk full'); return append(id, ev); };
     else st.finishTask = () => { throw new Error('disk full'); };
     const s = await setup({ store: st, log: (...a) => logs.push(a.join(' ')) });
-    const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+    const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
     try {
       const r = await chat(s.base, 'u1', { model: 'm1', messages: [{ role: 'user', content: 'hello' }] });
       const body = await r.text();
       assert.notEqual(r.status, 200, body);
       assert.match(body, /INTERNAL/);
       await new Promise((ok) => setTimeout(ok, 100));
-      const t = s.lsp.engine.tasks.get(r.headers.get('x-task-id'));
+      const t = s.lmbp.engine.tasks.get(r.headers.get('x-task-id'));
       assert.ok(t, 'task in memory');
       assert.ok(t.acked < (mode === 'event' ? 2 : 3), `ACKed ${t.acked} without persistence`);
       assert.match(logs.join('\n'), /disk full/);
@@ -159,7 +159,7 @@ for (const mode of ['event', 'state']) {
 // queueing failure is recorded so replays get the same error.
 async function slowRig(tuning = {}) {
   const s = await setup({ tuning });
-  const dev = await pairAndConnect(s.lsp, s.base, T, 'u1', { maxConcurrency: 1, delayMs: 400 });
+  const dev = await pairAndConnect(s.lmbp, s.base, T, 'u1', { maxConcurrency: 1, delayMs: 400 });
   return { s, dev };
 }
 const result = async (p) => { const r = await p; return { status: r.status, task: r.headers.get('x-task-id'), body: await r.text() }; };

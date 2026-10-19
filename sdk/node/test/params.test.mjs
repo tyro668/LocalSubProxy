@@ -25,13 +25,13 @@ const errParam = (b) => {
 
 test('shared request-parameter vectors (spec/testvectors/params.json)', async () => {
   assert.ok(V.cases.length >= 80);
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const runs = new Map();
-  const { ws } = await pairAndConnect(lsp, base, T, 'u1', { onRun: (r) => runs.set(r.task_id, r) });
+  const { ws } = await pairAndConnect(lmbp, base, T, 'u1', { onRun: (r) => runs.set(r.task_id, r) });
   const failures = [];
   try {
     for (const c of V.cases) {

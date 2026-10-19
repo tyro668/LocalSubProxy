@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tyro668/avora/internal/compat"
 	"github.com/tyro668/avora/internal/lmbp/client"
 	"github.com/tyro668/avora/internal/lmbp/gateway"
 	"github.com/tyro668/avora/mock/demo"
@@ -64,7 +63,7 @@ func main() {
 			a, b, _ := strings.Cut(p, ":")
 			u[a] = b
 		}
-		key := compat.GetenvLMBP("LMBP_TENANT_KEY")
+		key := os.Getenv("LMBP_TENANT_KEY")
 		if len(key) < 32 {
 			log.Fatal("set LMBP_TENANT_KEY (>=32 chars, same value as the gateway's tenant key)")
 		}

@@ -18,26 +18,26 @@ import org.junit.jupiter.api.Test;
  */
 class StreamCloseTest {
   static final String KEY = "k".repeat(40);
-  LMBPServer lsp;
+  LMBPServer lmbp;
   StandaloneServer srv;
   FakeDevice dev;
 
   @AfterEach void stop() throws Exception {
     if (dev != null) dev.close();
     if (srv != null) srv.close();
-    if (lsp != null) lsp.close();
+    if (lmbp != null) lmbp.close();
   }
 
   @Test void closeAfterProducerEndedDoesNotHangReader() throws Exception {
-    lsp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).logger(s -> { }).build();
-    srv = StandaloneServer.start(lsp, "127.0.0.1", 0);
+    lmbp = LMBPServer.builder().tenant("acme", KEY, Map.of("display_name", "Acme")).store(new MemoryStore()).logger(s -> { }).build();
+    srv = StandaloneServer.start(lmbp, "127.0.0.1", 0);
     dev = new FakeDevice("http://127.0.0.1:" + srv.port(), "acme");
     String code = dev.authorize();
-    lsp.pairing().approve("acme", "alice", code);
+    lmbp.pairing().approve("acme", "alice", code);
     dev.token();
     dev.connect("tiny");
     dev.reply = List.of("a", "b", "c");
-    InProcessClient c = lsp.client("acme", "alice");
+    InProcessClient c = lmbp.client("acme", "alice");
     LmbpStream st = c.stream(EngineTest.req(dev.deviceId + "/tiny"));
     assertTrue(st.hasNext());
     st.next(); // role preamble; the rest (and the EOF) is queued

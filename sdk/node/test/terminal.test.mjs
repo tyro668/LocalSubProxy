@@ -16,12 +16,12 @@ const KEY = 'k'.repeat(40);
 const T = 'acme';
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 async function setup(store) {
-  const lsp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store, log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: T, apiKey: KEY }], store, log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
-  return { lsp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
+  return { lmbp, base, close: async () => { srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); } };
 }
 const BODY = { model: 'm1', messages: [{ role: 'user', content: 'hello' }] };
 async function idemChat(base, key) {
@@ -53,7 +53,7 @@ test('SQLite: status write fails after the done event; restart; idempotent retry
     st.db.exec(`CREATE TRIGGER fail_${ev} BEFORE ${ev} ON lmbp_tasks WHEN json_extract(NEW.doc,'$.state')='SUCCEEDED' BEGIN SELECT RAISE(ABORT,'injected status write failure'); END`);
   }
   const s = await setup(st);
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
   let first;
   try {
     first = await idemChat(s.base, 'k-term');
@@ -83,11 +83,11 @@ test('memory store: one-shot status write failure; replay from the store has the
     st.finishTask = (id, ev, state) => { if (state === 'SUCCEEDED' && armed) { armed = false; throw new Error('disk full'); } return fin(id, ev, state); };
   }
   const s = await setup(st);
-  const { ws } = await pairAndConnect(s.lsp, s.base, T, 'u1');
+  const { ws } = await pairAndConnect(s.lmbp, s.base, T, 'u1');
   try {
     const first = await idemChat(s.base, 'k-mem');
     await sleep(200);
-    s.lsp.engine.tasks.delete(first.task); // drop the hub: replay from the store
+    s.lmbp.engine.tasks.delete(first.task); // drop the hub: replay from the store
     const second = await idemChat(s.base, 'k-mem');
     assert.equal(outcome(second), outcome(first), `first ${first.status} ${first.body}\nreplay ${second.status} ${second.body}`);
     assert.notEqual(outcome(second), 'success');

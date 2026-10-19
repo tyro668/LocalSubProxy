@@ -16,7 +16,7 @@ def test_restart_records_orphans_as_outcome_unknown(kind, tmp_path):
         store.create_task({"id": "task_orphan_" + state, "tenant": "acme", "owner": "u1", "device": "d", "model": "m",
                            "state": state, "events": [], "request": {"secret": "prompt"}})
     store.append_event("task_orphan_RUNNING", {"seq": 1, "type": "task.delta", "data": {"text": "partial"}})
-    lsp = LMBPServer([TenantConfig("acme", "k" * 40)], store=store, log=lambda *a: None, retention=60)
+    lmbp = LMBPServer([TenantConfig("acme", "k" * 40)], store=store, log=lambda *a: None, retention=60)
     for state in ("RUNNING", "QUEUED"):
         t = store.get_task("task_orphan_" + state)
         assert t["state"] == "FAILED", f"{state} orphan state {t['state']}"
@@ -24,5 +24,5 @@ def test_restart_records_orphans_as_outcome_unknown(kind, tmp_path):
         assert last["type"] == "task.error" and last["data"]["code"] == "OUTCOME_UNKNOWN", last
         if state == "RUNNING":
             assert last["seq"] == 2
-    assert lsp.engine.purge(time.time() + 120) == 2, "retention did not purge the orphans"
+    assert lmbp.engine.purge(time.time() + 120) == 2, "retention did not purge the orphans"
     assert store.get_task("task_orphan_RUNNING") is None

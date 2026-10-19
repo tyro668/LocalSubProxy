@@ -33,7 +33,7 @@ def body():
 
 
 async def test_cancel_while_chunks_wait_then_resume_no_credit_leak(serve_app):
-    lsp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=MemoryStore(), log=lambda *a: None)
+    lmbp = LMBPServer([TenantConfig(T, KEY, {"display_name": "Acme"})], store=MemoryStore(), log=lambda *a: None)
     state = {"answer": False, "token": ""}
 
     def manual(run, ws, listeners):
@@ -62,15 +62,15 @@ async def test_cancel_while_chunks_wait_then_resume_no_credit_leak(serve_app):
     def welcome(w):
         state["token"] = w["data"]["resume_token"]
     hs = {"Authorization": "Bearer " + KEY, "X-End-User": "u1"}
-    async with serve_app(lsp.asgi()) as base:
+    async with serve_app(lmbp.asgi()) as base:
         key, a = await start_pairing(base, T)
-        lsp.pairing.approve(T, "u1", a["user_code"])
+        lmbp.pairing.approve(T, "u1", a["user_code"])
         tok = await finish_pairing(base, key, a)
         ws, task = await connect(base, key, tok, manual=manual, hello_patch=patch, on_welcome=welcome)
         ws2 = task2 = None
         try:
-            await until(lambda: lsp.engine.devs, "device online")
-            ds = next(iter(lsp.engine.devs.values()))
+            await until(lambda: lmbp.engine.devs, "device online")
+            ds = next(iter(lmbp.engine.devs.values()))
             async with httpx.AsyncClient(base_url=base, headers=hs, timeout=10) as h:
                 req = asyncio.ensure_future(h.post("/v1/chat/completions", json=body()))
                 await until(lambda: len(ds.out.waiters) == 1, "a blob.chunk send waiting for credit")

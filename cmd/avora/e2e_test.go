@@ -101,7 +101,7 @@ func TestHeadlessEndToEnd(t *testing.T) {
 	})
 
 	// short path: unix socket paths are limited to ~104 bytes
-	data, err := os.MkdirTemp("", "lspe2e")
+	data, err := os.MkdirTemp("", "avorae2e")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,17 +12,17 @@ const KEY = 'k'.repeat(40);
 const within = (p, ms, what) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error('timed out: ' + what)), ms))]);
 
 async function rig() {
-  const lsp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
-  const srv = http.createServer(lsp.handler);
-  lsp.attach(srv);
+  const lmbp = new LMBPServer({ tenants: [{ id: 'acme', apiKey: KEY, profile: { display_name: 'Acme' } }], log: () => {} });
+  const srv = http.createServer(lmbp.handler);
+  lmbp.attach(srv);
   await new Promise((ok) => srv.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${srv.address().port}`;
   const runs = [];
-  const d = await pairAndConnect(lsp, base, 'acme', 'u1', { manual: (run) => runs.push(run.task_id) }); // silent model
+  const d = await pairAndConnect(lmbp, base, 'acme', 'u1', { manual: (run) => runs.push(run.task_id) }); // silent model
   const cancels = [];
   d.ws.on('message', (raw) => { const e = JSON.parse(raw); if (e.type === 'task.cancel') cancels.push(e.task_id); });
-  const close = async () => { d.ws.terminate(); srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); await lsp.close(); };
-  return { lsp, runs, cancels, close };
+  const close = async () => { d.ws.terminate(); srv.closeAllConnections(); await new Promise((ok) => srv.close(ok)); await lmbp.close(); };
+  return { lmbp, runs, cancels, close };
 }
 
 for (const how of ['return', 'throw']) {
@@ -30,7 +30,7 @@ for (const how of ['return', 'throw']) {
     test(`${api}: ${how}() with a pending next() on a silent model ends the stream and cancels the task`, async () => {
       const r = await rig();
       try {
-        const c = r.lsp.client('acme', 'u1');
+        const c = r.lmbp.client('acme', 'u1');
         const st = api === 'chat'
           ? c.chat.completions.stream({ model: 'm1', messages: [{ role: 'user', content: 'hi' }] })
           : c.messages.stream({ model: 'm1', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] });

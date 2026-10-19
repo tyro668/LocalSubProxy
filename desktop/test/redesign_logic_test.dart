@@ -105,13 +105,6 @@ void main() {
       )!.title,
       contains('另一个 Avora'),
     );
-    // 改名兼容：旧版应用仍在运行时给出专门提示（内核 ErrLegacyDirInUse 的原文）
-    expect(
-      kernelErrorHint(
-        'data directory in use: the old LocalSubProxy app (or "localsubproxy serve") is still running; quit it and start Avora again so its connections can be moved over',
-      )!.title,
-      '旧版 LocalSubProxy 仍在运行',
-    );
     expect(kernelErrorHint('mkdir: permission denied')!.title, contains('权限'));
     expect(kernelErrorHint('write: no space left on device')!.title, '磁盘空间不足');
     expect(kernelErrorHint('something else'), isNull);
